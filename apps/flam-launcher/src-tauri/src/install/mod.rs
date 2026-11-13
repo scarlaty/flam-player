@@ -1769,10 +1769,32 @@ struct ArchiveMeta {
     size: Option<u64>,
 }
 
+/// Suffixe de la mémoire d'une archive ([`meta_path`]).
+pub(crate) const ARCHIVE_META_SUFFIX: &str = ".meta.json";
+
 fn meta_path(dest: &Path) -> PathBuf {
     let mut name = dest.file_name().unwrap_or_default().to_os_string();
-    name.push(".meta.json");
+    name.push(ARCHIVE_META_SUFFIX);
     dest.with_file_name(name)
+}
+
+/// `name` est celui d'une archive téléchargée par `InstallService::fetch` :
+/// `<uuid>-<version>.zip` ou `<uuid>-<version>.plain.pk`, `uuid` accepté par
+/// [`validate_story_id`] et `version` entier `u32` en écriture décimale canonique (`0` si la
+/// version est inconnue). Casse exacte. Preuve d'usage du cache (#591).
+pub(crate) fn is_archive_name(name: &str) -> bool {
+    let Some(stem) = name
+        .strip_suffix(".plain.pk")
+        .or_else(|| name.strip_suffix(".zip"))
+    else {
+        return false;
+    };
+    stem.rsplit_once('-').is_some_and(|(uuid, version)| {
+        validate_story_id(uuid)
+            && version
+                .parse::<u32>()
+                .is_ok_and(|n| n.to_string() == version)
+    })
 }
 
 enum Prepared {

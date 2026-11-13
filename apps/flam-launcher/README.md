@@ -1352,10 +1352,23 @@ identifiant de tâche, empreinte de 16 chiffres hexadécimaux), et pour `podcast
 dossier de source ne contient que ce que l'application y écrit (`feed.xml`, `meta.json`, leurs
 temporaires `.feed.xml.*.tmp` et `.meta.json.*.tmp`, `mp3/`, `thumbs/` ; les fichiers
 `desktop.ini`, `Thumbs.db` et `.DS_Store` de l'explorateur y sont ignorés, sans valoir preuve).
+Les autres sous-dossiers exigent aussi une preuve par le contenu (#591) : `archives/` seulement
+si chaque archive `<uuid>-<version>.zip` ou `<uuid>-<version>.plain.pk` (ou son téléchargement en
+cours `.part`) est accompagnée de sa mémoire `<archive>.meta.json`, les mémoires seules et leurs
+temporaires `.<archive>.meta.json.<pid>-<n>.tmp` étant acceptés (un `vacances-2019.zip` seul
+n'est jamais une preuve ; une archive ou un `.part` resté sans mémoire après un arrêt brutal
+non plus) ; `catalogs/` seulement si chaque élément est un dossier nommé comme un identifiant de
+source ne contenant que `catalog.json`, `meta.json`, leurs temporaires et `thumbs/`
+(`<32 chiffres hexadécimaux>.img`, `.meta.json` et leurs temporaires) ; `compat-local/`
+seulement avec `launcher_results.json` et son temporaire ; `official/` seulement avec
+`catalog.json` et son temporaire ; `thumbs/` seulement avec des vignettes `<16 chiffres
+hexadécimaux>.png` et leurs temporaires `.tmp-<pid>` (même règle qu'à l'adoption). Partout, la
+casse des noms est respectée et un sous-dossier vide est accepté.
 Ces trois fichiers de l'explorateur (fichiers ordinaires seulement, ni dossier ni lien) sont aussi
-ignorés à la racine de `library/`, `podcasts/`, `podcast-work/` et `play/`, sans valoir preuve :
-un sous-dossier qui ne contient qu'eux est jugé comme un sous-dossier vide. Un sous-dossier non prouvé n'est pas
-marqué : utilisé comme avant, jamais compté ni vidé. La racine du cache peut être une jonction ou
+ignorés à la racine de chaque sous-dossier soumis à preuve (et à chaque niveau de `catalogs/`),
+sans valoir preuve : un sous-dossier qui ne contient qu'eux est jugé comme un sous-dossier vide.
+Un sous-dossier non prouvé n'est pas marqué (journalisé, la migration réussit quand même) :
+utilisé comme avant, jamais compté ni vidé (fuite de place, jamais de perte). La racine du cache peut être une jonction ou
 un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
 reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin
@@ -1373,16 +1386,17 @@ seul ne suffit pas) est accepté par `settings_set`, avant l'enregistrement des 
 preuve d'usage de la migration, et `thumbs/` s'il ne contient que des fichiers nommés comme ceux
 du cache des vignettes (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`, fichiers de
 l'explorateur ignorés ; vide : accepté) ; `archives/`, `catalogs/`, `compat-local/` et `official/`
-ne sont jamais marqués à l'adoption (aucune preuve par leur contenu) : dans un ancien cache
+ne sont jamais marqués à l'adoption (la preuve par le contenu de la migration ne lui est pas
+appliquée) : dans un ancien cache
 réadopté, ils ne sont donc ni nettoyés, ni comptés, ni vidés (fuite de place, jamais de perte).
 Un échec d'écriture du marqueur de `library/` fait échouer l'enregistrement ; celui d'un autre
 sous-dossier est journalisé et ce sous-dossier reste non marqué. Les homonymes refusés ne sont ni
 marqués ni bloquants (l'application les utilise comme avant, sans jamais les compter ni les
 vider). Sans bibliothèque reconnue, rien n'est marqué et un homonyme sans marqueur fait refuser
 le dossier.
-Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré au moment de la
-migration sous un nom sans preuve d'usage exigée (`archives`, `catalogs`, `compat-local`,
-`official`, `thumbs`) est marqué aussi ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
+Limites : un sous-dossier réellement écrit par l'application mais non prouvé à la migration
+(archive ou `.part` sans mémoire laissé par un arrêt brutal, fichier ajouté à la main) reste non
+marqué, jamais nettoyé par « Vider le cache » (à supprimer à la main) ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
 marqués, ceux que le vidage videra ; après un retour à une version antérieure (qui ignore le marqueur), les
 sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
 vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le

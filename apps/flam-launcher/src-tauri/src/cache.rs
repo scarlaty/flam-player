@@ -182,13 +182,13 @@ pub enum Migration {
 
 /// Migration unique (#570) : les sous-dossiers de [`APP_CACHE_SUBDIRS`] déjà présents dans les
 /// dossiers de cache `roots` (celui déjà configuré, et le dossier par défaut) servaient déjà à
-/// l'application ; ils reçoivent le marqueur, avec une preuve d'usage pour ceux dont la forme du
-/// contenu est connue (voir [`proven_by_content`]). Le témoin `witness` est écrit en dernier :
-/// interrompue, la migration est rejouée (elle est idempotente). Une racine est un dossier choisi
-/// par l'utilisateur : elle peut être une jonction ou un lien (#591), seul le premier niveau doit
-/// être un dossier réel. Limite : un homonyme de l'utilisateur sans preuve d'usage exigée
-/// (`archives`, `catalogs`…) déjà présent dans le dossier configuré est marqué lui aussi
-/// (l'adoption d'un ancien cache, [`adopt_legacy_cache`], ne marque jamais ces noms).
+/// l'application ; ils reçoivent le marqueur seulement si leur contenu prouve cet usage (voir
+/// [`proven_by_content`], #591). Un sous-dossier non prouvé (homonyme de l'utilisateur, ou reste
+/// d'un arrêt brutal de forme ambiguë) n'est pas marqué, journalisé, et ne fait pas échouer la
+/// migration : il n'est jamais compté ni vidé (fuite de place, jamais de perte). Le témoin
+/// `witness` est écrit en dernier : interrompue, la migration est rejouée (elle est
+/// idempotente). Une racine est un dossier choisi par l'utilisateur : elle peut être une
+/// jonction ou un lien (#591), seul le premier niveau doit être un dossier réel.
 pub fn migrate_markers(witness: &Path, roots: &[PathBuf]) -> io::Result<Migration> {
     migrate_markers_with(witness, roots, &no_fault)
 }
@@ -269,13 +269,15 @@ fn mark_existing(root: &Path, marking: Marking, fault: Fault) -> io::Result<usiz
     Ok(marked)
 }
 
-/// Preuve d'usage exigée à l'adoption d'un ancien cache (#591), plus stricte que celle de la
-/// migration : le dossier a été choisi par l'utilisateur et peut contenir ses propres dossiers.
+/// Preuve d'usage exigée à l'adoption d'un ancien cache (#591), au moins aussi stricte que celle
+/// de la migration : le dossier a été choisi par l'utilisateur et peut contenir ses propres
+/// dossiers.
 /// - `podcasts`, `podcast-work`, `play` : règle de la migration ([`proven_by_content`]) ;
 /// - `thumbs` : chaque élément de la racine est un fichier ordinaire nommé comme ceux de
 ///   `ThumbCache` ([`crate::thumbnail::is_own_file`]) ou un fichier de l'explorateur
 ///   ([`is_os_junk`], ignoré sans valoir preuve) ; vide : accepté, comme `podcasts` ou `play` ;
-/// - `archives`, `catalogs`, `compat-local`, `official` : jamais (aucune preuve par le contenu) ;
+/// - `archives`, `catalogs`, `compat-local`, `official` : jamais (la preuve par le contenu de
+///   la migration n'est pas appliquée à l'adoption) ;
 /// - `library` : jamais ici (marqué par [`adopt_legacy_cache`] sur l'index reconnu).
 fn proven_at_adoption(name: &str, dir: &Path) -> bool {
     match name {
@@ -290,25 +292,124 @@ fn proven_at_adoption(name: &str, dir: &Path) -> bool {
 /// Tous les éléments de `thumbs/` sont des fichiers ordinaires écrits par `ThumbCache`, ou des
 /// fichiers de l'explorateur. Un autre nom, un dossier ou un lien : refus.
 fn thumbs_children_known(dir: &Path) -> bool {
+    files_known(dir, &crate::thumbnail::is_own_file)
+}
+
+/// Chaque élément de `dir` est un fichier de l'explorateur ([`is_os_junk`], fichier ordinaire,
+/// ignoré sans valoir preuve), un fichier ordinaire dont le nom est accepté par `file`, ou un
+/// dossier réel accepté par `subdir` (nom, chemin). Vide : accepté. Lien ou jonction (type lu
+/// sans suivre les liens), autre type, nom non UTF-8, erreur de lecture : refus.
+fn entries_known(
+    dir: &Path,
+    file: &dyn Fn(&str) -> bool,
+    subdir: &dyn Fn(&str, &Path) -> bool,
+) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
     };
     entries.into_iter().all(|entry| {
-        entry.is_ok_and(|entry| {
-            entry.file_type().is_ok_and(|kind| {
-                kind.is_file()
-                    && !kind.is_symlink()
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| is_os_junk(name) || crate::thumbnail::is_own_file(name))
-            })
-        })
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let (Ok(kind), Some(name)) = (
+            entry.file_type(),
+            entry.file_name().to_str().map(str::to_owned),
+        ) else {
+            return false;
+        };
+        if kind.is_symlink() {
+            return false;
+        }
+        if kind.is_dir() {
+            return subdir(&name, &entry.path());
+        }
+        kind.is_file() && (is_os_junk(&name) || file(&name))
     })
 }
 
-/// Preuve d'usage exigée par la migration (#591) pour les sous-dossiers dont l'application
-/// connaît la forme du contenu ; en cas de doute, rien n'est marqué (fuite, jamais de perte) :
+/// [`entries_known`] sans aucun sous-dossier accepté.
+fn files_known(dir: &Path, file: &dyn Fn(&str) -> bool) -> bool {
+    entries_known(dir, file, &|_, _| false)
+}
+
+/// `name` est `file` ou un temporaire d'écriture atomique de `file`
+/// ([`crate::storage::atomic_tmp_target`]).
+fn is_file_or_its_tmp(name: &str, file: &str) -> bool {
+    name == file || crate::storage::atomic_tmp_target(name) == Some(file)
+}
+
+/// Catalogue officiel en cache (`device::official` : `<cache>/official/catalog.json`, constantes
+/// privées à ce module).
+const OFFICIAL_DIR: &str = "official";
+const OFFICIAL_FILE: &str = "catalog.json";
+
+/// `archives/` ([`crate::install::ARCHIVES_DIR`]) : chaque élément est un fichier ordinaire (ou
+/// un fichier de l'explorateur) parmi :
+/// - une mémoire d'archive `<archive>.meta.json`, ou son temporaire d'écriture atomique ;
+/// - une archive `<archive>` ou son téléchargement en cours `<archive>.part`, **accompagné** de
+///   sa mémoire `<archive>.meta.json` dans le même dossier ;
+///
+/// où `<archive>` est `<uuid>-<version>.zip` ou `<uuid>-<version>.plain.pk`
+/// ([`crate::install::is_archive_name`]). Une archive ou un `.part` sans mémoire (arrêt brutal
+/// pendant un premier téléchargement, ou entre la fin du téléchargement et l'écriture de la
+/// mémoire) n'est pas prouvé : `vacances-2019.zip` a la même forme.
+fn archives_children_known(dir: &Path) -> bool {
+    use crate::install::{download::PART_SUFFIX, is_archive_name, ARCHIVE_META_SUFFIX};
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    // Un nom non UTF-8 est omis ici, mais refusé par le parcours ci-dessous.
+    let names: std::collections::HashSet<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let is_meta = |name: &str| {
+        name.strip_suffix(ARCHIVE_META_SUFFIX)
+            .is_some_and(is_archive_name)
+    };
+    files_known(dir, &|name| {
+        if is_meta(name) || crate::storage::atomic_tmp_target(name).is_some_and(is_meta) {
+            return true;
+        }
+        let archive = name.strip_suffix(PART_SUFFIX).unwrap_or(name);
+        // La mémoire, si elle existe, est elle-même vérifiée (fichier ordinaire) par ce parcours.
+        is_archive_name(archive) && names.contains(&format!("{archive}{ARCHIVE_META_SUFFIX}"))
+    })
+}
+
+/// `catalogs/` ([`crate::catalog::CATALOGS_DIR`]) : chaque élément est un dossier réel nommé
+/// comme un identifiant de source ([`crate::catalog::is_source_dir_name`]) dont le contenu a
+/// la forme écrite par `catalog` : `catalog.json`, `meta.json`, leurs temporaires d'écriture
+/// atomique, et un dossier réel `thumbs/` qui ne contient que des vignettes et leur suivi
+/// ([`crate::catalog::is_thumb_file`]) ou leurs temporaires. Fichiers de l'explorateur ignorés
+/// à chaque niveau.
+fn catalogs_children_known(dir: &Path) -> bool {
+    use crate::catalog::{is_thumb_file, CACHE_FILE, META_FILE, THUMBS_DIR};
+    let thumb = |name: &str| {
+        is_thumb_file(name) || crate::storage::atomic_tmp_target(name).is_some_and(is_thumb_file)
+    };
+    let source = |path: &Path| {
+        entries_known(
+            path,
+            &|name| is_file_or_its_tmp(name, CACHE_FILE) || is_file_or_its_tmp(name, META_FILE),
+            &|name, thumbs| name == THUMBS_DIR && files_known(thumbs, &thumb),
+        )
+    };
+    entries_known(dir, &|_| false, &|name, path| {
+        crate::catalog::is_source_dir_name(name) && source(path)
+    })
+}
+
+/// Preuve d'usage exigée par la migration (#591) : chaque sous-dossier de
+/// [`APP_CACHE_SUBDIRS`] doit avoir un contenu de la forme que l'application y écrit, relevée
+/// dans le code des versions publiées (bêta.1 à bêta.4) et de la version courante, arrêt brutal
+/// compris ; en cas de doute, rien n'est marqué (fuite, jamais de perte) :
+/// - `archives` : voir [`archives_children_known`] ;
+/// - `catalogs` : voir [`catalogs_children_known`] ;
+/// - `compat-local` : `launcher_results.json` ([`crate::compat::RESULTS_FILE`]) et son
+///   temporaire d'écriture atomique ;
+/// - `official` : `catalog.json` (`device::official`) et son temporaire ;
+/// - `thumbs` : règle de l'adoption ([`thumbs_children_known`]) ;
 /// - `library` : index reconnu ([`crate::library::is_legacy_library`]) ou dossier vide ;
 /// - `podcasts` : chaque enfant est un dossier réel nommé comme un identifiant de source
 ///   (règle de `podcast::source::source_dir`) dont le contenu a la forme écrite par l'application
@@ -318,15 +419,23 @@ fn thumbs_children_known(dir: &Path) -> bool {
 /// - `play` : chaque enfant est un dossier réel nommé par l'empreinte de `player::Workspace`
 ///   (16 chiffres hexadécimaux minuscules).
 ///
-/// Dans ces quatre sous-dossiers, `desktop.ini`, `Thumbs.db` (casse indifférente) et `.DS_Store`
-/// à la racine sont ignorés s'ils sont des fichiers ordinaires ([`is_os_junk`]) ; ils ne prouvent
-/// rien (un sous-dossier qui ne contient qu'eux est jugé comme un sous-dossier vide).
-/// Les autres sous-dossiers n'exigent pas de preuve.
+/// Partout, un sous-dossier vide est accepté (rien à perdre), les noms sont comparés en
+/// respectant la casse, aucun lien ni jonction n'est suivi (refus), et `desktop.ini`,
+/// `Thumbs.db` (casse indifférente) et `.DS_Store` sont ignorés s'ils sont des fichiers
+/// ordinaires ([`is_os_junk`]) ; ils ne prouvent rien (un sous-dossier qui ne contient qu'eux est
+/// jugé comme un sous-dossier vide). Un nom inconnu n'est jamais prouvé.
 fn proven_by_content(name: &str, dir: &Path) -> bool {
     let child_shape: fn(&str) -> bool = match name {
         crate::library::LIBRARY_DIR => {
             return crate::library::is_legacy_library(dir) || library_children_known(dir);
         }
+        crate::install::ARCHIVES_DIR => return archives_children_known(dir),
+        crate::catalog::CATALOGS_DIR => return catalogs_children_known(dir),
+        crate::compat::RESULTS_DIR => {
+            return files_known(dir, &|n| is_file_or_its_tmp(n, crate::compat::RESULTS_FILE));
+        }
+        OFFICIAL_DIR => return files_known(dir, &|n| is_file_or_its_tmp(n, OFFICIAL_FILE)),
+        "thumbs" => return thumbs_children_known(dir),
         crate::podcast::source::CACHE_SUBDIR => |child| {
             !child.is_empty()
                 && child.len() <= 64
@@ -341,7 +450,7 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
                     .chars()
                     .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
         },
-        _ => return true,
+        _ => return false,
     };
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
@@ -533,7 +642,7 @@ pub fn remove_stale_tmp_configured(state: &ConfigState, env: &Environment) {
 /// `podcasts`, `podcast-work`, `play` et `thumbs` seulement), sans quoi ils ne seraient plus
 /// jamais marqués (#591) : la migration ne repasse plus et [`ensure_subdir`] ne marque pas un
 /// dossier existant. `archives`, `catalogs`, `compat-local` et `official` ne sont jamais marqués
-/// ici (aucune preuve par le contenu ; fuite de place, jamais de perte). Un homonyme refusé
+/// ici (fuite de place, jamais de perte). Un homonyme refusé
 /// (contenu non reconnu, fichier, lien, marqueur anormal) n'est ni marqué ni bloquant :
 /// l'application l'utilise comme avant, sans jamais le compter ni le vider. Une erreur
 /// d'écriture du marqueur de `library/` est renvoyée ; celle d'un autre sous-dossier est
@@ -965,7 +1074,7 @@ mod tests {
         let witness = config.path().join(MIGRATION_WITNESS);
         // `.flam-launcher` est un dossier dans `archives/` : ni écrit, ni bloquant.
         write(&cache.path().join("archives").join(MARKER).join("x"), 1);
-        write(&cache.path().join("catalogs/h"), 1);
+        write(&cache.path().join("catalogs/src/catalog.json"), 1);
         let roots = [cache.path().to_path_buf()];
         assert_eq!(
             migrate_markers(&witness, &roots).unwrap(),
@@ -1093,10 +1202,11 @@ mod tests {
 
         assert_eq!(
             migrate_markers(&witness, &roots).unwrap(),
-            Migration::Done { marked: 2 }
+            Migration::Done { marked: 1 }
         );
         assert!(is_owned(&cache.path().join("library")));
-        assert!(is_owned(&cache.path().join("archives")));
+        // `archives/a.zip` : nom que le launcher n'écrit jamais, non prouvé.
+        assert!(!is_owned(&cache.path().join("archives")));
         assert!(cache.path().join("thumbs").is_file());
         assert!(witness.is_file());
 
@@ -1114,9 +1224,13 @@ mod tests {
         let config = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let witness = config.path().join(MIGRATION_WITNESS);
-        let names = ["archives", "catalogs", "official"];
-        for name in names {
-            write(&cache.path().join(name).join("x"), 1);
+        let files = [
+            ("archives", "abc-1.zip.meta.json"),
+            ("catalogs", "src/catalog.json"),
+            ("official", "catalog.json"),
+        ];
+        for (name, file) in files {
+            write(&cache.path().join(name).join(file), 1);
         }
         let roots = [cache.path().to_path_buf()];
         // Panne au deuxième marqueur, puis à l'écriture du témoin.
@@ -1131,9 +1245,12 @@ mod tests {
             migrate_markers(&witness, &roots).unwrap(),
             Migration::Done { marked: 0 }
         );
-        for name in names {
+        for (name, file) in files {
             assert!(is_owned(&cache.path().join(name)));
-            assert!(cache.path().join(name).join("x").is_file(), "rien supprimé");
+            assert!(
+                cache.path().join(name).join(file).is_file(),
+                "rien supprimé"
+            );
         }
     }
 
@@ -1225,7 +1342,8 @@ mod tests {
             assert!(dir.path().join(path).is_file(), "{path} supprimé");
         }
 
-        // La migration de démarrage, elle, est inchangée : tout est marqué.
+        // La migration de démarrage exige aussi la preuve par le contenu : les contenus
+        // personnels de `archives`, `catalogs`, `compat-local` et `official` restent non marqués.
         let migrated = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
         complete_legacy_cache(migrated.path());
@@ -1234,7 +1352,306 @@ mod tests {
             &[migrated.path().to_path_buf()],
         )
         .unwrap();
-        assert_eq!(owned_names(migrated.path()), APP_CACHE_SUBDIRS);
+        assert_eq!(owned_names(migrated.path()), adopted);
+    }
+
+    /// Cache de la forme réelle écrite par les versions publiées et la version courante, pour
+    /// chacun des sous-dossiers de [`APP_CACHE_SUBDIRS`], restes d'écriture interrompue compris.
+    fn real_shape_cache(root: &Path) {
+        // `library` : index et histoire installée.
+        fs::create_dir_all(root.join("library")).unwrap();
+        fs::write(
+            root.join("library/library.json"),
+            r#"{"schema_version":1,"stories":[]}"#,
+        )
+        .unwrap();
+        write(&root.join("library/abc-1.plain.pk"), 10);
+        // `archives` : archive complète et sa mémoire, téléchargement en cours et sa mémoire,
+        // mémoire seule (suppression interrompue) et temporaire d'écriture d'une mémoire.
+        let a = root.join("archives");
+        write(&a.join("4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c-3.zip"), 5);
+        write(
+            &a.join("4f1c2a9e-0b7d-4c3e-9a51-2d6e8f0a1b3c-3.zip.meta.json"),
+            2,
+        );
+        write(&a.join("abc-0.plain.pk.part"), 5);
+        write(&a.join("abc-0.plain.pk.meta.json"), 2);
+        write(&a.join("def-4294967295.zip.meta.json"), 2);
+        write(&a.join(".ghi-2.zip.meta.json.1234-0.tmp"), 2);
+        // `catalogs` : un dossier par source, catalogue, mémoire, temporaires, vignettes.
+        let s = root.join("catalogs/0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e");
+        write(&s.join("catalog.json"), 3);
+        write(&s.join("meta.json"), 3);
+        write(&s.join(".catalog.json.42-0.tmp"), 3);
+        write(&s.join(".meta.json.42-1.tmp"), 3);
+        write(&s.join("thumbs/0123456789abcdef0123456789abcdef.img"), 3);
+        write(
+            &s.join("thumbs/0123456789abcdef0123456789abcdef.meta.json"),
+            3,
+        );
+        write(
+            &s.join("thumbs/.fedcba9876543210fedcba9876543210.img.42-2.tmp"),
+            3,
+        );
+        write(
+            &s.join("thumbs/.fedcba9876543210fedcba9876543210.meta.json.42-3.tmp"),
+            3,
+        );
+        fs::create_dir_all(root.join("catalogs/Source_2")).unwrap();
+        // `compat-local`, `official` : fichier unique et son temporaire.
+        write(&root.join("compat-local/launcher_results.json"), 2);
+        write(&root.join("compat-local/.launcher_results.json.7-0.tmp"), 2);
+        write(&root.join("official/catalog.json"), 2);
+        write(&root.join("official/.catalog.json.7-1.tmp"), 2);
+        // `play`, `podcast-work`, `podcasts`, `thumbs`.
+        write(&root.join("play/0123456789abcdef/story/x.bin"), 3);
+        fs::create_dir_all(root.join("podcast-work/0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e")).unwrap();
+        write(&root.join("podcasts/source-a/feed.xml"), 6);
+        write(&root.join("podcasts/source-a/mp3/0a.mp3"), 7);
+        write(&root.join("thumbs/0000000000000001.png"), 8);
+        write(&root.join("thumbs/0000000000000002.tmp-42"), 1);
+    }
+
+    /// Migre `root` (seule racine) avec un nouveau témoin et renvoie le résultat.
+    fn migrate_once(root: &Path) -> Migration {
+        let config = tempfile::tempdir().unwrap();
+        migrate_markers(
+            &config.path().join(MIGRATION_WITNESS),
+            &[root.to_path_buf()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn la_migration_marque_tous_les_sous_dossiers_de_forme_reelle() {
+        let dir = tempfile::tempdir().unwrap();
+        real_shape_cache(dir.path());
+        assert_eq!(
+            migrate_once(dir.path()),
+            Migration::Done {
+                marked: APP_CACHE_SUBDIRS.len()
+            }
+        );
+        assert_eq!(owned_names(dir.path()), APP_CACHE_SUBDIRS);
+        // Idempotente : une seconde migration (témoin absent) ne change rien.
+        assert_eq!(migrate_once(dir.path()), Migration::Done { marked: 0 });
+        assert_eq!(owned_names(dir.path()), APP_CACHE_SUBDIRS);
+        clear_of(dir.path()).unwrap();
+        for name in APP_CACHE_SUBDIRS {
+            assert_eq!(names_in(&dir.path().join(name)), [MARKER], "{name}");
+        }
+    }
+
+    /// Contenu personnel dans un sous-dossier de forme réelle : ce sous-dossier n'est pas marqué
+    /// (ni compté ni vidé), la migration réussit et marque tous les autres (#591).
+    #[test]
+    fn un_contenu_personnel_empeche_le_marquage_de_son_seul_sous_dossier() {
+        for (name, personal) in [
+            ("archives", "perso.zip"),
+            ("archives", "vacances-2019.zip"),
+            ("archives", "vacances-2019.zip.part"),
+            ("archives", "notes.txt"),
+            ("catalogs", "notes.txt"),
+            ("catalogs", "0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e/notes.txt"),
+            (
+                "catalogs",
+                "0b9f6c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e/thumbs/photo.png",
+            ),
+            ("catalogs", "Mes catalogues/catalog.json"),
+            ("compat-local", "x.json"),
+            ("official", "photo.jpg"),
+            ("thumbs", "photo.png"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            real_shape_cache(dir.path());
+            write(&dir.path().join(name).join(personal), 4);
+            let expected: Vec<&str> = APP_CACHE_SUBDIRS
+                .iter()
+                .copied()
+                .filter(|n| *n != name)
+                .collect();
+            assert_eq!(
+                migrate_once(dir.path()),
+                Migration::Done {
+                    marked: expected.len()
+                },
+                "{name}/{personal}"
+            );
+            assert_eq!(owned_names(dir.path()), expected, "{name}/{personal}");
+            // Idempotente.
+            assert_eq!(migrate_once(dir.path()), Migration::Done { marked: 0 });
+            assert_eq!(owned_names(dir.path()), expected, "{name}/{personal}");
+            assert!(!usage_report(dir.path())
+                .unwrap()
+                .1
+                .contains(&name.to_string()));
+            clear_of(dir.path()).unwrap();
+            assert!(
+                dir.path().join(name).join(personal).is_file(),
+                "{name}/{personal} supprimé"
+            );
+        }
+    }
+
+    /// Migre un cache où seul `subdir` existe, rempli par `setup`, et dit s'il est marqué.
+    fn marked_after_migration(subdir: &str, setup: &dyn Fn(&Path)) -> bool {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join(subdir);
+        fs::create_dir_all(&dir).unwrap();
+        setup(&dir);
+        migrate_once(cache.path());
+        is_owned(&dir)
+    }
+
+    #[test]
+    fn archives_n_est_marque_que_si_chaque_archive_a_sa_memoire() {
+        let marked = |files: &[&str]| {
+            marked_after_migration("archives", &|d| {
+                for file in files {
+                    write(&d.join(file), 2);
+                }
+            })
+        };
+        assert!(marked(&[]), "vide");
+        assert!(marked(&["abc-1.zip", "abc-1.zip.meta.json"]));
+        assert!(marked(&["abc-1.zip.part", "abc-1.zip.meta.json"]));
+        assert!(marked(&["abc-1.plain.pk", "abc-1.plain.pk.meta.json"]));
+        assert!(marked(&[
+            "abc-1.zip",
+            "abc-1.zip.part",
+            "abc-1.zip.meta.json"
+        ]));
+        assert!(marked(&["abc-0.zip.meta.json"]), "mémoire seule");
+        assert!(marked(&[".abc-1.zip.meta.json.42-0.tmp"]));
+        assert!(marked(&["a.b_c-1.zip", "a.b_c-1.zip.meta.json"]));
+        for refused in [
+            &["abc-1.zip"][..],
+            &["abc-1.zip.part"],
+            &["vacances-2019.zip"],
+            &["abc-1.zip", "abc-2.zip.meta.json"],
+            &["abc-1.zip.part", "abc-1.plain.pk.meta.json"],
+            // Casse exacte.
+            &["abc-1.ZIP", "abc-1.ZIP.meta.json"],
+            &["abc-1.zip", "abc-1.zip.META.JSON"],
+            &["abc-1.Plain.pk", "abc-1.Plain.pk.meta.json"],
+            &["abc-1.zip.PART", "abc-1.zip.meta.json"],
+            // Version non canonique, absente, trop grande ; identifiant refusé.
+            &["abc-01.zip", "abc-01.zip.meta.json"],
+            &["abc.zip", "abc.zip.meta.json"],
+            &["abc-.zip.meta.json"],
+            &["abc-4294967296.zip.meta.json"],
+            &["-1.zip.meta.json"],
+            &["con-1.zip.meta.json"],
+            &["abc-1.rar", "abc-1.rar.meta.json"],
+            &["abc-1.zip.meta.json.bak"],
+            &[".abc-1.zip.42-0.tmp"],
+        ] {
+            assert!(!marked(refused), "{refused:?}");
+        }
+        // Dossier nommé comme un fichier attendu : refusé, même accompagné.
+        assert!(!marked_after_migration("archives", &|d| {
+            fs::create_dir_all(d.join("abc-1.zip")).unwrap();
+            write(&d.join("abc-1.zip.meta.json"), 2);
+        }));
+        assert!(!marked_after_migration("archives", &|d| {
+            write(&d.join("abc-1.zip"), 2);
+            fs::create_dir_all(d.join("abc-1.zip.meta.json")).unwrap();
+        }));
+    }
+
+    #[test]
+    fn catalogs_n_est_marque_que_s_il_a_la_forme_d_un_cache_de_catalogue() {
+        let marked = |files: &[&str]| {
+            marked_after_migration("catalogs", &|d| {
+                for file in files {
+                    write(&d.join(file), 2);
+                }
+            })
+        };
+        assert!(marked(&[]), "vide");
+        assert!(marked(&["src/catalog.json", "src/meta.json"]));
+        assert!(marked(&["src/.meta.json.1-2.tmp"]));
+        assert!(marked(&["src/thumbs/0123456789abcdef0123456789abcdef.img"]));
+        assert!(marked(&[
+            "src/thumbs/0123456789abcdef0123456789abcdef.meta.json"
+        ]));
+        assert!(marked(&[
+            "src/thumbs/.0123456789abcdef0123456789abcdef.img.1-2.tmp"
+        ]));
+        assert!(marked(&["src/desktop.ini", "src/thumbs/Thumbs.db"]));
+        assert!(marked_after_migration("catalogs", &|d| {
+            fs::create_dir_all(d.join("src/thumbs")).unwrap();
+        }));
+        for refused in [
+            &["catalog.json"][..],
+            &["src/notes.txt"],
+            &["src/Catalog.json"],
+            &["src/catalog.JSON"],
+            &["src/catalog.json.bak"],
+            &["src/.catalog.json.tmp"],
+            &["src/sous/catalog.json"],
+            &["src.x/catalog.json"],
+            &["src/thumbs/photo.png"],
+            &["src/thumbs/0123456789abcdef0123456789abcdef.IMG"],
+            &["src/thumbs/0123456789ABCDEF0123456789ABCDEF.img"],
+            &["src/thumbs/0123456789abcdef0123456789abcde.img"],
+            &["src/thumbs/sous/0123456789abcdef0123456789abcdef.img"],
+            &["src/Thumbs/0123456789abcdef0123456789abcdef.img"],
+        ] {
+            assert!(!marked(refused), "{refused:?}");
+        }
+        assert!(!marked_after_migration("catalogs", &|d| {
+            fs::create_dir_all(d.join("src/catalog.json")).unwrap();
+        }));
+        assert!(!marked_after_migration("catalogs", &|d| {
+            write(&d.join("src/thumbs"), 2);
+        }));
+    }
+
+    #[test]
+    fn compat_local_et_official_n_acceptent_que_leur_fichier() {
+        for (subdir, file) in [
+            ("compat-local", "launcher_results.json"),
+            ("official", "catalog.json"),
+        ] {
+            let marked = |name: &str| marked_after_migration(subdir, &|d| write(&d.join(name), 2));
+            assert!(marked_after_migration(subdir, &|_| {}), "{subdir} vide");
+            assert!(marked(file), "{subdir}/{file}");
+            assert!(marked(&format!(".{file}.12-0.tmp")), "{subdir} temporaire");
+            for refused in [
+                "x.json",
+                "photo.jpg",
+                file.to_uppercase().as_str(),
+                format!("{file}.bak").as_str(),
+                format!(".{file}.tmp").as_str(),
+                "meta.json",
+            ] {
+                assert!(!marked(refused), "{subdir}/{refused}");
+            }
+            assert!(
+                !marked_after_migration(subdir, &|d| fs::create_dir_all(d.join(file)).unwrap()),
+                "{subdir}/{file} dossier"
+            );
+        }
+    }
+
+    #[test]
+    fn thumbs_n_est_marque_a_la_migration_que_s_il_ne_contient_que_des_vignettes() {
+        let marked = |name: &str| marked_after_migration("thumbs", &|d| write(&d.join(name), 2));
+        assert!(marked_after_migration("thumbs", &|_| {}), "vide");
+        assert!(marked("0123456789abcdef.png"));
+        assert!(marked("0123456789abcdef.tmp-7"));
+        for refused in [
+            "photo.png",
+            "0123456789abcdef.PNG",
+            "0123456789ABCDEF.png",
+            "0123456789abcdef.jpg",
+        ] {
+            assert!(!marked(refused), "{refused}");
+        }
+        assert!(!marked_after_migration("thumbs", &|d| {
+            fs::create_dir_all(d.join("0123456789abcdef.png")).unwrap();
+        }));
     }
 
     #[test]
@@ -1513,7 +1930,8 @@ mod tests {
             Migration::Deferred
         );
         assert!(is_owned(&default.join("library")));
-        assert!(is_owned(&default.join("archives")));
+        // `archives/a.zip` : non prouvé, non marqué, sans faire échouer la migration.
+        assert!(!is_owned(&default.join("archives")));
         assert!(
             default.join("library/abc-1.plain.pk").is_file(),
             "rien supprimé"
@@ -1590,11 +2008,13 @@ mod tests {
         let roots = [root.to_path_buf(), empty.path().to_path_buf()];
         assert_eq!(
             migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap(),
-            Migration::Done { marked: 7 }
+            Migration::Done { marked: 6 }
         );
-        for name in ["library", "archives", "podcasts", "podcast-work", "play"] {
+        for name in ["library", "podcasts", "podcast-work", "play"] {
             assert!(is_owned(&root.join(name)), "{name}");
         }
+        // `archives/a.zip` (nom que le launcher n'écrit jamais) : non prouvé.
+        assert!(!is_owned(&root.join("archives")));
         assert!(is_owned(&empty.path().join("library")));
         assert!(is_owned(&empty.path().join("podcasts")));
     }
@@ -1887,6 +2307,46 @@ mod tests {
         });
     }
 
+    #[test]
+    fn fichiers_de_l_explorateur_a_la_racine_des_autres_sous_dossiers() {
+        root_os_junk_is_ignored("archives", &|d| {
+            write(&d.join("abc-1.zip"), 3);
+            write(&d.join("abc-1.zip.meta.json"), 3);
+        });
+        root_os_junk_is_ignored("catalogs", &|d| write(&d.join("src/catalog.json"), 3));
+        root_os_junk_is_ignored("compat-local", &|d| {
+            write(&d.join("launcher_results.json"), 3)
+        });
+        root_os_junk_is_ignored("official", &|d| write(&d.join("catalog.json"), 3));
+        root_os_junk_is_ignored("thumbs", &|d| write(&d.join("0123456789abcdef.png"), 3));
+    }
+
+    /// `catalogs/` : une jonction à la place d'un dossier de source ou de son `thumbs/`
+    /// empêche le marquage, et sa cible n'est jamais marquée (#591).
+    #[cfg(windows)]
+    #[test]
+    fn une_jonction_dans_catalogs_empeche_le_marquage() {
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("catalog.json"), 3);
+        for link in ["src", "autre/thumbs"] {
+            let cache = tempfile::tempdir().unwrap();
+            let catalogs = cache.path().join("catalogs");
+            write(&catalogs.join("autre/catalog.json"), 3);
+            // Séparateurs Windows : `mklink` lirait `/x` comme une option.
+            let path = catalogs.join(link.replace('/', "\\"));
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&path)
+                .arg(outside.path())
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "mklink /J a échoué");
+            migrate_once(cache.path());
+            assert!(!is_owned(&catalogs), "{link} en jonction");
+            assert!(!outside.path().join(MARKER).exists());
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn une_racine_en_jonction_est_migree() {
@@ -1904,11 +2364,12 @@ mod tests {
         let witness = config.path().join(MIGRATION_WITNESS);
         assert_eq!(
             migrate_markers(&witness, std::slice::from_ref(&link)).unwrap(),
-            Migration::Done { marked: 2 }
+            Migration::Done { marked: 1 }
         );
         assert!(witness.is_file(), "plus reportée à chaque démarrage");
         assert!(is_owned(&link.join("library")));
-        assert_eq!(usage_of(&link).unwrap(), 15 + 33);
+        // `library/` seule (index et histoire) : `archives/a.zip` n'est pas prouvé.
+        assert_eq!(usage_of(&link).unwrap(), 10 + 33);
     }
 
     #[cfg(windows)]
