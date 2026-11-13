@@ -212,28 +212,120 @@ async fn vignette_en_cache_alteree_ou_trop_grosse_est_ignoree() {
     assert!(read_thumb(&dir, &name).is_some());
 }
 
+/// Date `path` d'avant [`STALE_AFTER`] (reste abandonné).
+fn age(path: &Path) {
+    let long_ago = std::time::SystemTime::now() - STALE_AFTER - Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
+}
+
 #[test]
 fn restes_anciens_supprimes_restes_recents_gardes() {
-    let dir = tempfile::tempdir().unwrap();
-    let old = dir.path().join("x.dl");
-    let recent = dir.path().join("y.dl");
-    let kept = dir.path().join("z.png");
+    // `podcasts/` marqué (Fixture) : seuls l'âge et l'extension décident (#582).
+    let f = Fixture::new();
+    let dir = thumbs_dir(&f);
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("x.dl");
+    let recent = dir.join("y.dl");
+    let kept = dir.join("z.png");
     for p in [&old, &recent, &kept] {
         std::fs::write(p, b"x").unwrap();
     }
-    let long_ago = std::time::SystemTime::now() - STALE_AFTER - Duration::from_secs(60);
     for p in [&old, &kept] {
-        std::fs::File::options()
-            .write(true)
-            .open(p)
-            .unwrap()
-            .set_modified(long_ago)
-            .unwrap();
+        age(p);
     }
-    sweep_stale(dir.path());
+    sweep_stale(&dir);
     assert!(!old.exists());
     assert!(recent.exists());
     assert!(kept.exists(), "une vignette n'est jamais balayée");
+}
+
+/// `thumbs/` de la source `s1` avec ce que les balayages suppriment : restes anciens `.dl` et
+/// `.part`, vignette d'un épisode à une ancienne empreinte. Rend le dossier, ces chemins et le
+/// nom de la vignette courante de cet épisode.
+fn sweep_candidates(f: &Fixture) -> (PathBuf, Vec<PathBuf>, String) {
+    let dir = thumbs_dir(f);
+    std::fs::create_dir_all(&dir).unwrap();
+    let current = thumb_name(&EntryKey::of("s1", &episode("o1"))).unwrap();
+    let (episode, _) = current.rsplit_once('-').unwrap();
+    let paths = vec![
+        dir.join("x.dl"),
+        dir.join("y.part"),
+        dir.join(format!("{episode}-0000000000000000.png")),
+    ];
+    for p in &paths {
+        std::fs::write(p, b"x").unwrap();
+        age(p);
+    }
+    (dir, paths, current)
+}
+
+/// Retire le marqueur de `podcasts/` (homonyme non marqué : refusé par la migration, ou ancien
+/// cache adopté).
+fn unmark_podcasts(f: &Fixture) {
+    let podcasts = f.root().join(crate::podcast::source::CACHE_SUBDIR);
+    std::fs::remove_file(podcasts.join(crate::cache::MARKER)).unwrap();
+    assert!(!crate::cache::is_owned(&podcasts));
+}
+
+/// #582 : `podcasts/` sans marqueur de l'application : ni les restes de téléchargement ni les
+/// vignettes périmées ne sont supprimés.
+#[test]
+fn balayages_des_vignettes_ne_touchent_pas_un_podcasts_sans_marqueur() {
+    let f = Fixture::new();
+    unmark_podcasts(&f);
+    let (dir, paths, current) = sweep_candidates(&f);
+    sweep_stale(&dir);
+    remove_outdated(&dir, &current);
+    for p in &paths {
+        assert!(p.is_file(), "{} supprimé", p.display());
+    }
+}
+
+/// #582 : `podcasts/` marqué : restes anciens et vignette périmée partent comme avant.
+#[test]
+fn balayages_des_vignettes_nettoient_un_podcasts_marque() {
+    let f = Fixture::new();
+    let (dir, paths, current) = sweep_candidates(&f);
+    sweep_stale(&dir);
+    remove_outdated(&dir, &current);
+    for p in &paths {
+        assert!(!p.exists(), "{} gardé", p.display());
+    }
+    assert!(crate::cache::is_owned(
+        &f.root().join(crate::podcast::source::CACHE_SUBDIR)
+    ));
+}
+
+/// #582 : dans un `podcasts/` sans marqueur, l'aperçu est toujours servi et mis en cache, mais
+/// la vignette d'une image remplacée dans le flux n'est plus supprimée.
+#[tokio::test]
+async fn image_changee_dans_un_podcasts_sans_marqueur_garde_l_ancienne_vignette() {
+    let f = Fixture::new();
+    unmark_podcasts(&f);
+    let ep = episode("c2");
+    let calls = AtomicUsize::new(0);
+    for url in [
+        "https://img.example.test/a.png",
+        "https://img.example.test/b.png",
+    ] {
+        let mut changed = ep.clone();
+        changed.image = Some(url.into());
+        let out = load(
+            &f.access(),
+            &EntryKey::of("s1", &changed),
+            |dest| fake_download(&calls, Some(png(40, 40)), dest),
+            in_process,
+        )
+        .await;
+        assert!(out.is_some());
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(names(&thumbs_dir(&f)).len(), 2);
 }
 
 #[test]

@@ -24,7 +24,8 @@
 //! - Le cache est **au mieux** : ses erreurs sont journalisées (uuid de source et nombre
 //!   d'entrées seulement) et ne font jamais échouer un pack.
 //! - Taille bornée ([`MAX_CACHE_BYTES`]) : éviction des entrées les moins récemment utilisées,
-//!   jamais de celles protégées (pack en cours).
+//!   jamais de celles protégées (pack en cours). L'éviction n'agit que dans un `podcasts/` qui
+//!   porte le marqueur de l'application (#582) : dans un homonyme non marqué, rien n'est supprimé.
 //! - Aucun lien suivi (#466) : `podcasts/`, `podcasts/<id>/` et `podcasts/<id>/mp3/` doivent
 //!   être de vrais dossiers (ni lien symbolique ni jonction), sinon la source est ignorée ; les
 //!   fichiers d'une entrée doivent être de vrais fichiers.
@@ -673,10 +674,14 @@ fn entry_stem(name: &str) -> Option<&str> {
 
 /// Parcourt `<cache>/podcasts/*/mp3/` sans suivre de lien ni de jonction (voir
 /// [`real_mp3_dir`]). Ce qui disparaît pendant le parcours est ignoré.
+///
+/// Seul un `podcasts/` qui porte le marqueur de l'application est parcouru (#582, #591) : un
+/// homonyme étranger (refusé par la migration, ou resté d'un ancien cache adopté) donne un relevé
+/// vide, et [`CacheAccess::evict`] n'y supprime alors rien, ni reste ni entrée.
 fn scan(cache_root: &Path) -> Survey {
     let mut survey = Survey::default();
     let podcasts = cache_root.join(CACHE_SUBDIR);
-    if !is_real_dir(&podcasts) {
+    if !crate::cache::is_owned(&podcasts) {
         return survey;
     }
     let Ok(sources) = std::fs::read_dir(&podcasts) else {
@@ -1013,7 +1018,8 @@ impl CacheAccess {
     }
 
     /// Évince les entrées les moins récemment utilisées au-delà du plafond (jamais celles de
-    /// `protect` : `(source, épisode)`), et supprime les restes.
+    /// `protect` : `(source, épisode)`), et supprime les restes. Rien n'est supprimé si
+    /// `podcasts/` ne porte pas le marqueur de l'application (voir [`scan`]).
     pub async fn evict(&self, protect: HashSet<(String, String)>) {
         let root = self.cache_root.clone();
         let Ok(survey) = blocking(move || scan(&root)).await else {

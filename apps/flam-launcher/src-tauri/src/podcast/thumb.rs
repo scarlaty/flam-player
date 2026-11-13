@@ -126,9 +126,21 @@ fn write_thumb(dir: &Path, name: &str, png: &[u8]) -> std::io::Result<()> {
     })
 }
 
+/// `dir` (`<cache>/podcasts/<source>/thumbs`) est dans un `podcasts/` qui porte le marqueur de
+/// l'application (#582, #591) : sinon, rien n'y est balayé ni supprimé automatiquement.
+fn in_owned_podcasts(dir: &Path) -> bool {
+    dir.parent()
+        .and_then(Path::parent)
+        .is_some_and(crate::cache::is_owned)
+}
+
 /// Supprime les vignettes du même épisode que `name` portant une autre empreinte d'image
-/// (image changée dans le flux) : le dossier ne grossit pas à chaque changement.
+/// (image changée dans le flux) : le dossier ne grossit pas à chaque changement. Rien n'est
+/// supprimé hors d'un `podcasts/` marqué ([`in_owned_podcasts`]).
 fn remove_outdated(dir: &Path, name: &str) {
+    if !in_owned_podcasts(dir) {
+        return;
+    }
     let Some((episode, _)) = name.rsplit_once('-') else {
         return;
     };
@@ -145,7 +157,12 @@ fn remove_outdated(dir: &Path, name: &str) {
     }
 }
 
+/// Supprime les restes de téléchargements (`*.dl`, `*.part`) de plus de [`STALE_AFTER`]. Rien
+/// n'est lu ni supprimé hors d'un `podcasts/` marqué ([`in_owned_podcasts`]).
 fn sweep_stale(dir: &Path) {
+    if !in_owned_podcasts(dir) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
