@@ -859,7 +859,8 @@ fn resolve_podcast(config: &ConfigState, source_id: &str) -> AppResult<(String, 
 
 /// Purge le cache d'une source podcast supprimée. La source est déjà retirée de
 /// `sources.json` : un échec est journalisé (identifiant seulement), le reste n'est jamais relu
-/// et part avec « Vider le cache ».
+/// et part avec « Vider le cache » si `podcasts/` porte le marqueur de l'application (sinon il
+/// reste, ni compté ni vidé, #591).
 pub(crate) async fn purge_podcast_cache(
     config: &ConfigState,
     service: &PodcastService,

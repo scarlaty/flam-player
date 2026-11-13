@@ -681,6 +681,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let outside = root.path().join("ailleurs");
         let now = SystemTime::now();
+        // Cible marquée : seul le lien peut arrêter la purge.
+        mark(&outside);
         let precious = put(&outside, "0000000000000001.png", 50, 400 * DAY, now);
         let cache = root.path().join("cache");
         std::fs::create_dir_all(&cache).unwrap();
