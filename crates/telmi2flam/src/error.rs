@@ -25,6 +25,13 @@ impl ConvError {
         Self::new("archive_unreadable", 3, message)
     }
 
+    /// Erreur d'entrée/sortie du système en lisant l'archive d'entrée (antivirus, fichier
+    /// verrouillé, volume retiré) : l'archive n'est pas en cause, à la différence
+    /// d'`archive_unreadable` (#580). Même code de sortie (3).
+    pub fn archive_io(message: impl Into<String>) -> Self {
+        Self::new("archive_io", 3, message)
+    }
+
     /// L'archive n'est pas une histoire Telmi (Python : `ArchiveError(code="not_telmi")`).
     pub fn not_telmi(message: impl Into<String>) -> Self {
         Self::new("not_telmi", 3, message)

@@ -10,7 +10,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::error::ConvError;
 use crate::text::py_repr;
-use crate::zipread::{ChunkStop, ZipError, ZipReader};
+use crate::zipread::{system_io, ChunkStop, ZipError, ZipReader};
 
 /// `_fold` : clé de recherche d'asset, NFC puis minuscules (`str.lower()`, sigma final et
 /// U+0130 compris).
@@ -86,6 +86,7 @@ fn conv(source: &str, e: ZipError) -> ConvError {
         ZipError::Corrupt(m) | ZipError::Encrypted(m) | ZipError::PythonFailsToo(m) => {
             ConvError::archive_unreadable(format!("{source} : {m}"))
         }
+        ZipError::Io(m) => ConvError::archive_io(format!("{source} : {m}")),
     }
 }
 
@@ -104,8 +105,21 @@ impl Archive<BufReader<File>> {
     /// `archive_unreadable` (code 3).
     pub fn open(path: &Path) -> Result<Self, ConvError> {
         let source = path.display().to_string();
-        let file = File::open(path)
-            .map_err(|e| ConvError::archive_unreadable(format!("{source} : {e}")))?;
+        // Un dossier n'est pas une archive (Windows refuse son ouverture, Unix la lecture) :
+        // `archive_unreadable`, pas une erreur du système.
+        if path.is_dir() {
+            return Err(ConvError::archive_unreadable(format!(
+                "{source} : c'est un dossier"
+            )));
+        }
+        let file = File::open(path).map_err(|e| {
+            // Absente : `archive_unreadable` ; refusée par le système : `archive_io` (#580).
+            if e.kind() != std::io::ErrorKind::NotFound && system_io(&e) {
+                ConvError::archive_io(format!("{source} : {e}"))
+            } else {
+                ConvError::archive_unreadable(format!("{source} : {e}"))
+            }
+        })?;
         Archive::new(BufReader::new(file), source)
     }
 }
@@ -152,6 +166,30 @@ impl<R: Read + Seek> Archive<R> {
         self.zip.read(name).map_err(|e| conv(&source, e))
     }
 
+    /// [`Archive::read`] avec annulation : `cancelled` est consulté pendant le décodage bzip2,
+    /// LZMA ou Zstandard (voir `ZipReader::read_chunks`) ; s'il est levé,
+    /// [`ConvError::cancelled`] est rendu. Même résultat que `read` sinon.
+    pub fn read_cancellable(
+        &mut self,
+        name: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<Vec<u8>>, ConvError> {
+        // `MAX_N` de `zipfile` : même découpage en tours que `read`.
+        const MAX_N: usize = (1 << 31) - 1;
+        let mut out = Vec::new();
+        let found = self.read_chunks(
+            name,
+            MAX_N,
+            cancelled,
+            &ConvError::cancelled,
+            &mut |c: &[u8]| {
+                out.extend_from_slice(c);
+                Ok::<(), ConvError>(())
+            },
+        )?;
+        Ok(found.then_some(out))
+    }
+
     /// [`Archive::read`] par tours d'au plus `chunk` octets passés à `sink` (CRC vérifié après
     /// le dernier). `Ok(false)` si le nom est absent ; une erreur de `sink` est rendue telle
     /// quelle, une erreur de lecture convertie comme pour `read`.
@@ -181,6 +219,104 @@ mod tests {
 
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Lecteur dont les lectures échouent, une fois `fail` levé, avec `error`.
+    struct Failing {
+        inner: std::io::Cursor<Vec<u8>>,
+        fail: std::rc::Rc<std::cell::Cell<bool>>,
+        error: fn() -> std::io::Error,
+    }
+
+    impl Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.fail.get() {
+                return Err((self.error)());
+            }
+            self.inner.read(buf)
+        }
+    }
+
+    impl Seek for Failing {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// #580 : une erreur du système (code de l'OS) à la lecture de l'archive rend `archive_io`,
+    /// une archive corrompue (erreur sans code de l'OS, troncature, CRC) `archive_unreadable` ;
+    /// même code de sortie (3).
+    #[test]
+    fn erreur_du_systeme_distincte_d_une_archive_corrompue() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/vectors/archive/deflate_metadata_ok.zip"
+        );
+        let data = std::fs::read(path).unwrap();
+        type Make = fn() -> std::io::Error;
+        let cases: [(Make, &str); 4] = [
+            // Accès refusé : `EACCES` (13) sous Unix, `ERROR_ACCESS_DENIED` (5) sous Windows.
+            (
+                || std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 }),
+                "archive_io",
+            ),
+            // `EIO` (5) sous Unix, `ERROR_SHARING_VIOLATION` (32) sous Windows.
+            (
+                || std::io::Error::from_raw_os_error(if cfg!(windows) { 32 } else { 5 }),
+                "archive_io",
+            ),
+            // Erreur sans code de l'OS : construite par une couche de lecture, contenu en cause.
+            (
+                || std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "flux tronque"),
+                "archive_unreadable",
+            ),
+            // Positionnement refusé (`InvalidInput`) : décalage absurde, contenu en cause.
+            (
+                || std::io::Error::from(std::io::ErrorKind::InvalidInput),
+                "archive_unreadable",
+            ),
+        ];
+        for (i, (error, code)) in cases.into_iter().enumerate() {
+            let fail = std::rc::Rc::new(std::cell::Cell::new(false));
+            let reader = Failing {
+                inner: std::io::Cursor::new(data.clone()),
+                fail: fail.clone(),
+                error,
+            };
+            let mut archive = Archive::new(reader, "a.zip".into()).unwrap();
+            let name = archive.names()[0].clone();
+            fail.set(true);
+            let e = archive.read(&name).unwrap_err();
+            assert_eq!((e.code, e.exit_code), (code, 3), "cas {i} : {e}");
+            let e = archive.read_cancellable(&name, &|| false).unwrap_err();
+            assert_eq!((e.code, e.exit_code), (code, 3), "cas {i} : {e}");
+        }
+        // Archive tronquée : contenu en cause.
+        let cut = data[..data.len() / 2].to_vec();
+        let e = Archive::new(std::io::Cursor::new(cut), "a.zip".into())
+            .err()
+            .unwrap();
+        assert_eq!(e.code, "archive_unreadable");
+    }
+
+    /// #580 : `read_cancellable` lit comme `read`, et s'arrête sur l'annulation.
+    #[test]
+    fn lecture_annulable_comme_la_lecture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/vectors/archive/bzip2_multiblock.zip"
+        );
+        let data = std::fs::read(path).unwrap();
+        let mut archive = Archive::new(std::io::Cursor::new(data), "a.zip".into()).unwrap();
+        let name = "images/c.png";
+        let want = archive.read(name).unwrap().unwrap();
+        assert_eq!(
+            archive.read_cancellable(name, &|| false).unwrap().unwrap(),
+            want
+        );
+        assert_eq!(archive.read_cancellable("absent", &|| false).unwrap(), None);
+        let e = archive.read_cancellable(name, &|| true).unwrap_err();
+        assert_eq!((e.code, e.exit_code), ("cancelled", 130));
     }
 
     #[test]

@@ -283,9 +283,13 @@ fn canonical<D>(mut files: std::collections::BTreeMap<String, D>) -> Vec<(String
 }
 
 /// Lit une entrée dont `find_root` a garanti la présence.
-fn read_exact<R: Read + Seek>(archive: &mut Archive<R>, name: &str) -> Result<Vec<u8>, ConvError> {
+fn read_exact<R: Read + Seek>(
+    archive: &mut Archive<R>,
+    name: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, ConvError> {
     archive
-        .read(name)?
+        .read_cancellable(name, cancelled)?
         .ok_or_else(|| ConvError::internal_error(format!("{name} : entree introuvable")))
 }
 
@@ -385,10 +389,10 @@ fn build<R: Read + Seek>(
     check()?;
     let root = find_root(archive.names())?;
     let metadata = load_json(
-        &read_exact(archive, &format!("{root}metadata.json"))?,
+        &read_exact(archive, &format!("{root}metadata.json"), cancelled)?,
         "metadata.json",
     )?;
-    let nodes_raw = read_exact(archive, &format!("{root}nodes.json"))?;
+    let nodes_raw = read_exact(archive, &format!("{root}nodes.json"), cancelled)?;
     let nodes = load_json(&nodes_raw, "nodes.json")?;
     expect(Some(&metadata), &[Kind::Object], "metadata.json", false)?;
     expect(Some(&nodes), &[Kind::Object], "nodes.json", false)?;

@@ -2326,6 +2326,11 @@ mod tests {
                 plain.clone()
             };
             if !make_dir_link(&link, &outside) {
+                // `FLAM_NO_SKIP=1` (CI) : un cas sauté échoue au lieu de passer pour vert.
+                assert!(
+                    std::env::var_os("FLAM_NO_SKIP").is_none_or(|v| v != "1"),
+                    "lien impossible à créer (nested = {nested}, pk = {with_pk}) et FLAM_NO_SKIP=1"
+                );
                 eprintln!("SKIP nested = {nested}, pk = {with_pk} : lien impossible à créer");
                 continue;
             }
@@ -2354,7 +2359,10 @@ mod tests {
                     );
                 }
             }
-            assert!(!pk.exists(), ".plain.pk publié seul (nested = {nested})");
+            assert!(
+                !pk.exists(),
+                ".plain.pk publié seul (nested = {nested}, pk = {with_pk})"
+            );
             assert_no_part(&d);
             discard(&[link]);
         }

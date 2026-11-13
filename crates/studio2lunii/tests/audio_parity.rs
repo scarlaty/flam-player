@@ -9,8 +9,11 @@
 //! puis consigne les résultats dans `tests/data/audio/oracle.txt` (et `<nom>.clean.mp3`).
 //!
 //! Écarts attendus et choisis (note de conception, § 3.6) : 44 100 Hz exactement (Lunii.QT
-//! accepte 48 kHz), MPEG-1 couche III seulement, trames lues de bout en bout ; étiquettes APEv2,
-//! ID3v2 empilées et pied ID3v2.4 retirés aussi ; une étiquette vide compte comme étiquette.
+//! accepte 48 kHz), MPEG-1 couche III seulement, première trame à l'octet 0 une fois les
+//! étiquettes écartées (`mutagen` en cherche une sur 1 Mio : les octets avant elle forcent ici
+//! le transcodage, car la copie les garderait) et trames lues de bout en bout ; étiquettes
+//! APEv2, ID3v2 empilées et pied ID3v2.4 retirés aussi ; une étiquette vide compte comme
+//! étiquette.
 
 use std::fs;
 use std::path::PathBuf;

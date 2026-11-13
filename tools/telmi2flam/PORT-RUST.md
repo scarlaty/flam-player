@@ -174,7 +174,9 @@ Invariants (repris de Python, à tester côté Rust) :
 3. **L'archive d'entrée n'est jamais modifiée.** Une sortie (`-o`, dossier `.plain`, nom par défaut)
    qui désigne l'entrée (même chemin canonique : casse, chemin relatif, lien ou jonction ; sous POSIX,
    même fichier) est refusée en `output_error` avant toute écriture (`convert.rs`). Les liens
-   physiques ne sont pas détectés sous Windows.
+   physiques ne sont pas détectés sous Windows. Quand `-o` est fourni, le refus a lieu avant la
+   construction du paquet : avec `-o` égal à l'entrée, une archive qui n'est pas une histoire
+   (`not_telmi`, code 3) rend `output_error`, code 6.
 4. **Sortie déterministe** : mêmes octets d'entrée et mêmes options donnent la même liste
    ordonnée d'entrées, avec les mêmes contenus. L'horodatage des entrées ZIP est fixé (voir
    §4.1).
@@ -203,6 +205,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Panne | Étape | État laissé | Comportement attendu / reprise |
 | --- | --- | --- | --- |
 | Archive absente ou illisible | ouverture | rien | `archive_unreadable`, code 3 |
+| Archive que le système refuse d'ouvrir ou de lire (erreur d'E/S portant un code de l'OS : antivirus, fichier verrouillé, volume retiré ; #580) | ouverture, lecture | rien | `archive_io`, code 3 : l'archive n'est pas en cause, l'appelant peut la garder (le launcher ne supprime que sur `archive_unreadable`). Même règle que le launcher (`system_io`) : exclus, le positionnement refusé (`InvalidInput`) et, sous Windows, `ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`, qui restent `archive_unreadable`. Python rend `OSError` (code 6) : écart assumé, le code de sortie reste 3. |
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |

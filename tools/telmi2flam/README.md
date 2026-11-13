@@ -390,7 +390,7 @@ Stables : ils s'appliquent avec ou sans `--progress-json`.
 |-----:|---------------|-------------------------------|
 | 0 | succès (avertissements possibles) | — |
 | 2 | arguments invalides (aide/usage sur stderr) | `bad_arguments` |
-| 3 | archive d'entrée absente, illisible/corrompue, ou qui n'est pas une histoire Telmi (uniquement la lecture de l'archive d'entrée) | `archive_unreadable`, `not_telmi` |
+| 3 | archive d'entrée absente, illisible/corrompue, ou qui n'est pas une histoire Telmi (uniquement la lecture de l'archive d'entrée) ; `archive_io` : le système refuse d'ouvrir ou de lire l'archive (antivirus, fichier verrouillé, volume retiré), elle n'est pas en cause (#580) | `archive_unreadable`, `not_telmi`, `archive_io` |
 | 4 | contenu invalide (JSON invalide, type inattendu, nom d'asset dangereux, `nodes.lua` non sérialisable…) | `invalid_content` |
 | 5 | asset (image/audio) manquant sans `--allow-missing` | `missing_asset` |
 | 6 | erreur interne (dont panique, crochet qui supprime les `.part`) ou d'écriture de la sortie | `output_error`, `internal_error` |

@@ -59,14 +59,20 @@ pub enum ZipError {
     /// LZMA ou Zstandard invalide (`OSError`, `LZMAError`, `ZstdError`) : Python échoue en
     /// `internal_error` (code 6) ; le Rust rend code 3, comme pour le chiffrement.
     PythonFailsToo(String),
+    /// Erreur d'entrée/sortie **du système** en lisant l'archive (accès refusé par un antivirus,
+    /// fichier verrouillé, volume retiré : [`system_io`]) : le support local est en cause, pas
+    /// le contenu de l'archive (#580). Python rend aussi `OSError` ici (code 6) ; le Rust rend
+    /// `archive_io`, code 3.
+    Io(String),
 }
 
 impl std::fmt::Display for ZipError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ZipError::Corrupt(m) | ZipError::Encrypted(m) | ZipError::PythonFailsToo(m) => {
-                f.write_str(m)
-            }
+            ZipError::Corrupt(m)
+            | ZipError::Encrypted(m)
+            | ZipError::PythonFailsToo(m)
+            | ZipError::Io(m) => f.write_str(m),
         }
     }
 }
@@ -75,8 +81,25 @@ fn corrupt(message: impl Into<String>) -> ZipError {
     ZipError::Corrupt(message.into())
 }
 
+/// L'erreur vient-elle du système (elle porte un code de l'OS) plutôt que du contenu de
+/// l'archive ? Même règle que celle du launcher pour garder l'archive téléchargée : exclus,
+/// le positionnement refusé (`InvalidInput` : décalage absurde lu dans l'archive) et, sous
+/// Windows, le contenu stocké illisible (`ERROR_CRC`, `ERROR_FILE_CORRUPT`,
+/// `ERROR_DISK_CORRUPT` : une copie du fichier ailleurs sur le disque le réparerait). Les
+/// erreurs construites par ce lecteur (CRC, en-tête, troncature) n'ont pas de code de l'OS.
+pub(crate) fn system_io(e: &io::Error) -> bool {
+    const STORED_CONTENT_UNREADABLE: [i32; 3] = [23, 1392, 1393];
+    e.raw_os_error()
+        .is_some_and(|code| !(cfg!(windows) && STORED_CONTENT_UNREADABLE.contains(&code)))
+        && e.kind() != io::ErrorKind::InvalidInput
+}
+
 fn io_corrupt(e: io::Error) -> ZipError {
-    ZipError::Corrupt(e.to_string())
+    if system_io(&e) {
+        ZipError::Io(e.to_string())
+    } else {
+        ZipError::Corrupt(e.to_string())
+    }
 }
 
 /// Une entrée du répertoire central (`ZipInfo`).
@@ -787,7 +810,15 @@ impl<R: Read> ExtFile<'_, R> {
                 // Dernier morceau du tour : tour complet, ou fin du fichier.
                 short = (piece.len() as u64) < want;
                 let last = got == n || short;
+                // Le décodeur rend sa sortie par morceaux d'au plus 64 Kio : l'annulation est
+                // aussi consultée à chacun, car un morceau compressé de 1 Mio très compressible
+                // se décode en entier dans ce seul appel.
+                let mut stopped = false;
                 let r = codec.feed(&piece, last, &mut |chunk: &[u8]| {
+                    if cancelled() {
+                        stopped = true;
+                        return Err(());
+                    }
                     deliver(
                         chunk,
                         &mut left,
@@ -797,6 +828,9 @@ impl<R: Read> ExtFile<'_, R> {
                         &mut sink_err,
                     )
                 });
+                if stopped {
+                    return Err(ChunkStop::Cancelled);
+                }
                 eof = codec_result(r, &mut sink_err, zinfo)?;
                 // Après la fin du flux, le reste du tour est ignoré (`unused_data`).
                 if eof || last {
@@ -806,7 +840,12 @@ impl<R: Read> ExtFile<'_, R> {
             if !eof && left > 0 && (self.compress_left == 0 || short) {
                 // Plus rien à lire (fin des données ou du fichier) : ce que le décodeur retenait encore est rendu, comme les
                 // bibliothèques C le rendent au fil de l'eau (flux tronqué).
+                let mut stopped = false;
                 let r = codec.finish(&mut |chunk: &[u8]| {
+                    if cancelled() {
+                        stopped = true;
+                        return Err(());
+                    }
                     deliver(
                         chunk,
                         &mut left,
@@ -816,6 +855,9 @@ impl<R: Read> ExtFile<'_, R> {
                         &mut sink_err,
                     )
                 });
+                if stopped {
+                    return Err(ChunkStop::Cancelled);
+                }
                 codec_result(r, &mut sink_err, zinfo)?;
             }
             if eof || self.compress_left == 0 || left == 0 {
@@ -1162,6 +1204,60 @@ mod tests {
                 let ext = zr.open_entry(&entry).unwrap();
                 let r = ext.pump_codec(&entry, MAX_N, 1000, &|| false, &mut |_| Err("stop"));
                 assert!(matches!(r, Err(ChunkStop::Sink("stop"))), "{id}");
+            }
+        }
+    }
+
+    /// #580 : l'annulation levée au n-ième appel, quel que soit n, arrête la lecture, y compris
+    /// à l'intérieur d'un `feed` (le morceau compressé tient en un seul appel, sa sortie est
+    /// rendue par morceaux de 64 Kio) ; les octets déjà rendus au `sink` ne dépassent pas ceux
+    /// décodés avant l'appel qui a vu l'annulation.
+    #[test]
+    fn annulation_au_n_ieme_appel_pendant_le_decodage() {
+        use std::cell::Cell;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        for id in ["bzip2_multiblock", "lzma_runs", "zstd_level19"] {
+            let data = std::fs::read(format!("{dir}{id}.zip")).unwrap();
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            let name = "images/c.png";
+            let size = zr.entries[zr.name_to_info[name]].file_size;
+            assert!(zr.entries[zr.name_to_info[name]].compress_size < CODEC_PIECE as u64);
+            // Nombre d'appels d'une lecture complète : un par morceau compressé, un par
+            // morceau de sortie.
+            let calls = Cell::new(0usize);
+            let counter = || {
+                calls.set(calls.get() + 1);
+                false
+            };
+            let ok = zr.read_chunks(name, 4096, &counter, &mut |_| Ok::<(), ()>(()));
+            assert!(matches!(ok, Ok(true)), "{id}");
+            let total = calls.get();
+            // 1 appel avant le `feed`, puis au moins un morceau de sortie dans ce seul `feed`
+            // (plusieurs pour bzip2).
+            let min = if id == "bzip2_multiblock" { 3 } else { 2 };
+            assert!(
+                size > 64 * 1024 && total >= min,
+                "{id} : {size} octets, {total} appels"
+            );
+            for n in 1..=total {
+                let calls = Cell::new(0usize);
+                let at_n = || {
+                    calls.set(calls.get() + 1);
+                    calls.get() == n
+                };
+                let mut sunk = 0usize;
+                let r = zr.read_chunks(name, 4096, &at_n, &mut |c: &[u8]| {
+                    sunk += c.len();
+                    Ok::<(), ()>(())
+                });
+                assert!(
+                    matches!(r, Err(ChunkStop::Cancelled)),
+                    "{id}, n = {n} : {r:?}"
+                );
+                // Arrêt immédiat : plus aucun appel ni aucun octet après celui qui a vu
+                // l'annulation (le premier appel précède tout décodage).
+                assert_eq!(calls.get(), n, "{id}, n = {n}");
+                assert!(sunk as u64 <= (n as u64 - 1) * 64 * 1024, "{id}, n = {n}");
             }
         }
     }
