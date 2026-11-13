@@ -22,6 +22,7 @@
 #ifdef _WIN32
 #include <direct.h>  /* _mkdir */
 #include <windows.h> /* GetFileAttributesExA (mtime a 100 ns) */
+#include <share.h>   /* _fsopen, _SH_DENYWR */
 #else
 #include <limits.h>  /* PATH_MAX */
 #include <unistd.h>  /* rmdir */
@@ -174,6 +175,28 @@ static void ensure_parent_dirs(const char *filepath)
     }
 }
 
+static int pk_ieq(const char *a, size_t alen, const char *b);
+
+/* Noms de peripheriques Windows (CON, NUL, COM1...) : "NUL.txt" reste le
+   peripherique, et ecrire dans "CON" ecrit sur la console. */
+static int pk_is_device_name(const char *comp, size_t len)
+{
+    static const char *const fixed[] = { "con", "prn", "aux", "nul", "conin$", "conout$" };
+    size_t base = 0;
+    while (base < len && comp[base] != '.') base++;   /* le nom sans extension */
+    while (base > 0 && comp[base - 1] == ' ') base--;
+    for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
+        if (pk_ieq(comp, base, fixed[i])) return 1;
+    }
+    if (base == 4 && comp[3] >= '1' && comp[3] <= '9') {
+        char head[4] = { (char)tolower((unsigned char)comp[0]),
+                         (char)tolower((unsigned char)comp[1]),
+                         (char)tolower((unsigned char)comp[2]), '\0' };
+        if (strcmp(head, "com") == 0 || strcmp(head, "lpt") == 0) return 1;
+    }
+    return 0;
+}
+
 int pk_name_is_safe(const char *name)
 {
     if (!name || !name[0]) return 0;
@@ -187,6 +210,10 @@ int pk_name_is_safe(const char *name)
             if (len == 0 && c != '\0') return 0;              /* "a//b" */
             if (len == 2 && comp[0] == '.' && comp[1] == '.') return 0;
             if (len == 1 && comp[0] == '.') return 0;         /* "./x", "a/./b" */
+            /* Windows retire points et espaces finaux : "..", ".. " et "a." ne
+               designent pas ce qu'ils annoncent */
+            if (len > 0 && (comp[len - 1] == '.' || comp[len - 1] == ' ')) return 0;
+            if (len > 0 && pk_is_device_name(comp, len)) return 0;
             if (c == '\0') break;
             comp = p + 1;
             continue;
@@ -261,19 +288,43 @@ static int pk_ieq(const char *a, size_t alen, const char *b)
     return 1;
 }
 
-/* Nom reserve aux temoins (un .pk ne doit pas pouvoir les ecrire ni les
-   forger). Dernier composant, prive de ses points et espaces finaux (que
-   Windows retire), compare sans tenir compte de la casse, sur toutes les
-   plateformes : ".extracted.", ".EXTRACTED ", "sub/.extracting"... */
+/* Un composant est-il un temoin (ou un alias du temoin) ? Prive de ses points
+   et espaces finaux (que Windows retire), compare sans tenir compte de la
+   casse, sur toutes les plateformes. Alias : le nom court 8.3 de ".extracted"
+   / ".extracting" ("EXTRAC~1", "EXTRAC~2"...), que les volumes NTFS et FAT
+   resolvent vers le temoin. */
+static int pk_comp_is_witness(const char *comp, size_t len)
+{
+    while (len > 0 && (comp[len - 1] == '.' || comp[len - 1] == ' ')) len--;
+    if (pk_ieq(comp, len, PK_STAMP_NAME) || pk_ieq(comp, len, PK_BUSY_NAME)) return 1;
+    if (len >= 8) {
+        static const char alias[] = "extrac~";
+        size_t i = 0;
+        for (; i < sizeof(alias) - 1; i++) {
+            if (tolower((unsigned char)comp[i]) != alias[i]) return 0;
+        }
+        size_t d = i;
+        while (d < len && comp[d] >= '0' && comp[d] <= '9') d++;
+        if (d > i && (d == len || comp[d] == '.')) return 1;
+    }
+    return 0;
+}
+
+/* Nom reserve aux temoins : un .pk ne doit pas pouvoir les ecrire ni les
+   forger. Tous les composants sont controles (".extracted/x" creerait un
+   dossier .extracted) : ".extracted.", ".EXTRACTED ", "sub/.extracting",
+   "EXTRAC~1"... */
 static int pk_name_is_witness(const char *name)
 {
-    const char *last = name;
-    for (const char *p = name; *p; p++) {
-        if (*p == '/' || *p == '\\') last = p + 1;
+    const char *comp = name;
+    for (const char *p = name; ; p++) {
+        if (*p == '/' || *p == '\\' || *p == '\0') {
+            if (pk_comp_is_witness(comp, (size_t)(p - comp))) return 1;
+            if (*p == '\0') break;
+            comp = p + 1;
+        }
     }
-    size_t len = strlen(last);
-    while (len > 0 && (last[len - 1] == '.' || last[len - 1] == ' ')) len--;
-    return pk_ieq(last, len, PK_STAMP_NAME) || pk_ieq(last, len, PK_BUSY_NAME);
+    return 0;
 }
 
 #define PK_MANIFEST_MAX (8u * 1024u * 1024u)
@@ -312,10 +363,15 @@ static void pk_list_add(pk_list_t *l, const char *name)
 }
 
 /* Extraction ; si list != NULL, chaque fichier ecrit y est ajoute
-   (un nom par ligne, '/' comme separateur). */
+   (un nom par ligne, '/' comme separateur).
+   dry != 0 : passe a blanc, meme parcours et memes refus mais rien n'est ecrit
+   (ni dossier, ni fichier) ; count = entrees qui auraient ete extraites.
+   *has_main = 1 si "main.lua" aurait ete extrait (stocke, taille > 0). */
 static int pk_extract_core(const char *pk_path, const char *out_dir,
-                           int *complete, pk_list_t *list)
+                           int *complete, pk_list_t *list,
+                           int dry, int *has_main)
 {
+    if (has_main) *has_main = 0;
     if (complete) *complete = 0;
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
 
@@ -397,6 +453,13 @@ static int pk_extract_core(const char *pk_path, const char *out_dir,
             continue;
         }
 
+        if (dry) {
+            if (strcmp(name_buf, "main.lua") == 0 && has_main) *has_main = 1;
+            count++;
+            if (pk_skip(f, hdr.compressed_size, file_size) != 0) break;
+            continue;
+        }
+
         /* Build output path */
         char out_path[1280];
         int n = snprintf(out_path, sizeof(out_path), "%s/%s", out_dir, name_buf);
@@ -455,7 +518,7 @@ static int pk_extract_core(const char *pk_path, const char *out_dir,
 
 int pk_extract_all_ex(const char *pk_path, const char *out_dir, int *complete)
 {
-    return pk_extract_core(pk_path, out_dir, complete, NULL);
+    return pk_extract_core(pk_path, out_dir, complete, NULL, 0, NULL);
 }
 
 /* Empreinte du .pk (taille + date de modification). 0 si ok, -1 sinon. */
@@ -526,7 +589,7 @@ static char *pk_read_text(const char *dir, const char *name)
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     long sz = pk_file_size(f);
-    if (sz < 0 || (unsigned long)sz > PK_MANIFEST_MAX) { fclose(f); return NULL; }
+    if (sz < 0 || (unsigned long)sz > PK_MANIFEST_MAX + 64) { fclose(f); return NULL; }
     char *buf = (char *)malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return NULL; }
     size_t got = fread(buf, 1, (size_t)sz, f);
@@ -620,12 +683,24 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     if (!pk_path || !out_dir || !out_dir[0]) return -1;
     if (pk_extract_state(pk_path, out_dir) != PK_EXTRACT_STALE) return 0;
 
-    /* Avant toute lecture ou ecriture des temoins et avant la purge : le .pk
-       doit s'ouvrir et contenir main.lua. Sinon rien n'est touche (le dossier
-       existant reste jouable tel quel). */
+    /* Dossier reconnu comme extraction du player (temoin present) : seul cas
+       ou une purge aura lieu. */
+    int recognized = pk_file_exists(out_dir, PK_STAMP_NAME) ||
+                     pk_file_exists(out_dir, PK_BUSY_NAME);
+
+    /* Avant toute lecture ou ecriture des temoins et avant la purge : passe a
+       blanc du .pk (meme parcours que l'extraction, rien d'ecrit). Il doit
+       s'ouvrir et donner un main.lua extractible ; si une extraction existe
+       deja (donc une purge), il doit en plus etre parcouru jusqu'a une fin
+       normale sans data descriptor ni signature inconnue : une archive
+       tronquee ou forgee ne detruit pas une extraction valide. Sinon rien
+       n'est touche (le dossier existant reste jouable tel quel). */
     char stamp[64];
-    if (pk_stamp(pk_path, stamp, sizeof(stamp)) != 0 || !pk_has_entry(pk_path, "main.lua")) {
-        fprintf(stderr, "[PK] %s illisible ou sans main.lua : %s laisse tel quel\n",
+    int complete_dry = 0, has_main = 0;
+    if (pk_stamp(pk_path, stamp, sizeof(stamp)) != 0 ||
+        pk_extract_core(pk_path, out_dir, &complete_dry, NULL, 1, &has_main) < 0 ||
+        !has_main || (recognized && !complete_dry)) {
+        fprintf(stderr, "[PK] %s illisible, incomplet ou sans main.lua : %s laisse tel quel\n",
                 pk_path, out_dir);
         return -1;
     }
@@ -635,14 +710,11 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     snprintf(busy, sizeof(busy), "%s/" PK_BUSY_NAME, out_dir);
     snprintf(path, sizeof(path), "%s/" PK_STAMP_NAME, out_dir);
 
-    /* Dossier reconnu comme extraction du player (temoin present) : lire la
-       liste de l'ancienne extraction avant de toucher aux temoins. Sans
-       temoin (dossier absent, dossier d'auteur incomplet) : rien a purger,
-       jamais. */
+    /* Temoin present : lire la liste de l'ancienne extraction avant de
+       toucher aux temoins. Sans temoin (dossier absent, dossier d'auteur
+       incomplet) : rien a purger, jamais. */
     char *old_stamp = pk_read_text(out_dir, PK_STAMP_NAME);
     char *old_busy = pk_read_text(out_dir, PK_BUSY_NAME);
-    int recognized = pk_file_exists(out_dir, PK_STAMP_NAME) ||
-                     pk_file_exists(out_dir, PK_BUSY_NAME);
 
     /* Poser .extracting avant tout (sans le vider : il garde la liste de
        l'ancienne extraction tant qu'elle n'est pas purgee), puis retirer
@@ -669,7 +741,14 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
     free(old_busy);
 
     remove(path);
-    bf = fopen(busy, "wb");   /* repart d'une liste vide pour cette extraction */
+    /* Repart d'une liste vide pour cette extraction. Sous Windows, ecriture
+       refusee aux autres ouvertures pendant l'extraction : une entree qui
+       designerait .extracting par un autre nom echoue au lieu de l'ecraser. */
+#ifdef _WIN32
+    bf = _fsopen(busy, "wb", _SH_DENYWR);
+#else
+    bf = fopen(busy, "wb");
+#endif
     if (!bf) {
         fprintf(stderr, "[PK] extraction annulee : %s non inscriptible\n", out_dir);
         return -1;
@@ -677,7 +756,7 @@ int pk_extract_if_stale(const char *pk_path, const char *out_dir)
 
     int complete = 0;
     pk_list_t list = { bf, NULL, 0, 0, 0 };
-    int n = pk_extract_core(pk_path, out_dir, &complete, &list);
+    int n = pk_extract_core(pk_path, out_dir, &complete, &list, 0, NULL);
     fclose(bf);
     if (n <= 0) { free(list.buf); return -1; }
     if (!complete) {
