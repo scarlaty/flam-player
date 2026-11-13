@@ -692,7 +692,16 @@ static void extract_pk_if_needed(const char *pk_path, const char *out_dir)
 {
     int state = pk_extract_state(pk_path, out_dir);
     if (state == PK_EXTRACT_CURRENT) {
-        fprintf(stderr, "%s a jour, non extrait\n", out_dir);
+        /* CURRENT vaut aussi pour un .pk absent ou illisible (extraction existante
+           jouable) : ne pas dire "a jour" dans ce cas */
+        FILE *pkf = fopen(pk_path, "rb");
+        if (pkf) {
+            fclose(pkf);
+            fprintf(stderr, "%s a jour, non extrait\n", out_dir);
+        } else {
+            fprintf(stderr, "%s : .pk absent ou illisible (%s), dossier joue tel quel\n",
+                    out_dir, pk_path);
+        }
         return;
     }
     if (state == PK_EXTRACT_AUTHOR) {
