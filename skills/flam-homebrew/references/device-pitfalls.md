@@ -22,7 +22,7 @@ ne prouve rien. Chaque point ci-dessous a coûté un aller-retour sur le device.
 | 14 | `lv.img` plus grand que sa source | image répétée en mosaïque | taille de l'objet = taille de l'image |
 | 15 | timer non détruit dans `clean()` | erreurs sur objets supprimés, gel | `lv.timer.del` dans `clean()` (mais pas à la sortie vers la bibliothèque : piège 24) |
 | 16 | ZIP compressé / data descriptor / doublon de casse | refus du simulateur ; écart avec les paquets éprouvés ; fichiers écrasés sur la FAT | `flam_build.py` (STORED, noms vérifiés) |
-| 18 | runtime différent de celui éprouvé | comportements non testés sur device | garder `assets/runtime` tel quel (version validée sur device avec le casse-briques) |
+| 18 | runtime différent de celui éprouvé | comportements non testés sur device | garder `assets/runtime` tel quel (version éprouvée sur device avec les jeux du skill, qui n'utilisent pas le carrousel). Exception : `carousel_1_0_0.lua` a été corrigé depuis (pièges 25 et 26, aligné sur la copie de telmi2flam) ; correctif vérifié par test au simulateur, pas encore revalidé sur device |
 | 17 | UUID déjà présent sur la Flam | import refusé (« already loaded ») | `uuid_seed` unique ; supprimer l'ancienne version avant réimport |
 | 19 ✅ | clic molette attendu en `EVENT_KEY` 10 (la molette est un encodeur : sur un objet non défilable, le clic arrive seulement en `EVENT_CLICKED`) | clic sans effet (simulateur et device) | écouter `EVENT_KEY` **et** `EVENT_CLICKED`, un appui compté une fois (`lua-api.md` §4) |
 | 20 ✅ | `audio.stop()` / `audio.pause()` d'une piste en cours | image figée un instant à chaque bruitage qui coupe la musique (invisible au simulateur) | pas de musique pendant l'action ; bruitages qui attendent la fin naturelle (`lua-api.md` §8) |
@@ -30,6 +30,8 @@ ne prouve rien. Chaque point ci-dessous a coûté un aller-retour sur le device.
 | 22 ✅ | `audio.load(1, ...)` pris pour un 2ᵉ canal | la musique s'arrête, le nouveau son joue : pas de mixage | une seule piste ; premier argument `0` comme dans les scripts du runtime |
 | 23 ✅ | écriture dans `state` (ex. record) | écran noir à la relance, réparé en effaçant la progression | aucune écriture dans `state` pour un jeu (`lua-api.md` §11) |
 | 24 ✅ | sortie vers la bibliothèque qui vide l'écran (`clean`, `cleanCurrentModule`) ou supprime le timer | relance = écran noir, ou écran affiché mais touches mortes | à la relance la Flam réaffiche l'état laissé : couper seulement le son, puis `goto_library()` (« Relance » ci-dessous) |
+| 25 🔶 | source d'image (`Global.load_image`) tenue par une seule variable locale : sur device, `lv.img.set_src` ne retient pas la source, seule la référence Lua la garde en vie (le simulateur, lui, l'ancre dans l'objet image : invisible au simulateur) | au premier passage du ramasse-miettes après la sortie de la fonction, les pixels encore affichés sont libérés (utilisation après libération : image corrompue, plantage possible) | ranger chaque source dans une table du module (`game.images.x = data`) tant qu'un objet l'affiche ; la relâcher seulement après avoir supprimé ou masqué l'objet (`lua-api.md` §7) ; `flam_check.py` signale le cas simple (`local d = Global.load_image(...)` passée à `set_src` sans être rangée) |
+| 26 ✅ | trop d'images décodées retenues en même temps (cache de toutes les images déjà vues, ex. une par choix d'un menu) | la Flam **redémarre** : constaté le 13/11/2026 avec un menu de 18 images 320×212, redémarrage à la 7ᵉ image retenue | ne retenir que les images affichées (au plus 3 pour le carrousel), relâcher les autres puis `collectgarbage("collect")` **avant** de charger la suivante ; ne jamais relâcher une source encore affichée (piège 25) |
 
 ## Relance (pièges n° 10, 23 et 24)
 
@@ -61,7 +63,8 @@ suite), **sans** redémarrer la Flam, depuis l'accueil puis depuis une partie.
 
 ## Ce que le simulateur ne vérifie pas
 
-- mémoire (tas LVGL du device non mesuré, Lua sans plafond au simulateur) ;
+- mémoire (tas LVGL du device non mesuré, Lua sans plafond au simulateur : pièges 25
+  et 26 invisibles au simulateur) ;
 - format réel de `state` (sauvegarde `.save` binaire sur device, `.lua` au simulateur) ;
 - comportement à la relance (pièges 10, 23, 24 : le simulateur relance toujours à neuf) ;
 - coût réel de l'audio (pièges 20, 21 : stop, pause et load y sont instantanés) ;

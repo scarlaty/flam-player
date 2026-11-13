@@ -398,6 +398,20 @@ def check(pk_path):
         if re.search(r"\baudio\s*\.\s*seek\s*\(", code):
             warns.append("%s : audio.seek pendant la lecture gele le device -> "
                          "audio.pause() ; audio.seek(s) ; audio.play()" % n)
+        # piege 25 : source d'image tenue par une seule variable locale. Sur device,
+        # lv.img.set_src ne retient pas la source : a la sortie de la fonction, le
+        # GC peut liberer les pixels encore affiches. Heuristique : local = load_image
+        # passee a set_src et jamais rangee dans un champ de table.
+        loaded = set(re.findall(r"\blocal\s+([A-Za-z_]\w*)(?:\s*,\s*[A-Za-z_]\w*)*\s*=\s*"
+                                r"Global\s*\.\s*load_image\s*\(", code))
+        for m in re.finditer(r"\blv\s*\.\s*img\s*\.\s*set_src\s*\(\s*[^,()]+,\s*([A-Za-z_]\w*)\s*\)", code):
+            v = m.group(1)
+            if v in loaded and not re.search(
+                    r"([.\]]\s*[A-Za-z_]?\w*\s*=|table\s*\.\s*insert\s*\([^,()]+,)\s*%s\b" % re.escape(v), code):
+                warns.append("%s:%d : source d'image '%s' gardee par une variable locale : "
+                             "lv.img.set_src ne la retient pas sur device (pixels liberes par "
+                             "le GC) -> la ranger dans une table du module tant qu'elle est "
+                             "affichee (device-pitfalls.md, piege 25)" % (n, line_of(code, m.start()), v))
         for ln, s in lits:
             bad_chars = sorted(set(c for c in s if ord(c) > 0xFF or 0x7F <= ord(c) < 0xA0))
             if bad_chars:

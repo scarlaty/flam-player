@@ -201,6 +201,16 @@ lv.obj.set_pos(img, x, y)
 game.images = game.images or {}; game.images.hero = data   -- garder la référence
 ```
 
+- **Garder la référence** tant que l'image est affichée : sur device, `lv.img.set_src`
+  ne retient pas la source ; une source tenue par une seule variable locale est libérée
+  au premier passage du ramasse-miettes alors que l'objet l'affiche encore (piège 25,
+  invisible au simulateur). Relâcher la référence (`game.images.hero = nil`) seulement
+  après avoir supprimé ou masqué l'objet.
+- **Borner les images retenues** : chaque source gardée occupe sa taille décodée en
+  mémoire ; un cache de toutes les images déjà vues fait redémarrer la Flam (piège 26 :
+  7 images 320×212). Pour une galerie ou un menu à images, ne garder que celles
+  affichées, relâcher les autres puis `collectgarbage("collect")` avant de charger la
+  suivante (modèle : `syncSources` dans `carousel_1_0_0.lua` du runtime).
 - Chemin relatif à `img/` (sous-dossiers permis : `"sprites/a.lif"`). Image absente :
   le simulateur renvoie `nil` sans bruit, le device plante ou gèle → `flam_check.py`
   vérifie les littéraux `"*.lif"`.
@@ -364,6 +374,7 @@ Préférer cette liste ; tout appel hors liste est à tester sur le device.
   `lv.FLEX_ALIGN_CENTER/START`, `lv.ANIM_ON/OFF`, `lv.ANIM_REPEAT_INFINITE`
 - `audio.` load (1er argument `0`), play, stop, pause, get_status (utilisés par
   `global.lua` ; règles d'emploi §8)
+- `collectgarbage("collect")`, `collectgarbage("count")` (utilisés par `global.lua`)
 - `Global.` load_module, load_image, setBackToLibrary, setBackBehavior,
   setBackModule, requestAudioPlay, requestAudioStop, cleanCurrentModule,
   visual_width, visual_height, screen_width, screen_height, header_height
