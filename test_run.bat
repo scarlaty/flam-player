@@ -176,6 +176,12 @@ if "!HAVE_PY!"=="1" (
     echo EXIT_CODE=!WDG_RC!
     if not "!WDG_RC!"=="0" if not "!WDG_RC!"=="77" set "E2E_RC=!WDG_RC!"
     if "!WDG_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (watchdog : SKIP)"
+    REM Horloge audio sans peripherique : cadencee sur l'horloge murale (#575)
+    "%PY%" "%ROOT%tests\e2e\e2e_audio_clock.py" --build "%BUILD%"
+    set "AUC_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!AUC_RC!
+    if not "!AUC_RC!"=="0" if not "!AUC_RC!"=="77" set "E2E_RC=!AUC_RC!"
+    if "!AUC_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (horloge audio : SKIP)"
 ) else (
     echo [SKIP] python introuvable : definir FLAM_PYTHON
 )

@@ -218,8 +218,25 @@ Options :
 | `--scan-dir <dossier>` | Dossier scanné par le navigateur |
 | `--strict` | Plus proche de l'appareil : `require()` limité à `script/`, image `.lif` absente = erreur |
 | `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main, même enveloppé dans `pcall` ou réparti sur des coroutines ; réarmé à chaque tour de la boucle principale, donc les callbacks suivant un callback interrompu dans le même tour échouent aussi (défaut 10000, `0` = désactivé) |
+| `--lua-mem <Mo>` | Plafond mémoire de l'état Lua (défaut 256, `0` = aucun) ; au-delà, Lua lève `not enough memory` (rattrapable) |
 | `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
 | `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
+
+Bac à sable Lua : comme l'appareil (audit de sécurité : `debug` = nil), le player n'expose pas `debug`
+aux scripts (ni `debug.sethook`, qui désarmerait le watchdog, ni `getupvalue`/`getregistry`, qui
+rendraient les fonctions d'origine de ses gardes ; `require("debug")` échoue aussi). `io`, `os` et
+`package` restent disponibles dans l'émulateur, contrairement à l'appareil.
+
+Limites du watchdog, non corrigées (corriger demanderait de modifier Lua lui-même, sous-module) :
+Lua coupe les hooks pendant l'exécution d'un finaliseur, donc une boucle dans un `__gc` n'est jamais
+interrompue ; une fonction C longue (motif de `string.find`/`match`/`gsub` à retour arrière
+catastrophique) n'est pas interrompue non plus. Le plafond `--lua-mem` borne seulement la mémoire
+(`string.rep` ou `table.concat` géants), pas le temps. Si l'appareil refuse `__gc` sur les tables des
+histoires, le player pourrait le refuser de même (non vérifié sur l'appareil).
+
+Sans périphérique audio (session sans son, machine virtuelle) ou si l'envoi du son échoue, la lecture
+est cadencée sur l'horloge murale : sans cela, l'horloge audio, donc les callbacks `play`/`stop` et
+les enchaînements, courait environ dix fois trop vite. `FLAM_AUDIO_NO_DEVICE=1` simule ce cas.
 
 Le navigateur détecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et
 les titres, et offre un bouton « Choisir un dossier... » pour changer le répertoire de recherche.

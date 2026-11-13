@@ -15,7 +15,18 @@ flam-player est lance sur un script .lua (pilotes SDL dummy, --stdin-control,
      chaque lua_State) : A) coroutine bloquee puis boucle pcall dans l'etat
      principal ; B) gestionnaire d'erreur de xpcall qui est une coroutine en
      boucle pcall ; C) coroutines neuves creees en boucle sous pcall apres le
-     declenchement. Chaque scenario doit etre interrompu et le player quitter.
+     declenchement. Chaque scenario doit etre interrompu et le player quitter ;
+  4. F) `debug` n'est pas expose aux scripts (comme sur l'appareil : sandbox sans
+     io/os/debug/package), ni par `require("debug")` : `debug.sethook()` retirait
+     le watchdog (la boucle `while true do end` qui suit n'etait jamais
+     interrompue) et debug.getupvalue / getregistry rendaient les fonctions
+     d'origine des gardes de coroutines ;
+  5. G) plafond memoire de l'etat Lua (256 Mo par defaut) : un string.rep de
+     300 Mo, fonction C longue invisible au hook de comptage, leve "not enough
+     memory" au lieu d'allouer ; l'etat reste utilisable ensuite.
+Limites non couvertes (documentees dans docs/player.md) : boucle dans un
+finaliseur __gc (Lua coupe les hooks pendant les finaliseurs) et motif de
+string.find a retour arriere catastrophique (temps passe dans une fonction C).
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
@@ -84,6 +95,16 @@ SCEN_E = _lua("ran = 0",
               "  print('CLOSERS_RAN', ran)",
               "end)",
               "root()")
+# F : debug.sethook() retire le watchdog quand `debug` est expose
+SCEN_F = _lua("io.stderr:write('DEBUG_TYPE ' .. type(debug) .. ' ' .. type(package.loaded.debug) .. '\\n')",
+              "io.stderr:write('REQUIRE_DEBUG ' .. tostring((pcall(require, 'debug'))) .. '\\n')",
+              "if debug then debug.sethook() end",
+              "while true do end")
+# G : fonction C longue, plafonnee par l'allocateur
+SCEN_G = _lua("local ok, e = pcall(string.rep, 'x', 300 * 1024 * 1024)",
+              "io.stderr:write('REP_RESULT ' .. tostring(ok) .. ' ' .. tostring(e):sub(1, 40) .. '\\n')",
+              "local small = string.rep('y', 1000)",
+              "io.stderr:write('AFTER_OK ' .. #small .. '\\n')")
 LEGIT = ('local ok, err = pcall(error, "attendue")\n'
          'local ok2 = pcall(function() return 1 end)\n'
          'print("LEGIT_DONE", ok, ok2)\n')
@@ -181,6 +202,25 @@ def main():
             check("watchdog" in out and (trace + "\t0") in out,
                   "coroutines %s : aucune coroutine preparee ne s'execute apres le declenchement" % tag, out)
             check(rc == 0, "coroutines %s : le player quitte (code %r, %.1f s)" % (tag, rc, time.monotonic() - t0), out)
+
+        sf = os.path.join(tmp, "nodebug.lua")
+        with open(sf, "w", newline="") as f:
+            f.write(SCEN_F)
+        out, rc = run(exe, sf, tmp, "Erreur Lua")
+        check("DEBUG_TYPE nil nil" in out, "debug absent de _G et de package.loaded", out)
+        check("REQUIRE_DEBUG false" in out, "require('debug') refuse", out)
+        check("Erreur Lua" in out and "watchdog" in out,
+              "debug.sethook() inaccessible : la boucle est interrompue", out)
+        check(rc == 0, "debug : le player quitte (code %r)" % rc, out)
+
+        sg = os.path.join(tmp, "mem.lua")
+        with open(sg, "w", newline="") as f:
+            f.write(SCEN_G)
+        out, rc = run(exe, sg, tmp, "AFTER_OK")
+        check("REP_RESULT false not enough memory" in out,
+              "string.rep de 300 Mo refuse par le plafond memoire", out)
+        check("AFTER_OK 1000" in out, "etat Lua utilisable apres le refus", out)
+        check(rc == 0, "memoire : le player quitte (code %r)" % rc, out)
 
         s2 = os.path.join(tmp, "legit.lua")
         with open(s2, "w", newline="") as f:

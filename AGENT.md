@@ -64,6 +64,8 @@ Etapes, recapitulatif en fin de sortie (`RESULTAT : OK` si tout passe) :
    binaire `telmi2flam`) ; saute sans python.
 6. **Bout en bout** : `tests\e2e\e2e_telmi.py` (paquet TELMI -> telmi2flam -> flam-player
    pilote, pilotes SDL dummy) ; saute sans python ou flam-player.exe.
+   Suivent `e2e_embed.py`, `e2e_pk_extract.py`, `e2e_watchdog.py` (watchdog, `debug`, plafond
+   memoire) et `e2e_audio_clock.py` (horloge audio sans peripherique).
 
 Variables : `FLAM_BUILD_DIR` (dossier de build, defaut `build\`), `FLAM_PYTHON` (python),
 `FLAM_LUA` (Lua 5.4 autonome pour verifier les `nodes.lua` generes). `test_run.bat` fixe
@@ -105,8 +107,14 @@ Options du player :
   fonctions rendues par `wrap` levent l'erreur) jusqu'au rearmement de la boucle principale : un `pcall` qui avale l'erreur ne sauve
   pas la boucle (test : `tests/e2e/e2e_watchdog.py`). Limites connues : le rearmement n'a lieu qu'a
   chaque tour de boucle principale, donc les callbacks qui suivent un callback tue dans le meme tour
-  (timer a un coup, fin d'audio, back_callback) echouent aussi jusqu'au tour suivant ; `debug.sethook`
-  du script, `__gc` et les fonctions C longues ne sont pas interruptibles.
+  (timer a un coup, fin d'audio, back_callback) echouent aussi jusqu'au tour suivant ; les boucles
+  dans un finaliseur `__gc` (Lua coupe les hooks pendant les finaliseurs) et le temps passe dans une
+  fonction C (motif de `string.find`/`match`/`gsub` a retour arriere catastrophique) ne sont pas
+  interruptibles : limites connues, non corrigees sans modifier Lua (sous-module). `debug` n'est
+  plus expose (voir plus bas), donc `debug.sethook` ne peut plus retirer le watchdog.
+- `--lua-mem <Mo>` : plafond memoire de l'etat Lua (defaut 256, `0` = aucun) ; au-dela, Lua leve
+  `not enough memory` (rattrapable). Borne `string.rep` geant, `table.concat` massif, etc., que le hook
+  de comptage ne voit pas (test : `tests/e2e/e2e_watchdog.py`, scenario G).
 - `--screenshot <chemin>` : fichier BMP des captures (sinon `FLAM_SCREENSHOT`, sinon
   `C:/temp/flam-player/screenshot.bmp` code en dur). Capture auto 12 s apres le demarrage :
   `FLAM_SCREENSHOT_AUTO_MS=<ms>`, `0` = desactivee.
@@ -283,8 +291,17 @@ Le script Lua a acces a :
 - `progression.save(cle, t)` / `progression.load(cle)` — cle limitee a `[A-Za-z0-9_-]`, 64 car.
 - `context_menu.set_entries({...})` — menu contextuel (comme le firmware)
 - `goto_library()`, `back_callback` (defaut = `goto_library`), `screen.*` (stubs), `progress`
-- Bibliotheques standard Lua completes (`io`, `os`, `debug`, `package`) — PAS de sandbox dans
-  l'emulateur ; le bytecode Lua est refuse (chargement en mode texte uniquement)
+- Bibliotheques standard Lua (`io`, `os`, `package`...) — PAS de sandbox dans l'emulateur ; le
+  bytecode Lua est refuse (chargement en mode texte uniquement). Exception : `debug` est retire des
+  scripts (`debug` et `package.loaded.debug` a `nil`, `require("debug")` echoue), comme sur l'appareil
+  (`docs/security/security-audit-report.md` : `debug` = nil) ; sinon `debug.sethook()` desarme le
+  watchdog et `debug.getupvalue/getregistry` contournent ses gardes. Le player n'en depend pas
+  (traceback en C, `luaL_traceback`). Les tests sous flam-test/flam-test-audio gardent `debug`
+  (`debug.getinfo`, `debug.getregistry`) : leur runner a son propre etat Lua.
+- Audio sans peripherique (`SDL_OpenAudioDevice` en echec, session sans son, VM) ou `SDL_QueueAudio`
+  en echec : la file de sortie est virtuelle et se vide au rythme de l'horloge murale
+  (`SDL_GetTicks`, geleee en pause), sinon l'horloge audio courait ~10 fois trop vite.
+  `FLAM_AUDIO_NO_DEVICE=1` simule l'absence de peripherique (test : `tests/e2e/e2e_audio_clock.py`).
 
 **Sur le vrai dispositif FLAM** : la sandbox Lua ne laisse que `lv.*`, pas de `io`/`os`/`debug`/`package`.
 
