@@ -355,9 +355,11 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
 /// vidage l'ignorerait, mais l'application y écrirait au milieu de données qui ne sont pas à elle.
 ///
 /// Exception : un ancien cache du launcher (`library/` avec l'index lisible d'une version sans
-/// marqueur) est accepté ; seul `library/` est marqué, **avant** l'enregistrement des réglages.
-/// Ses autres homonymes non marqués ne sont ni marqués ni bloquants (jamais comptés ni vidés).
-/// Le marquage est idempotent : si l'enregistrement échoue ensuite, `library/` reste marqué, et
+/// marqueur) est accepté ; `library/` est marqué, puis `podcasts/`, `podcast-work/`, `play/` et
+/// `thumbs/` sur preuve par leur contenu (`cache::adopt_legacy_cache`), **avant** l'enregistrement
+/// des réglages. Les autres homonymes (dont `archives/`, `catalogs/`, `compat-local/`,
+/// `official/`, jamais marqués ici) ne sont ni marqués ni bloquants (jamais comptés ni vidés). Le
+/// marquage est idempotent : si l'enregistrement échoue ensuite, les marqueurs posés restent, et
 /// un nouvel essai réussit.
 fn check_cache_dir_free(raw: &str) -> AppResult<()> {
     let root = Path::new(raw);
@@ -1099,6 +1101,11 @@ mod tests {
         )
         .unwrap();
         touch(&old.join("podcasts/src/feed.xml"));
+        touch(&old.join("thumbs/0000000000000001.png"));
+        // `play/` personnel : refusé par la preuve d'usage.
+        touch(&old.join("play/film.mkv"));
+        // `archives/` : aucune preuve par le contenu, jamais marqué à l'adoption.
+        touch(&old.join("archives/perso.zip"));
 
         let saved = store
             .update(Settings {
@@ -1107,12 +1114,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(saved.cache_dir, Some(old.display().to_string()));
+        // Sous-dossiers marqués sur preuve par le contenu (#591).
         assert!(crate::cache::is_owned(&old.join("library")));
-        assert!(
-            !crate::cache::is_owned(&old.join("podcasts")),
-            "seul library est marqué"
-        );
+        assert!(crate::cache::is_owned(&old.join("podcasts")));
+        assert!(crate::cache::is_owned(&old.join("thumbs")));
+        assert!(!crate::cache::is_owned(&old.join("play")));
+        assert!(!crate::cache::is_owned(&old.join("archives")));
         assert!(old.join("podcasts/src/feed.xml").is_file());
+        assert!(old.join("play/film.mkv").is_file());
         assert!(
             old.join("library/abc-1.plain.pk").is_file(),
             "rien supprimé"

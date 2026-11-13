@@ -34,10 +34,12 @@ fn is_real_dir(path: &Path) -> bool {
 }
 
 /// Octets occupés par `<cache_root>/podcasts/*/mp3/`. Un dossier absent, un lien ou un fichier
-/// à la place d'un dossier compte pour zéro ; ce qui disparaît pendant le calcul aussi.
+/// à la place d'un dossier compte pour zéro ; ce qui disparaît pendant le calcul aussi. Un
+/// `podcasts/` sans le marqueur de l'application compte pour zéro (#591) : « Vider le cache » ne
+/// le compte ni ne le vide, cette part ne doit pas l'annoncer.
 pub fn mp3_cache_bytes(cache_root: &Path) -> AppResult<u64> {
     let podcasts = cache_root.join(CACHE_SUBDIR);
-    if !is_real_dir(&podcasts) {
+    if !crate::cache::is_owned(&podcasts) {
         return Ok(0);
     }
     let sources = match fs::read_dir(&podcasts) {
@@ -80,6 +82,11 @@ mod tests {
         fs::write(path, vec![b'x'; bytes]).unwrap();
     }
 
+    /// `podcasts/` créé par l'application (marqué, #570).
+    fn owned_podcasts(root: &Path) {
+        crate::cache::ensure_subdir(root, CACHE_SUBDIR).unwrap();
+    }
+
     #[test]
     fn un_cache_absent_ou_sans_mp3_occupe_zero_octet() {
         let dir = tempfile::tempdir().unwrap();
@@ -92,6 +99,7 @@ mod tests {
     #[test]
     fn compte_les_mp3_de_toutes_les_sources_et_rien_d_autre() {
         let dir = tempfile::tempdir().unwrap();
+        owned_podcasts(dir.path());
         write(&dir.path().join("podcasts/source-a/mp3/0a.mp3"), 100);
         write(&dir.path().join("podcasts/source-a/mp3/0a.img"), 20);
         write(&dir.path().join("podcasts/source-a/mp3/0a.json"), 3);
@@ -120,6 +128,16 @@ mod tests {
     }
 
     #[test]
+    fn un_podcasts_sans_marqueur_compte_pour_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("podcasts/source-a/mp3/0a.mp3"), 100);
+        assert_eq!(mp3_cache_bytes(dir.path()).unwrap(), 0, "non marqué");
+        // Le même dossier, marqué : compté.
+        fs::write(dir.path().join("podcasts").join(crate::cache::MARKER), b"").unwrap();
+        assert_eq!(mp3_cache_bytes(dir.path()).unwrap(), 100);
+    }
+
+    #[test]
     fn un_fichier_a_la_place_d_un_dossier_compte_pour_zero() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("podcasts/source-a/mp3"), 100);
@@ -134,6 +152,7 @@ mod tests {
     #[test]
     fn un_lien_vers_un_dossier_n_est_pas_suivi() {
         let dir = tempfile::tempdir().unwrap();
+        owned_podcasts(dir.path());
         let outside = tempfile::tempdir().unwrap();
         write(&outside.path().join("gros.mp3"), 1000);
         write(&dir.path().join("podcasts/source-a/mp3/0a.mp3"), 10);

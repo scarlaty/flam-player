@@ -283,6 +283,12 @@ fn own_file(name: &str) -> Option<OwnFile> {
     (!pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())).then_some(OwnFile::Temp)
 }
 
+/// `name` est celui d'un fichier que `ThumbCache` écrit dans `thumbs/` ([`own_file`]) : preuve
+/// d'usage à l'adoption d'un ancien cache (`cache::adopt_legacy_cache`, #591).
+pub(crate) fn is_own_file(name: &str) -> bool {
+    own_file(name).is_some()
+}
+
 /// Purge `<cache_dir>/thumbs/` : supprime les restes d'écriture périmés, les vignettes plus
 /// anciennes que `policy.max_age`, puis les plus anciennes restantes tant que le total dépasse
 /// `policy.max_bytes`.
@@ -681,6 +687,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let outside = root.path().join("ailleurs");
         let now = SystemTime::now();
+        // Cible marquée : seul le lien peut arrêter la purge.
+        mark(&outside);
         let precious = put(&outside, "0000000000000001.png", 50, 400 * DAY, now);
         let cache = root.path().join("cache");
         std::fs::create_dir_all(&cache).unwrap();

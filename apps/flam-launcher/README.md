@@ -1368,13 +1368,21 @@ interrompue (`.flam-launcher-new-…`, vides ou ne contenant que le marqueur) so
 démarrage, après la migration, s'ils datent d'au moins une minute (une création en cours n'est
 jamais cassée). Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
 `library.json`, fichier réel d'au plus 4 Mio lisible au schéma de la bibliothèque ; le `.lock`
-seul ne suffit pas) est accepté par `settings_set` : seul `library/` y est marqué, ses autres
-homonymes sans marqueur ne sont ni marqués ni refusés (l'application les utilise comme avant,
-sans jamais les compter ni les vider). Sans bibliothèque reconnue, un homonyme sans marqueur fait
-refuser le dossier.
-Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré à ce moment sous
-un nom sans preuve d'usage exigée (`archives`, `catalogs`, `compat-local`, `official`, `thumbs`)
-est marqué aussi ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
+seul ne suffit pas) est accepté par `settings_set`, avant l'enregistrement des réglages :
+`library/` y est marqué (par l'index) ; `podcasts/`, `podcast-work/` et `play/` le sont sur la
+preuve d'usage de la migration, et `thumbs/` s'il ne contient que des fichiers nommés comme ceux
+du cache des vignettes (`<16 chiffres hexadécimaux minuscules>.png` ou `.tmp-<pid>`, fichiers de
+l'explorateur ignorés ; vide : accepté) ; `archives/`, `catalogs/`, `compat-local/` et `official/`
+ne sont jamais marqués à l'adoption (aucune preuve par leur contenu) : dans un ancien cache
+réadopté, ils ne sont donc ni nettoyés, ni comptés, ni vidés (fuite de place, jamais de perte).
+Un échec d'écriture du marqueur de `library/` fait échouer l'enregistrement ; celui d'un autre
+sous-dossier est journalisé et ce sous-dossier reste non marqué. Les homonymes refusés ne sont ni
+marqués ni bloquants (l'application les utilise comme avant, sans jamais les compter ni les
+vider). Sans bibliothèque reconnue, rien n'est marqué et un homonyme sans marqueur fait refuser
+le dossier.
+Limites : un homonyme de l'utilisateur déjà présent dans le dossier configuré au moment de la
+migration sous un nom sans preuve d'usage exigée (`archives`, `catalogs`, `compat-local`,
+`official`, `thumbs`) est marqué aussi ; l'usage du cache (`cache_usage.subdirs`) n'annonce que les sous-dossiers
 marqués, ceux que le vidage videra ; après un retour à une version antérieure (qui ignore le marqueur), les
 sous-dossiers qu'elle recrée ne sont plus comptés ni vidés par cette version : créer un fichier
 vide `.flam-launcher` dans le sous-dossier concerné pour qu'il soit de nouveau reconnu (ne pas le

@@ -2,7 +2,8 @@
 //!
 //! Refaire un pack ne retélécharge ni ne reconvertit un épisode déjà converti : son MP3 (et la
 //! pochette d'origine) est gardé sous `<cache>/podcasts/<source_id>/mp3/`, donc purgé avec la
-//! source (D15) et par « Vider le cache ».
+//! source (D15) et, si `podcasts/` porte le marqueur de l'application, par « Vider le cache »
+//! (un `podcasts/` non marqué n'est ni compté ni vidé, #591).
 //!
 //! # Entrée
 //!
