@@ -307,7 +307,7 @@ fn les_tailles_d_en_tete_sont_remises_au_contenu_reel() {
     assert_eq!(Wav::parse(streamed).unwrap().bytes, canonical);
     // Octets après le bloc `data` : retirés, `RIFF` recalculé.
     let mut trailing = canonical.clone();
-    trailing.extend_from_slice(b"LIST   abcd");
+    trailing.extend_from_slice(b"LIST\x04\0\0\0abcd");
     assert_eq!(Wav::parse(trailing).unwrap().bytes, canonical);
 }
 

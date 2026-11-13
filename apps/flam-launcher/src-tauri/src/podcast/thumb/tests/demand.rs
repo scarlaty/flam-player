@@ -480,3 +480,27 @@ fn le_balayage_au_telechargement_n_a_lieu_qu_une_fois_par_source() {
     assert!(!first_fetch(a));
     assert!(first_fetch(b));
 }
+
+#[tokio::test]
+async fn un_second_telechargement_ne_refait_pas_le_balayage() {
+    let f = Fixture::new();
+    let dir = thumbs_dir(&f);
+    let calls = AtomicUsize::new(0);
+    let key = EntryKey::of("s1", &episode("e1"));
+    let access = f.access();
+    // Premier téléchargement : crée le dossier et fait le balayage (dossier encore vide).
+    fetch_bytes(&access, &key, |dest| fake_download(&calls, None, dest)).await;
+    // Reste ancien déposé ensuite : un second téléchargement ne le balaye pas.
+    let old = dir.join("vieux.0123.dl.part");
+    std::fs::write(&old, b"x").unwrap();
+    let long_ago = std::time::SystemTime::now() - STALE_AFTER - Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
+    fetch_bytes(&access, &key, |dest| fake_download(&calls, None, dest)).await;
+    assert!(old.exists(), "balayage non refait au second téléchargement");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
