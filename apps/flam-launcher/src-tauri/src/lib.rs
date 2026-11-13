@@ -70,21 +70,25 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
 
 /// Tâche de démarrage du cache, hors du fil de la fenêtre (#591), dans cet ordre : migration des
 /// marqueurs (#570), ouverture de la porte de démarrage (`opener` détruit : les commandes en
-/// attente reprennent), nettoyage des dossiers temporaires d'une création interrompue, purge des
-/// vignettes périmées (#37). La reprise de la file d'installation est lancée ensuite par
-/// l'appelant. Une panique de la migration est rattrapée : la porte s'ouvre et la suite a lieu
-/// (les sous-dossiers non marqués sont seulement ignorés jusqu'au démarrage suivant).
+/// attente reprennent), lancement de la reprise de la file d'installation (`resume`, aussitôt :
+/// une installation lancée ensuite ne réécrit pas la file avant sa relecture), puis nettoyage des
+/// dossiers temporaires d'une création interrompue et purge des vignettes périmées (#37). Une
+/// panique de la migration n'est rattrapée qu'en test et en développement : la version publiée
+/// compile en `panic = "abort"`, le processus s'arrête alors. Le garde `Drop` de `opener` ouvre
+/// aussi la porte si cette tâche n'est jamais exécutée.
 fn startup_cache_tasks(
     config_dir: &std::path::Path,
     opener: storage::GateOpener,
     app: &tauri::AppHandle,
+    resume: impl FnOnce(),
 ) {
     let env = settings::Environment::current();
     if std::panic::catch_unwind(|| migrate_cache_markers(config_dir, &env)).is_err() {
         tracing::warn!("migration des marqueurs du cache interrompue (panique)");
     }
     drop(opener);
-    cache::remove_stale_tmp_configured(config_dir, &env);
+    resume();
+    cache::remove_stale_tmp_configured(&app.state::<storage::ConfigState>(), &env);
     purge_stale_thumbs(app);
 }
 
@@ -179,18 +183,22 @@ pub fn run() {
             app.manage(player);
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
-                startup_cache_tasks(&config_dir, opener, &handle);
+                let app = handle.clone();
                 // Reprise de la file persistée : chaque entrée est ré-résolue depuis sa source.
-                tauri::async_runtime::spawn(async move {
-                    install
-                        .restore(|source_id, entry_id| {
-                            let handle = handle.clone();
-                            async move {
-                                install::resolve_for_restore(&handle, &source_id, &entry_id).await
-                            }
-                        })
-                        .await;
-                });
+                let resume = move || {
+                    tauri::async_runtime::spawn(async move {
+                        install
+                            .restore(|source_id, entry_id| {
+                                let handle = handle.clone();
+                                async move {
+                                    install::resolve_for_restore(&handle, &source_id, &entry_id)
+                                        .await
+                                }
+                            })
+                            .await;
+                    });
+                };
+                startup_cache_tasks(&config_dir, opener, &app, resume);
             });
             Ok(())
         })

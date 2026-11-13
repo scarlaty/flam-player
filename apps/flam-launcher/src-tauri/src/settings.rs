@@ -539,8 +539,20 @@ impl SettingsStore {
     /// Le consentement du mode carrier n'est pas modifiable ici : la valeur enregistrée est
     /// conservée quelle que soit celle reçue (voir [`Self::record_carrier_consent`]).
     pub fn update(&self, settings: Settings) -> AppResult<Settings> {
+        self.update_with(settings, &|path, settings| {
+            storage::write_json(path, settings)
+        })
+    }
+
+    /// Comme [`Self::update`], avec l'écriture de `settings.json` injectable (tests de panne).
+    fn update_with(
+        &self,
+        settings: Settings,
+        write: &dyn Fn(&Path, &Settings) -> AppResult<()>,
+    ) -> AppResult<Settings> {
         let stored = self.load()?;
         let mut settings = validate(settings)?;
+        let mut new_witness = None;
         if let Some(dir) = &settings.cache_dir {
             let unchanged = stored
                 .cache_dir
@@ -556,11 +568,18 @@ impl SettingsStore {
                 if std::fs::symlink_metadata(&witness).is_err() {
                     std::fs::create_dir_all(&self.dir)?;
                     std::fs::write(&witness, b"")?;
+                    new_witness = Some(witness);
                 }
             }
         }
         settings.carrier_consent = stored.carrier_consent;
-        storage::write_json(&self.dir.join(FILE_NAME), &settings)?;
+        if let Err(err) = write(&self.dir.join(FILE_NAME), &settings) {
+            // Réglage inchangé : la migration de l'ancien dossier reste à faire.
+            if let Some(witness) = new_witness {
+                let _ = std::fs::remove_file(witness);
+            }
+            return Err(err);
+        }
         Ok(settings)
     }
 
@@ -1077,6 +1096,36 @@ mod tests {
         );
         assert!(!crate::cache::is_owned(&old.join("archives")));
         assert!(old.join("archives/perso.zip").is_file());
+    }
+
+    #[test]
+    fn echec_d_ecriture_des_reglages_retire_le_temoin_cree_par_l_appel() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let witness = dir.path().join(crate::cache::MIGRATION_WITNESS);
+        let cache = dir.path().join("nouveau");
+        let with_cache = Settings {
+            cache_dir: Some(cache.display().to_string()),
+            ..Settings::default()
+        };
+        let before = store.load().unwrap();
+        let fail = |_: &Path, _: &Settings| -> AppResult<()> {
+            Err(AppError::Io(std::io::Error::other(
+                "panne simulée : settings.json",
+            )))
+        };
+        assert!(store.update_with(with_cache.clone(), &fail).is_err());
+        assert!(
+            !witness.exists(),
+            "témoin retiré : migration toujours à faire"
+        );
+        assert_eq!(store.load().unwrap(), before);
+        // Témoin déjà présent avant l'appel : jamais retiré.
+        fs::write(&witness, b"").unwrap();
+        assert!(store.update_with(with_cache.clone(), &fail).is_err());
+        assert!(witness.is_file());
+        // Reprise : enregistré.
+        store.update(with_cache).unwrap();
     }
 
     #[test]

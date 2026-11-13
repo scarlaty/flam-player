@@ -1260,7 +1260,9 @@ marqueur. Migration : au premier démarrage de la version qui introduit le marqu
 sous-dossiers déjà présents dans le dossier de cache configuré (et dans le dossier par défaut)
 sont marqués, une seule fois (témoin `cache-markers.done` dans le dossier de configuration), s'ils
 prouvent leur usage par l'application (#591) : `library/` seulement s'il contient l'index reconnu
-(voir ci-dessous) ou s'il est vide ; `podcasts/`, `podcast-work/` et `play/` seulement si tous
+(voir ci-dessous) ou si tous ses éléments ont une forme que l'application y écrit (`.lock`,
+`.staging/`, `thumbs/`, `library.json`, `library.json.*.bak`, `.library.json.*.tmp`,
+`*.plain.pk`, `*.lunii.pk`) ; `podcasts/`, `podcast-work/` et `play/` seulement si tous
 leurs éléments sont des dossiers nommés comme ceux de l'application (identifiant de source,
 identifiant de tâche, empreinte de 16 chiffres hexadécimaux). Un sous-dossier non prouvé n'est pas
 marqué : utilisé comme avant, jamais compté ni vidé. La racine du cache peut être une jonction ou

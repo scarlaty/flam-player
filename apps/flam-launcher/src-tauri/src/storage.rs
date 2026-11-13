@@ -77,8 +77,9 @@ impl StartupGate {
     }
 }
 
-/// Ouvre la porte à sa destruction, y compris pendant une panique : une migration qui échoue ne
-/// bloque jamais les commandes (les sous-dossiers non marqués sont alors seulement ignorés).
+/// Ouvre la porte à sa destruction : après la migration, si la tâche de démarrage n'est jamais
+/// exécutée, ou pendant le déroulement d'une panique (test et développement seulement : la version
+/// publiée compile en `panic = "abort"`).
 pub struct GateOpener(StartupGate);
 
 impl Drop for GateOpener {

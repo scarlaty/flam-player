@@ -257,8 +257,7 @@ fn mark_existing(root: &Path, fault: Fault) -> io::Result<usize> {
 fn proven_by_content(name: &str, dir: &Path) -> bool {
     let child_shape: fn(&str) -> bool = match name {
         crate::library::LIBRARY_DIR => {
-            return crate::library::is_legacy_library(dir)
-                || fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
+            return crate::library::is_legacy_library(dir) || library_children_known(dir);
         }
         crate::podcast::source::CACHE_SUBDIR => |child| {
             !child.is_empty()
@@ -286,6 +285,48 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
                 .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
                 && entry.file_name().to_str().is_some_and(child_shape)
         })
+    })
+}
+
+/// Tous les éléments de `library/` ont une forme que l'application écrit à sa racine (vide
+/// compris) : verrou `.lock` (fichier), `.staging` et `thumbs` (dossiers), index `library.json`,
+/// index mis de côté `library.json.<horodatage>[-n].bak`, temporaire d'écriture atomique de
+/// l'index `.library.json.<pid>-<n>.tmp`, histoires `*.plain.pk` et `*.lunii.pk` (fichiers). Un
+/// seul autre nom, un lien ou un type inattendu : refus. Une bibliothèque ouverte sans rien
+/// installer (`.lock` seul) est ainsi reconnue (#591).
+fn library_children_known(dir: &Path) -> bool {
+    let index = crate::library::INDEX_FILE;
+    let tmp_prefix = format!(".{index}.");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.into_iter().all(|entry| {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let (Ok(kind), Some(name)) = (
+            entry.file_type(),
+            entry.file_name().to_str().map(str::to_owned),
+        ) else {
+            return false;
+        };
+        if kind.is_symlink() {
+            return false;
+        }
+        if kind.is_dir() {
+            return name == crate::library::STAGING_DIR || name == crate::library_thumb::THUMBS_DIR;
+        }
+        kind.is_file()
+            && (name == ".lock"
+                || name == index
+                || name.ends_with(crate::library::FLAM_SUFFIX)
+                || name.ends_with(".lunii.pk")
+                || name
+                    .strip_prefix(index)
+                    .is_some_and(|rest| rest.starts_with('.') && rest.ends_with(".bak"))
+                || name
+                    .strip_prefix(tmp_prefix.as_str())
+                    .is_some_and(|rest| rest.ends_with(".tmp")))
     })
 }
 
@@ -329,11 +370,15 @@ fn migrate_configured_with(
 
 /// Nettoyage des dossiers temporaires d'une création interrompue dans le dossier de cache
 /// effectif et dans le dossier par défaut, à chaque démarrage, **après** l'ouverture de la porte
-/// de démarrage (il ne dépend pas du marqueur ; les temporaires récents sont gardés).
-pub fn remove_stale_tmp_configured(config_dir: &Path, env: &Environment) {
-    let effective = SettingsStore::new(config_dir)
-        .load()
-        .map(|settings| PathBuf::from(resolve(&settings, env).0.cache_dir));
+/// de démarrage (il ne dépend pas du marqueur ; les temporaires récents sont gardés). Les réglages
+/// sont lus sous le verrou de configuration ; le nettoyage se fait hors verrou.
+pub fn remove_stale_tmp_configured(state: &ConfigState, env: &Environment) {
+    let effective = {
+        let _guard = state.guard();
+        SettingsStore::new(&state.dir)
+            .load()
+            .map(|settings| PathBuf::from(resolve(&settings, env).0.cache_dir))
+    };
     if let Ok(effective) = &effective {
         remove_stale_tmp(effective);
     }
@@ -865,7 +910,7 @@ mod tests {
             migrate_configured(config.path(), &env).unwrap(),
             Migration::Deferred
         );
-        remove_stale_tmp_configured(config.path(), &env);
+        remove_stale_tmp_configured(&ConfigState::new(config.path().to_path_buf()), &env);
         assert!(!stale.exists());
     }
 
@@ -1197,6 +1242,47 @@ mod tests {
         }
         assert!(is_owned(&empty.path().join("library")));
         assert!(is_owned(&empty.path().join("podcasts")));
+    }
+
+    /// `library/` d'une bêta antérieure sans index (application ouverte sans rien installer,
+    /// installation échouée, index mis de côté) : reconnue à la forme de ses éléments (#591).
+    #[test]
+    fn une_bibliotheque_sans_index_est_reconnue_a_sa_forme() {
+        let marked = |setup: &dyn Fn(&Path)| {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            let library = cache.path().join("library");
+            fs::create_dir_all(&library).unwrap();
+            setup(&library);
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            is_owned(&library)
+        };
+        assert!(marked(&|l| write(&l.join(".lock"), 0)), "{{.lock}}");
+        assert!(marked(&|l| {
+            write(&l.join(".lock"), 0);
+            fs::create_dir_all(l.join(".staging")).unwrap();
+            fs::create_dir_all(l.join("thumbs")).unwrap();
+        }));
+        assert!(marked(&|l| {
+            write(&l.join(".lock"), 0);
+            write(&l.join("library.json.20260101T000000.bak"), 3);
+            write(&l.join(".library.json.42-0.tmp"), 3);
+            write(&l.join("abc-1.plain.pk"), 3);
+            write(&l.join("def-2.lunii.pk"), 3);
+        }));
+        assert!(marked(&|_| {}), "vide");
+        // Un seul élément d'une autre forme : refus.
+        assert!(!marked(&|l| {
+            write(&l.join(".lock"), 0);
+            write(&l.join("roman.epub"), 3);
+        }));
+        assert!(!marked(&|l| {
+            write(&l.join(".lock"), 0);
+            fs::create_dir_all(l.join("livres")).unwrap();
+        }));
+        assert!(!marked(&|l| write(&l.join("thumbs"), 3)), "thumbs fichier");
+        assert!(!marked(&|l| fs::create_dir_all(l.join(".lock")).unwrap()));
     }
 
     #[test]
