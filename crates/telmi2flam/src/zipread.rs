@@ -59,14 +59,20 @@ pub enum ZipError {
     /// LZMA ou Zstandard invalide (`OSError`, `LZMAError`, `ZstdError`) : Python échoue en
     /// `internal_error` (code 6) ; le Rust rend code 3, comme pour le chiffrement.
     PythonFailsToo(String),
+    /// Erreur d'entrée/sortie **du système** en lisant l'archive (accès refusé par un antivirus,
+    /// fichier verrouillé, volume retiré : [`crate::error::system_io`]) : le support local est en cause, pas
+    /// le contenu de l'archive (#580). Python rend aussi `OSError` ici (code 6) ; le Rust rend
+    /// `archive_io`, code 3.
+    Io(String),
 }
 
 impl std::fmt::Display for ZipError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ZipError::Corrupt(m) | ZipError::Encrypted(m) | ZipError::PythonFailsToo(m) => {
-                f.write_str(m)
-            }
+            ZipError::Corrupt(m)
+            | ZipError::Encrypted(m)
+            | ZipError::PythonFailsToo(m)
+            | ZipError::Io(m) => f.write_str(m),
         }
     }
 }
@@ -76,7 +82,11 @@ fn corrupt(message: impl Into<String>) -> ZipError {
 }
 
 fn io_corrupt(e: io::Error) -> ZipError {
-    ZipError::Corrupt(e.to_string())
+    if crate::error::system_io(&e) {
+        ZipError::Io(e.to_string())
+    } else {
+        ZipError::Corrupt(e.to_string())
+    }
 }
 
 /// Une entrée du répertoire central (`ZipInfo`).
@@ -492,9 +502,10 @@ impl<R: Read + Seek> ZipReader<R> {
     /// [`ZipReader::read`] par tours d'au plus `chunk` octets décompressés, passés à `sink` un
     /// à un (la mémoire reste bornée par `chunk`) ; le CRC est vérifié après le dernier tour,
     /// donc **après** que `sink` a reçu toutes les données. `Ok(false)` si le nom n'existe pas.
-    /// `cancelled` est consulté avant chaque lecture de données compressées, y compris pendant
-    /// un décodage bzip2/LZMA/Zstandard dont la sortie est entièrement écartée (au-delà de la
-    /// taille annoncée) et n'atteint donc jamais `sink` : [`ChunkStop::Cancelled`].
+    /// `cancelled` est consulté avant chaque lecture de données compressées (au plus 1 Mio),
+    /// avant chaque morceau de 64 Kio décompressé en deflate, et pour bzip2/LZMA/Zstandard à
+    /// chaque morceau rendu par le décodeur, y compris quand la sortie est entièrement écartée
+    /// (au-delà de la taille annoncée) et n'atteint donc jamais `sink` : [`ChunkStop::Cancelled`].
     /// Mêmes contrôles d'en-tête que `read` ; seule la taille des tours diffère.
     pub fn read_chunks<E>(
         &mut self,
@@ -618,15 +629,33 @@ struct ExtFile<'a, R> {
 impl<R: Read> ExtFile<'_, R> {
     /// `_read2` : au plus `n` octets compressés (au moins `MIN_READ_SIZE`, au plus ce qui
     /// reste) ; `EOFError` si le fichier s'arrête avant.
-    fn read2(&mut self, n: usize) -> Result<Vec<u8>, ZipError> {
+    /// Lu par morceaux d'au plus `CODEC_PIECE` octets, `cancelled` consulté avant chacun
+    /// (#580) ; le résultat est celui d'une lecture d'un bloc.
+    fn read2<E>(
+        &mut self,
+        n: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ChunkStop<E>> {
         if self.compress_left == 0 {
             return Ok(Vec::new());
         }
-        let n = (n.max(MIN_READ_SIZE) as u64).min(self.compress_left);
-        let data = read_up_to(self.reader, n).map_err(io_corrupt)?;
-        self.compress_left -= data.len() as u64;
+        let total = (n.max(MIN_READ_SIZE) as u64).min(self.compress_left);
+        let mut data = Vec::new();
+        while (data.len() as u64) < total {
+            if cancelled() {
+                return Err(ChunkStop::Cancelled);
+            }
+            let want = (CODEC_PIECE as u64).min(total - data.len() as u64);
+            let piece = read_up_to(self.reader, want).map_err(io_corrupt)?;
+            self.compress_left -= piece.len() as u64;
+            let short = (piece.len() as u64) < want;
+            data.extend_from_slice(&piece);
+            if short {
+                break;
+            }
+        }
         if data.is_empty() {
-            return Err(corrupt("EOFError : fin de fichier dans une entrée"));
+            return Err(corrupt("EOFError : fin de fichier dans une entrée").into());
         }
         Ok(data)
     }
@@ -635,18 +664,22 @@ impl<R: Read> ExtFile<'_, R> {
     /// fin de `data` ou `max_length` octets produits. Ne garde que les `keep` premiers octets
     /// (les suivants seraient tronqués par `data[:self._left]`), mais compte tout pour
     /// détecter les erreurs au même endroit que zlib. Rend (sortie, consommé, fin du flux,
-    /// produit).
-    fn inflate(
+    /// produit). `cancelled` est consulté avant chaque morceau de 64 Kio décompressé (#580).
+    fn inflate<E>(
         &mut self,
         input: &[u8],
         max_length: usize,
         keep: usize,
-    ) -> Result<(Vec<u8>, usize, bool, usize), ZipError> {
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(Vec<u8>, usize, bool, usize), ChunkStop<E>> {
         let mut out = Vec::new();
         let mut buf = vec![0u8; 64 * 1024];
         let mut pos = 0usize;
         let mut produced = 0usize;
         while produced < max_length {
+            if cancelled() {
+                return Err(ChunkStop::Cancelled);
+            }
             let room = buf.len().min(max_length - produced);
             let before_in = self.decompressor.total_in();
             let before_out = self.decompressor.total_out();
@@ -706,11 +739,12 @@ impl<R: Read> ExtFile<'_, R> {
             let mut chunk = if self.deflate {
                 let mut data = std::mem::take(&mut self.tail);
                 if max_n > data.len() {
-                    let more = self.read2(max_n - data.len())?;
+                    let more = self.read2(max_n - data.len(), cancelled)?;
                     data.extend_from_slice(&more);
                 }
                 let keep = usize::try_from(self.left).unwrap_or(usize::MAX);
-                let (chunk, used, stream_end, produced) = self.inflate(&data, max_n, keep)?;
+                let (chunk, used, stream_end, produced) =
+                    self.inflate(&data, max_n, keep, cancelled)?;
                 if !stream_end && produced >= max_n {
                     self.tail = data[used..].to_vec();
                 }
@@ -723,7 +757,7 @@ impl<R: Read> ExtFile<'_, R> {
                     || (self.compress_left == 0 && self.tail.is_empty() && produced < max_n);
                 chunk
             } else {
-                let data = self.read2(max_n)?;
+                let data = self.read2(max_n, cancelled)?;
                 eof = self.compress_left == 0;
                 data
             };
@@ -787,7 +821,16 @@ impl<R: Read> ExtFile<'_, R> {
                 // Dernier morceau du tour : tour complet, ou fin du fichier.
                 short = (piece.len() as u64) < want;
                 let last = got == n || short;
+                // Le décodeur rend sa sortie par morceaux (au plus 64 Kio pour bzip2 et LZMA ;
+                // Zstandard rend ce que sa fenêtre accumule entre deux sorties, plus gros) :
+                // l'annulation est aussi consultée à chacun, car un morceau compressé de 1 Mio
+                // très compressible se décode en entier dans ce seul appel.
+                let mut stopped = false;
                 let r = codec.feed(&piece, last, &mut |chunk: &[u8]| {
+                    if cancelled() {
+                        stopped = true;
+                        return Err(());
+                    }
                     deliver(
                         chunk,
                         &mut left,
@@ -797,6 +840,9 @@ impl<R: Read> ExtFile<'_, R> {
                         &mut sink_err,
                     )
                 });
+                if stopped {
+                    return Err(ChunkStop::Cancelled);
+                }
                 eof = codec_result(r, &mut sink_err, zinfo)?;
                 // Après la fin du flux, le reste du tour est ignoré (`unused_data`).
                 if eof || last {
@@ -806,7 +852,12 @@ impl<R: Read> ExtFile<'_, R> {
             if !eof && left > 0 && (self.compress_left == 0 || short) {
                 // Plus rien à lire (fin des données ou du fichier) : ce que le décodeur retenait encore est rendu, comme les
                 // bibliothèques C le rendent au fil de l'eau (flux tronqué).
+                let mut stopped = false;
                 let r = codec.finish(&mut |chunk: &[u8]| {
+                    if cancelled() {
+                        stopped = true;
+                        return Err(());
+                    }
                     deliver(
                         chunk,
                         &mut left,
@@ -816,6 +867,9 @@ impl<R: Read> ExtFile<'_, R> {
                         &mut sink_err,
                     )
                 });
+                if stopped {
+                    return Err(ChunkStop::Cancelled);
+                }
                 codec_result(r, &mut sink_err, zinfo)?;
             }
             if eof || self.compress_left == 0 || left == 0 {
@@ -1162,6 +1216,119 @@ mod tests {
                 let ext = zr.open_entry(&entry).unwrap();
                 let r = ext.pump_codec(&entry, MAX_N, 1000, &|| false, &mut |_| Err("stop"));
                 assert!(matches!(r, Err(ChunkStop::Sink("stop"))), "{id}");
+            }
+        }
+    }
+
+    /// #580 : l'annulation levée au n-ième appel, quel que soit n, arrête la lecture, y compris
+    /// à l'intérieur d'un `feed` (le morceau compressé tient en un seul appel, sa sortie est
+    /// rendue par morceaux de 64 Kio) ; les octets déjà rendus au `sink` ne dépassent pas ceux
+    /// décodés avant l'appel qui a vu l'annulation.
+    #[test]
+    fn annulation_au_n_ieme_appel_pendant_le_decodage() {
+        use std::cell::Cell;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        for id in ["bzip2_multiblock", "lzma_runs", "zstd_level19"] {
+            let data = std::fs::read(format!("{dir}{id}.zip")).unwrap();
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            let name = "images/c.png";
+            let size = zr.entries[zr.name_to_info[name]].file_size;
+            assert!(zr.entries[zr.name_to_info[name]].compress_size < CODEC_PIECE as u64);
+            // Nombre d'appels d'une lecture complète : un par morceau compressé, un par
+            // morceau de sortie.
+            let calls = Cell::new(0usize);
+            let counter = || {
+                calls.set(calls.get() + 1);
+                false
+            };
+            let ok = zr.read_chunks(name, 4096, &counter, &mut |_| Ok::<(), ()>(()));
+            assert!(matches!(ok, Ok(true)), "{id}");
+            let total = calls.get();
+            // 1 appel avant le `feed`, puis au moins un morceau de sortie dans ce seul `feed`
+            // (plusieurs pour bzip2).
+            let min = if id == "bzip2_multiblock" { 3 } else { 2 };
+            assert!(
+                size > 64 * 1024 && total >= min,
+                "{id} : {size} octets, {total} appels"
+            );
+            for n in 1..=total {
+                let calls = Cell::new(0usize);
+                let at_n = || {
+                    calls.set(calls.get() + 1);
+                    calls.get() == n
+                };
+                let mut sunk = 0usize;
+                let r = zr.read_chunks(name, 4096, &at_n, &mut |c: &[u8]| {
+                    sunk += c.len();
+                    Ok::<(), ()>(())
+                });
+                assert!(
+                    matches!(r, Err(ChunkStop::Cancelled)),
+                    "{id}, n = {n} : {r:?}"
+                );
+                // Arrêt immédiat : plus aucun appel ni aucun octet après celui qui a vu
+                // l'annulation (le premier appel précède tout décodage).
+                assert_eq!(calls.get(), n, "{id}, n = {n}");
+                // Le contrôle précède la remise du morceau au `sink` : au n-ième appel (n >= 2),
+                // n - 2 morceaux de 64 Kio au plus ont été remis (bzip2 et LZMA ; les morceaux
+                // de Zstandard sont plus gros).
+                if id != "zstd_level19" {
+                    let sent = (n as u64).saturating_sub(2) * 64 * 1024;
+                    assert!(sunk as u64 <= sent, "{id}, n = {n}, {sunk} octets");
+                }
+            }
+        }
+    }
+
+    /// #580 : deflate et stored s'annulent aussi pendant leur lecture, au n-ième appel quel que
+    /// soit n ; la sortie d'une lecture menée au bout reste celle de `read`.
+    #[test]
+    fn annulation_au_n_ieme_appel_deflate_et_stored() {
+        use std::cell::Cell;
+        // Stored : 3 Mio, soit trois morceaux compressés de 1 Mio.
+        let content: Vec<u8> = (0..3 * CODEC_PIECE).map(|i| (i % 251) as u8).collect();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/archive/");
+        let deflated = std::fs::read(format!("{dir}deflate_big.zip")).unwrap();
+        for (id, data, min_calls) in [
+            ("stored", zip64(&content, b""), 3),
+            ("deflate", deflated, 3),
+        ] {
+            let mut zr = ZipReader::new(IoCursor::new(data)).unwrap();
+            // L'entrée la plus grosse.
+            let name = zr
+                .entries
+                .iter()
+                .max_by_key(|e| e.file_size)
+                .unwrap()
+                .filename
+                .clone();
+            let want = zr.read(&name).unwrap().unwrap();
+            assert!(want.len() > 128 * 1024, "{id} : {} octets", want.len());
+            let calls = Cell::new(0usize);
+            let counter = || {
+                calls.set(calls.get() + 1);
+                false
+            };
+            let mut got = Vec::new();
+            let ok = zr.read_chunks(&name, CODEC_PIECE, &counter, &mut |c: &[u8]| {
+                got.extend_from_slice(c);
+                Ok::<(), ()>(())
+            });
+            assert!(matches!(ok, Ok(true)) && got == want, "{id}");
+            let total = calls.get();
+            assert!(total >= min_calls, "{id} : {total} appels");
+            for n in 1..=total {
+                let calls = Cell::new(0usize);
+                let at_n = || {
+                    calls.set(calls.get() + 1);
+                    calls.get() == n
+                };
+                let r = zr.read_chunks(&name, CODEC_PIECE, &at_n, &mut |_| Ok::<(), ()>(()));
+                assert!(
+                    matches!(r, Err(ChunkStop::Cancelled)),
+                    "{id}, n = {n} : {r:?}"
+                );
+                assert_eq!(calls.get(), n, "{id}, n = {n}");
             }
         }
     }

@@ -405,6 +405,8 @@ async fn archive_mise_en_cause_par_la_conversion_supprimee() {
         ("err:not_telmi:3", true),
         ("err:invalid_content:4", true),
         ("err:missing_asset:5", true),
+        // Le système refuse de lire l'archive (#580) : l'archive n'est pas en cause, gardée.
+        ("err:archive_io:3", false),
         ("err:unsupported_format:7", false),
         ("err:output_error:6", false),
         ("err:internal_error:6", false),
@@ -418,6 +420,15 @@ async fn archive_mise_en_cause_par_la_conversion_supprimee() {
             .unwrap();
         let failed = ctx.finished(&task.id).await;
         assert_eq!(failed.state, TaskState::Failed, "{mode}");
+        if mode == "err:archive_io:3" {
+            // Message fixe de `archive_io` (et non le texte générique du convertisseur).
+            let error = failed.error.as_ref().unwrap();
+            assert_eq!(error.code.as_deref(), Some("archive_io"));
+            assert!(
+                error.message.contains("refusée par le système"),
+                "{error:?}"
+            );
+        }
         let archive = ctx.cache().join("archives").join("abc-2.zip");
         assert_eq!(!archive.exists(), removed, "{mode} : archive");
         assert_eq!(!meta_path(&archive).exists(), removed, "{mode} : mémoire");

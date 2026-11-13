@@ -1,9 +1,10 @@
 //! Données qui ne sont ni un PNG ni un JPEG (décodé par [`crate::jpeg`] dès la signature
 //! `FF D8 FF`) : Pillow pourrait-il les ouvrir ?
 //!
-//! `Image.open` essaie chacun de ses 43 greffons de lecture (45 avec `olefile`) : ceux qui ont une fonction
-//! `_accept` ne voient que les 16 premiers octets, les autres (`IM`, `IMT`, `IPTC`, `PCD`,
-//! `SPIDER`, `TGA`) sont ouverts directement et lèvent une exception sur un en-tête invalide.
+//! `Image.open` essaie chacun de ses 43 greffons de lecture (45 avec `olefile`) : ceux qui ont
+//! une fonction `_accept` ne voient que les 16 premiers octets, les autres (`IM`, `IMT`,
+//! `IPTC`, `PCD`, `SPIDER`, `TGA`) sont ouverts directement et lèvent une exception sur un
+//! en-tête invalide.
 //! Si aucun ne peut accepter les données, Pillow lève `UnidentifiedImageError` : Python émet
 //! alors `image_unreadable` (ou `cover_unreadable`) et le Rust doit faire de même. Sinon,
 //! c'est peut-être un autre format d'image que Pillow lirait : le Rust ne le décode pas et
@@ -24,9 +25,9 @@
 //! Cas laissés du côté « peut-être » dans ces quatre greffons : valeur numérique d'un champ
 //! `IM` ou `IMT` que Python lirait peut-être autrement qu'ici (soulignés `_` ; pour `IM`, dont
 //! les valeurs sont décodées en Latin-1, aussi `\x85` et `\xa0`, que `int()` et `float()`
-//! retirent : réputée valide ; `\x1c`-`\x1f` sont rejetés). Tout autre octet de contrôle ou d'au moins 0x80 rend la valeur
-//! invalide (`ValueError`, #580) ; taille `IM` de trois nombres ou plus (le greffon
-//! l'ouvre, le chargement échouerait plus tard). La garde anti-bombe de `Image.open`
+//! retirent : réputée valide ; `\x1c`-`\x1f` sont rejetés). Tout autre octet de contrôle ou
+//! d'au moins 0x80 rend la valeur invalide (`ValueError`, #580) ; taille `IM` de trois nombres
+//! ou plus (le greffon l'ouvre, le chargement échouerait plus tard). La garde anti-bombe de `Image.open`
 //! (`2 × MAX_IMAGE_PIXELS`) est rejouée, comme les exceptions qu'elle ne rattrape pas
 //! (`ValueError`, `OSError`) : elles rendent `image_unreadable` côté Python (`except Exception`).
 //! Aucun contrôle d'un autre greffon n'est resserré : une signature `_accept` qui concorde

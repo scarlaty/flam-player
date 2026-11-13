@@ -250,7 +250,7 @@ impl<'a, R: Read + Seek> StoryAssets<'a, R> {
         let Some(full) = self.archive.lookup(&format!("{}{rel}", self.root)) else {
             return Ok(None);
         };
-        match self.archive.read(&full)? {
+        match self.archive.read_cancellable(&full, self.cancelled)? {
             Some(data) => Ok(Some((full, data))),
             None => Err(ConvError::internal_error(format!(
                 "{full} : entree listee mais introuvable"
