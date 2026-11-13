@@ -50,3 +50,24 @@ it("scrutation désactivée : « Réessayer » est close aussitôt, sans appel",
   expect(result.current.answered).toBe(2);
   expect(mocked).not.toHaveBeenCalled();
 });
+
+it("scrutation mise en pause : « Réessayer » ne lance plus aucune lecture", async () => {
+  const { result, rerender } = renderHook(
+    ({ enabled }: { enabled: boolean }) =>
+      useDeviceStatus({ enabled, intervalMs: 60_000 }),
+    { initialProps: { enabled: true } },
+  );
+  await waitFor(() => expect(result.current.status).not.toBeNull());
+  const before = mocked.mock.calls.length;
+  rerender({ enabled: false });
+  let request = 0;
+  act(() => {
+    request = result.current.retry();
+  });
+  // La demande est close aussitôt, sans lecture de la Flam (pause : lecture incrustée).
+  expect(result.current.answered).toBe(request);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(mocked.mock.calls.length).toBe(before);
+});

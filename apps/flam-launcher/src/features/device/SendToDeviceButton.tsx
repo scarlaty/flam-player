@@ -10,20 +10,10 @@ import {
   type SendBlock,
   type SendContext,
 } from "./sendRules";
+import { REASON_TEXT } from "./sendReasons";
 import "./SendToDeviceButton.css";
 
 const text = t.deviceTransfer;
-
-const REASON_TEXT: Record<SendBlock, string> = {
-  queued: text.reasons.queued,
-  no_device: text.reasons.noDevice,
-  firmware: text.reasons.firmware,
-  lunii_needs_v2: text.reasons.luniiNeedsV2,
-  checking: text.reasons.checking,
-  present: text.reasons.present,
-  no_space: text.reasons.noSpace,
-  removing: text.reasons.removing,
-};
 
 export interface SendToDeviceButtonProps {
   uuid: string;

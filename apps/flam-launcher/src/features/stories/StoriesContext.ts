@@ -6,6 +6,14 @@ import type { StoryEntry } from "../../api/story";
 import type { Task } from "../../components";
 import type { StoryProgress, StoryState } from "../library/storyState";
 
+/**
+ * Issue d'une installation demandée avec `onSettled` : `installed` (entrée publiée dans « Mes
+ * histoires ») ou `abandoned` (échec, annulation, refus du backend, confirmation refusée, ou
+ * nouvelle demande d'installation de la même histoire).
+ */
+export type InstallOutcome =
+  { status: "installed"; entry: Omit<LibraryEntry, "format"> } | { status: "abandoned" };
+
 export interface InstallOptions {
   /** Lance l'histoire dès que l'installation est terminée (« Télécharger et jouer »). */
   thenPlay?: boolean;
@@ -18,6 +26,17 @@ export interface InstallOptions {
    * STUdio, Q10) : sans lui, `install` demande d'abord confirmation.
    */
   replaceFormat?: boolean;
+  /**
+   * Appelé une seule fois, à l'issue de cette installation (« Installer et envoyer », #609).
+   * Gardé en mémoire seulement : après un rechargement de la fenêtre, il n'est jamais appelé.
+   * « Réessayer » après un échec relance une installation simple, sans lui.
+   */
+  onSettled?: (outcome: InstallOutcome) => void;
+  /**
+   * Appelé quand la tâche d'installation est créée (confirmations passées, demande acceptée par
+   * le backend) ; jamais si elle est refusée ou abandonnée avant.
+   */
+  onStarted?: () => void;
 }
 
 export interface StoriesApi {

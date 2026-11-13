@@ -29,6 +29,8 @@ import {
   type EjectNote,
   type PcCopyNotice,
   type PcCopyState,
+  type PlannedSend,
+  type PlannedSendRequest,
   type QueueItem,
   type SendRequest,
   type StoriesState,
@@ -36,7 +38,9 @@ import {
 } from "./DeviceContext";
 import { CarrierDialog } from "./CarrierDialog";
 import { sendErrorMessage } from "./sendError";
-import { useDeviceStatus } from "./useDeviceStatus";
+import { REASON_TEXT } from "./sendReasons";
+import { findOnDevice, sendBlock } from "./sendRules";
+import { statusFetchCount, useDeviceStatus } from "./useDeviceStatus";
 
 const text = t.deviceTransfer;
 
@@ -106,7 +110,7 @@ export function DeviceProvider({
   libraryUuids,
   onPcCopyChange,
 }: DeviceProviderProps) {
-  const { status, error, retry, answered } = useDeviceStatus({
+  const { status, error, retry, answered, fetched } = useDeviceStatus({
     enabled: !paused,
     intervalMs,
   });
@@ -124,12 +128,33 @@ export function DeviceProvider({
   const deviceKeyRef = useRef<string | null>(null);
   const deviceRef = useRef<DeviceSummary | null>(null);
   const onPcCopyChangeRef = useRef(onPcCopyChange);
+  const pausedRef = useRef(paused);
+  const fetchedRef = useRef(fetched);
   useEffect(() => {
     rootRef.current = root;
     deviceKeyRef.current = deviceKey;
     deviceRef.current = device;
     onPcCopyChangeRef.current = onPcCopyChange;
+    pausedRef.current = paused;
+    fetchedRef.current = fetched;
   });
+  // Scrutation suspendue : en pause (lecture incrustée) ou fenêtre masquée (`useDeviceStatus` ne
+  // scrute pas une fenêtre masquée). Une autre Flam peut alors prendre la lettre du lecteur sans
+  // qu'aucune absence ne soit vue.
+  const [hidden, setHidden] = useState(() => document.hidden);
+  const suspended = paused || hidden;
+  // Après une suspension, l'état affiché de la Flam date d'avant elle tant qu'une lecture lancée
+  // depuis (celle de la reprise, sans appel de plus) n'a pas répondu : rang attendu de cette
+  // lecture. Aucune lecture n'est lancée pendant la suspension.
+  const freshRank = useRef(0);
+  useEffect(() => {
+    if (suspended) freshRank.current = statusFetchCount() + 1;
+  }, [suspended]);
+  /** La Flam n'est pas surveillée, ou son état affiché n'a pas encore été relu depuis la reprise. */
+  const unwatchedNow = useCallback(
+    () => pausedRef.current || document.hidden || fetchedRef.current < freshRank.current,
+    [],
+  );
 
   // Reprise : une fois par branchement (changement de volume ou retour après une absence).
   const startedKey = useRef<string | null>(null);
@@ -264,8 +289,14 @@ export function DeviceProvider({
   const [cancelling, setCancelling] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const running = useRef(false);
+  // Un retrait d'histoire de la Flam est en cours.
+  const [removing, setRemoving] = useState(false);
   const sendingUuid = useRef<string | null>(null);
-  const [pendingAck, setPendingAck] = useState<SendRequest | null>(null);
+  // Action en attente de l'avertissement « expérimentale » (envoi, ou « Installer et envoyer »).
+  const [pendingAck, setPendingAck] = useState<{
+    run: () => void;
+    confirmLabel: string;
+  } | null>(null);
   // Choix retenu pour la Flam branchée pendant cette session (mode carrier).
   const carrierSession = useRef<{ key: string | null; carrier: CarrierSend } | null>(
     null,
@@ -333,6 +364,42 @@ export function DeviceProvider({
         ),
       ),
     [updateQueue],
+  );
+
+  const plansRef = useRef<PlannedSend[]>([]);
+  const [plans, setPlans] = useState<PlannedSend[]>([]);
+  const updatePlans = useCallback((change: (items: PlannedSend[]) => PlannedSend[]) => {
+    const next = change(plansRef.current);
+    if (next === plansRef.current) return;
+    plansRef.current = next;
+    setPlans(next);
+  }, []);
+
+  /**
+   * Abandonne les envois prévus encore valides désignés par `which` : la Flam n'est plus sûrement
+   * celle du clic. `append` : l'annonce s'ajoute à celle du résultat de l'envoi en cours.
+   */
+  const losePlans = useCallback(
+    (which: (plan: PlannedSend) => boolean, append = false) => {
+      const lost = plansRef.current.filter((item) => !item.lost && which(item)).length;
+      if (lost === 0) return;
+      updatePlans((items) =>
+        items.map((item) => (!item.lost && which(item) ? { ...item, lost: true } : item)),
+      );
+      const note = text.planned.announce.lost(lost);
+      setAnnouncement((previous) => (append && previous ? `${previous}. ${note}` : note));
+    },
+    [updatePlans],
+  );
+
+  const dropPlannedSend = useCallback(
+    (uuid: string) =>
+      updatePlans((items) =>
+        items.some((item) => item.uuid === uuid)
+          ? items.filter((item) => item.uuid !== uuid)
+          : items,
+      ),
+    [updatePlans],
   );
 
   const pump = useCallback(async () => {
@@ -494,6 +561,9 @@ export function DeviceProvider({
         cancelWaiting(waitingAtResult);
       }
       if (changed) {
+        // Le backend a vu la Flam changer (#577) alors que la clé d'appareil du front, réduite à
+        // la lettre du lecteur, peut être restée la même : aucun envoi prévu ne partira seul.
+        losePlans(() => true, true);
         // Copie temporaire, cache ou ancienne version peuvent rester sur la Flam branchée :
         // reprise tout de suite (elle supprime une copie inachevée, ne l'installe jamais), puis
         // état relu.
@@ -531,10 +601,15 @@ export function DeviceProvider({
     ) {
       setAnnouncement(text.panel.announce.finished);
     }
-  }, [setItemState, updateQueue, bumpReload, retry, cancelWaiting]);
+  }, [setItemState, updateQueue, bumpReload, retry, cancelWaiting, losePlans]);
 
   const enqueue = useCallback(
     (request: SendRequest & { carrier?: CarrierSend }) => {
+      // Envoi demandé par l'utilisateur et réellement mis en file (dialogues passés) : l'envoi
+      // prévu de la même histoire n'a plus d'objet. Il ne repartira pas seul, même si
+      // l'histoire est ensuite retirée de la Flam. Tant qu'un dialogue d'envoi est ouvert ou
+      // s'il est annulé, l'envoi prévu reste (ligne « à confirmer » comprise).
+      if (!request.planned) dropPlannedSend(request.uuid);
       const active = queueRef.current.some(
         (item) =>
           item.uuid === request.uuid &&
@@ -546,12 +621,22 @@ export function DeviceProvider({
         const busy = items.some(
           (item) => item.state === "waiting" || item.state === "sending",
         );
-        const base = busy ? items.filter((item) => item.uuid !== request.uuid) : [];
+        // Un envoi prévu resté en échec reste lisible jusqu'à la fermeture de la liste. Un envoi
+        // venu de « Installer et envoyer » arrive seul, sans action de l'utilisateur : il ne
+        // retire que les lignes « Envoyée » qui n'ont plus rien à dire ni à proposer. Restent
+        // les échecs et annulations (message), « Retirer du PC » proposé ou en cours, et
+        // l'histoire retirée du PC (« il faudra la réinstaller »).
+        const keeps = (item: QueueItem) =>
+          busy ||
+          (item.planned === true && item.state === "failed") ||
+          (request.planned === true &&
+            (item.state !== "done" || item.pcCopy !== undefined));
+        const base = items.filter((item) => keeps(item) && item.uuid !== request.uuid);
         return [...base, { ...request, state: "waiting" }];
       });
       void pump();
     },
-    [pump, updateQueue],
+    [pump, updateQueue, dropPlannedSend],
   );
 
   /** Flam 1.x : les clés carrier sont choisies (et l'avertissement accepté) avant l'envoi. */
@@ -571,21 +656,266 @@ export function DeviceProvider({
     [enqueue],
   );
 
-  const requestSend = useCallback(
-    (request: SendRequest) => {
-      if (getFlamSendWarningAck()) proceed(request);
-      else setPendingAck(request);
+  /** Exécute `run` une fois l'avertissement « expérimentale » accepté (demandé une seule fois). */
+  const withSendWarning = useCallback(
+    (run: () => void, confirmLabel: string = text.experimental.confirm) => {
+      if (getFlamSendWarningAck()) run();
+      else setPendingAck({ run, confirmLabel });
     },
-    [proceed],
+    [],
+  );
+
+  const requestSend = useCallback(
+    (request: SendRequest) => withSendWarning(() => proceed(request)),
+    [withSendWarning, proceed],
   );
 
   function confirmAck() {
     if (!pendingAck) return;
     setFlamSendWarningAck();
-    const request = pendingAck;
+    const { run } = pendingAck;
     setPendingAck(null);
-    proceed(request);
+    run();
   }
+
+  // --- Envois prévus à la fin d'une installation (« Installer et envoyer », #609) -----------
+  // Rien n'est conservé hors de la mémoire de la fenêtre : après une fermeture ou un
+  // rechargement, une installation reprise par le backend ne déclenche aucun envoi.
+  const planSend = useCallback(
+    (request: PlannedSendRequest, start: () => void) => {
+      // Flam du clic : l'avertissement peut rester affiché, et la Flam changer entre-temps.
+      const key = deviceKeyRef.current;
+      if (key === null) return;
+      withSendWarning(() => {
+        updatePlans((items) => [
+          ...items.filter((item) => item.uuid !== request.uuid),
+          {
+            ...request,
+            deviceKey: key,
+            state: "pending",
+            size: null,
+            lost: deviceKeyRef.current !== key,
+            unwatched: unwatchedNow(),
+          },
+        ]);
+        start();
+      }, text.experimental.confirmInstall);
+    },
+    [withSendWarning, updatePlans, unwatchedNow],
+  );
+
+  const startPlannedSend = useCallback(
+    (uuid: string) => {
+      const plan = plansRef.current.find((item) => item.uuid === uuid);
+      if (plan?.state !== "pending") return;
+      updatePlans((items) =>
+        items.map((item) => (item === plan ? { ...item, state: "installing" } : item)),
+      );
+      setAnnouncement(text.planned.announce.planned(plan.title));
+    },
+    [updatePlans],
+  );
+
+  const fulfilPlannedSend = useCallback(
+    (uuid: string, size: number | null) =>
+      updatePlans((items) =>
+        items.some((item) => item.uuid === uuid && item.state !== "ready")
+          ? items.map((item) =>
+              item.uuid === uuid
+                ? {
+                    ...item,
+                    state: "ready",
+                    size,
+                    unwatched: item.unwatched || unwatchedNow(),
+                  }
+                : item,
+            )
+          : items,
+      ),
+    [updatePlans, unwatchedNow],
+  );
+
+  // Scrutation suspendue alors que des envois sont prévus : ils ne partiront plus seuls. Relevé
+  // à l'événement lui-même (fenêtre masquée) et à chaque rendu en pause (lecture incrustée).
+  const unwatchPlans = useCallback(
+    () =>
+      updatePlans((items) =>
+        items.some((item) => !item.unwatched)
+          ? items.map((item) => (item.unwatched ? item : { ...item, unwatched: true }))
+          : items,
+      ),
+    [updatePlans],
+  );
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        freshRank.current = statusFetchCount() + 1;
+        unwatchPlans();
+      }
+      setHidden(document.hidden);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [unwatchPlans]);
+  useEffect(() => {
+    if (suspended) unwatchPlans();
+  }, [suspended, plans, unwatchPlans]);
+
+  // Histoire installée puis supprimée de « Mes histoires » avant son envoi : l'envoi prévu est
+  // oublié. Elle doit d'abord y avoir été vue (la liste est relue après la fin d'installation).
+  useEffect(() => {
+    if (!libraryUuids) return;
+    updatePlans((items) => {
+      const ready = items.filter((item) => item.state === "ready");
+      if (
+        ready.every((item) => libraryUuids.has(item.uuid) === (item.inLibrary === true))
+      )
+        return items;
+      return items
+        .filter(
+          (item) =>
+            item.state !== "ready" || !item.inLibrary || libraryUuids.has(item.uuid),
+        )
+        .map((item) =>
+          item.state === "ready" && !item.inLibrary && libraryUuids.has(item.uuid)
+            ? { ...item, inLibrary: true }
+            : item,
+        );
+    });
+  }, [libraryUuids, plans, updatePlans]);
+
+  // Flam débranchée, remplacée ou rebranchée depuis le clic : l'envoi prévu ne partira pas, même
+  // si une Flam revient sous la même lettre (ce peut être une autre : le libellé de volume est le
+  // même sur toutes les Flam, la clé d'appareil se réduit à la lettre du lecteur, #577).
+  // L'utilisateur choisira lui-même avec « Envoyer ».
+  const plansKey = useRef(deviceKey);
+  useEffect(() => {
+    if (plansKey.current === deviceKey) return;
+    plansKey.current = deviceKey;
+    losePlans((item) => item.deviceKey !== deviceKey);
+  }, [deviceKey, losePlans]);
+
+  /** L'envoi prévu ne part pas : ligne en échec dans la file, avec la raison. */
+  const refusePlan = useCallback(
+    (plan: PlannedSend, message: string) => {
+      dropPlannedSend(plan.uuid);
+      // Une ligne en cours ou réussie de la même histoire (envoi fait entre-temps) n'est jamais
+      // remplacée : elle porte son résultat et « Retirer du PC ».
+      const kept = queueRef.current.some(
+        (item) =>
+          item.uuid === plan.uuid &&
+          (item.state === "done" || item.state === "waiting" || item.state === "sending"),
+      );
+      if (kept) return;
+      updateQueue((items) => [
+        ...items.filter((item) => item.uuid !== plan.uuid),
+        {
+          uuid: plan.uuid,
+          title: plan.title,
+          size: plan.size,
+          state: "failed",
+          error: message,
+          planned: true,
+        },
+      ]);
+      setAnnouncement(text.panel.announce.failed(plan.title, message));
+    },
+    [dropPlannedSend, updateQueue],
+  );
+
+  // Histoires installées : leurs envois partent dans l'ordre des demandes (une histoire installée
+  // attend celles demandées avant elle), un par passage, par le chemin de « Envoyer sur la Flam »
+  // (mêmes règles, mêmes dialogues, même file). Un dialogue d'envoi affiché suspend la suite : il
+  // ne porte qu'une demande à la fois.
+  const confirmingSend = pendingAck !== null || pendingCarrier !== null;
+  const deviceStories = stories.phase === "ready" ? stories.report : null;
+  const storiesRef = useRef(deviceStories);
+  useEffect(() => {
+    storiesRef.current = deviceStories;
+  });
+  const storiesError = stories.phase === "error" ? stories.error.message : null;
+  useEffect(() => {
+    // Ne retiennent pas les suivantes : une demande dont l'installation n'a pas démarré, une
+    // histoire dont l'envoi est déjà abandonné (Flam changée), un envoi à confirmer.
+    const plan = plans.find(
+      (item) =>
+        item.state !== "pending" &&
+        !(item.lost && item.state === "installing") &&
+        !(item.unwatched && item.state === "ready" && !item.lost),
+    );
+    // Scrutation suspendue, ou relevé neuf pas encore reçu depuis sa reprise : aucune décision
+    // (les envois prévus pendant une suspension sont de toute façon « à confirmer »).
+    if (!plan || plan.state !== "ready" || confirmingSend) return;
+    if (suspended || fetched < freshRank.current) return;
+    const block = sendBlock(
+      {
+        device,
+        deviceStories,
+        firmwareBlocked,
+        removing,
+        // Comme le bouton « Envoyer » : en attente, en cours, ou réussi et pas encore relu.
+        queuedOrSent: new Set(
+          exposedQueue
+            .filter(
+              (item) =>
+                item.state === "waiting" || item.state === "sending" || item.awaitingList,
+            )
+            .map((item) => item.uuid),
+        ),
+      },
+      plan.uuid,
+      plan.size,
+      plan.format,
+    );
+    const changed = plan.lost || device === null || deviceKey !== plan.deviceKey;
+    // Retrait en cours sur la Flam, ou liste en cours de lecture : l'envoi attend.
+    const waits = block === "removing" || (block === "checking" && storiesError === null);
+    if (!changed && waits) return;
+    // Décision appliquée hors du corps de l'effet, et seulement si rien n'a changé entre-temps.
+    let current = true;
+    void Promise.resolve().then(() => {
+      if (!current || !plansRef.current.includes(plan)) return;
+      if (unwatchedNow()) return;
+      if (changed || block === "no_device" || deviceKeyRef.current !== plan.deviceKey) {
+        refusePlan(plan, text.planned.deviceChanged);
+      } else if (block === "checking") {
+        // Liste de la Flam illisible : l'envoi ne serait jamais proposé, il n'attend pas.
+        refusePlan(plan, text.planned.notSent(storiesError ?? REASON_TEXT.checking));
+      } else if (block === "queued") {
+        // Déjà dans la file d'envoi (demande faite entre-temps) : rien à ajouter.
+        dropPlannedSend(plan.uuid);
+      } else if (block !== null) {
+        refusePlan(plan, text.planned.notSent(REASON_TEXT[block]));
+      } else {
+        dropPlannedSend(plan.uuid);
+        requestSend({
+          uuid: plan.uuid,
+          title: plan.title,
+          size: plan.size,
+          planned: true,
+        });
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [
+    plans,
+    confirmingSend,
+    suspended,
+    fetched,
+    unwatchedNow,
+    device,
+    deviceKey,
+    deviceStories,
+    storiesError,
+    firmwareBlocked,
+    removing,
+    exposedQueue,
+    refusePlan,
+    dropPlannedSend,
+    requestSend,
+  ]);
 
   function confirmCarrier(carrier: CarrierSend) {
     if (!pendingCarrier) return;
@@ -612,6 +942,9 @@ export function DeviceProvider({
   }, []);
 
   const cancelQueue = useCallback(() => {
+    // Les envois prévus sont oubliés aussi (les installations continuent) : rien ne repart seul
+    // après une annulation.
+    updatePlans((items) => (items.length > 0 ? [] : items));
     updateQueue((items) =>
       items.map((item) =>
         item.state === "waiting" ? { ...item, state: "cancelled" } : item,
@@ -630,7 +963,7 @@ export function DeviceProvider({
         await new Promise((resolve) => setTimeout(resolve, CANCEL_RETRY_MS));
       }
     })();
-  }, [updateQueue]);
+  }, [updateQueue, updatePlans]);
 
   const removeFromQueue = useCallback(
     (uuid: string) =>
@@ -737,13 +1070,22 @@ export function DeviceProvider({
   }, []);
 
   // --- Retrait et éjection -----------------------------------------------------------------
-  const [removing, setRemoving] = useState(false);
   const removeFromDevice = useCallback(
     async (uuid: string, expectedKey: string | null) => {
       const rootNow = rootRef.current;
       if (!rootNow || deviceKeyRef.current !== expectedKey)
         throw { kind: "not_found", message: text.errors.noDevice };
       setRemoving(true);
+      // Retrait demandé : l'envoi prévu de cette histoire ne la remettrait pas sur la Flam.
+      const report = storiesRef.current;
+      updatePlans((items) => {
+        const kept = items.filter(
+          (item) =>
+            !sameStory(item.uuid, uuid) &&
+            !sameStory(findOnDevice(report, item.uuid)?.uuid, uuid),
+        );
+        return kept.length === items.length ? items : kept;
+      });
       // Histoire retirée de la Flam : « Retirer du PC » ne vaut plus pour elle, quelle que soit
       // l'issue du retrait (le backend l'oublie aussi, #609).
       clearPcCopy((item) => sameStory(item.deviceId, uuid));
@@ -755,7 +1097,7 @@ export function DeviceProvider({
         setRemoving(false);
       }
     },
-    [bumpReload, clearPcCopy],
+    [bumpReload, clearPcCopy, updatePlans],
   );
 
   const reorderOnDevice = useCallback(
@@ -816,7 +1158,12 @@ export function DeviceProvider({
       cancelling,
       busy,
       requestSend,
-      confirmingSend: pendingAck !== null || pendingCarrier !== null,
+      confirmingSend,
+      plannedSends: plans,
+      planSend,
+      startPlannedSend,
+      fulfilPlannedSend,
+      dropPlannedSend,
       forgetCarrier,
       cancelQueue,
       removeFromQueue,
@@ -848,8 +1195,12 @@ export function DeviceProvider({
       cancelling,
       busy,
       requestSend,
-      pendingAck,
-      pendingCarrier,
+      confirmingSend,
+      plans,
+      planSend,
+      startPlannedSend,
+      fulfilPlannedSend,
+      dropPlannedSend,
       forgetCarrier,
       cancelQueue,
       removeFromQueue,
@@ -881,7 +1232,7 @@ export function DeviceProvider({
               {t.common.cancel}
             </Button>
             <Button variant="primary" icon="install" onClick={confirmAck}>
-              {text.experimental.confirm}
+              {pendingAck?.confirmLabel ?? text.experimental.confirm}
             </Button>
           </>
         }
