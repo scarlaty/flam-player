@@ -308,7 +308,10 @@ fn check_li(li: &[u8], nodes: usize) -> Result<usize, PrepareError> {
 }
 
 /// Contrôle une transition (position dans `li`, nombre de choix, choix) : les trois à `-1`
-/// (absente), ou une plage de `li` existante et un choix dans `[0, nombre)`.
+/// (absente), ou une plage de `li` existante et un choix dans `[0, nombre)` ou `-1` (tirage au
+/// hasard de STUdio, que `studio2lunii` écrit pour un actionNode d'au moins deux options,
+/// #608 ; effet sur la Flam 2.x non mesuré, L11). Le `-1` est admis dès une option : la
+/// position et le nombre, eux, restent contrôlés.
 fn check_transition(
     node: &[u8],
     at: usize,
@@ -322,8 +325,7 @@ fn check_transition(
     }
     let ok = pos >= 0
         && count >= 1
-        && option >= 0
-        && option < count
+        && (option == -1 || (option >= 0 && option < count))
         && i64::from(pos) + i64::from(count) <= li_entries as i64;
     if ok {
         Ok(())

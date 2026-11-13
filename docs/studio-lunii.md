@@ -106,6 +106,11 @@ La nature d'un fichier se lit à son contenu (signature), pas à son extension.
 | pack Lunii (`ni`, `li`, `ri`, `si`) au lieu de STUdio          | voir § 4                                                     |
 | entrée chiffrée (zip à mot de passe), lien symbolique          | « archive protégée ou lien non pris en charge »              |
 
+Le tirage au hasard de STUdio (`optionIndex` à `-1`) n'est **plus** une variante refusée : refusé
+avec plusieurs options jusqu'au 13/11/2026, il est accepté depuis par décision du mainteneur
+(#608), sans avertissement dans l'interface ; son effet sur une Flam 2.x reste à mesurer (Q5,
+L11). Tout autre `optionIndex` hors de `[0, nombre de choix)` reste refusé (§ 6.3).
+
 ## 3. Le pack Lunii attendu par la Flam 2.x
 
 ### 3.1 Arborescence
@@ -157,7 +162,7 @@ Puis un enregistrement de 44 octets par nœud de scène, dans l'ordre de `stageN
 | `0x04` | 4      | indice du son dans `si` (signé), `-1` sans son                                 |
 | `0x08` | 4      | OK : position du nœud d'action dans `li` (premier choix), `-1` sans transition |
 | `0x0C` | 4      | OK : nombre de choix de ce nœud d'action, `-1` sans transition                 |
-| `0x10` | 4      | OK : `optionIndex`, `-1` sans transition                                       |
+| `0x10` | 4      | OK : `optionIndex`, `-1` sans transition ou pour un tirage au hasard (L11)     |
 | `0x14` | 12     | Maison : mêmes trois champs pour `homeTransition`                              |
 | `0x20` | 2 × 5  | `wheel`, `ok`, `home`, `pause`, `autoplay` : `1` ou `0` (16 bits chacun)       |
 | `0x2A` | 2      | `00 00`                                                                        |
@@ -513,7 +518,9 @@ suffit.
    jamais vers du vide).
 5. Aucun nom de l'archive ne devient un chemin de sortie : les noms produits sont générés.
 6. Toute référence du graphe est résolue avant d'écrire quoi que ce soit ; aucun `-1` dans `li`
-   ni dans un indice d'image ou de son présent ; `-1` seulement pour une transition absente.
+   ni dans un indice d'image ou de son présent ; `-1` seulement pour une transition absente (ses
+   trois champs) ou, dans le seul champ d'option, pour un tirage au hasard entre au moins deux
+   options (Q5, L11, #608).
 7. Conversion déterministe : mêmes entrées, mêmes octets (tests, empreintes).
 8. Coût borné et linéaire : aucune récursion pilotée par l'entrée ; les cycles du graphe sont
    **permis** (menus qui reviennent au début) et n'impliquent aucun parcours.
@@ -553,7 +560,7 @@ autre (Matroska, par exemple, présent dans notre build pour les podcasts) est r
 | `story.json` invalide, trop gros, trop profond                                            | analyse bornée                    | refus avec le champ fautif                                        |
 | Référence absente (action, nœud, asset)                                                   | tables d'index avant toute sortie | refus nommant la référence                                        |
 | UUID de nœud ou `id` d'action en double                                                   | idem                              | refus                                                             |
-| `optionIndex` hors de `[0, nombre de choix)`                                              | idem                              | refus ; `-1` accepté (converti en `0`) avec une seule option, refusé avec plusieurs (Q5) |
+| `optionIndex` hors de `[0, nombre de choix)`                                              | idem                              | refus ; `-1` accepté : converti en `0` avec une seule option, gardé (`-1` dans `ni`) avec plusieurs (Q5, #608) |
 | Transition vers une action sans choix                                                     | idem                              | refus                                                             |
 | Plusieurs `squareOne`                                                                     | idem                              | refus                                                             |
 | Cycles                                                                                    | aucune                            | acceptés (normaux)                                                |
@@ -646,7 +653,7 @@ variantes de `info` ; STUdio 7z.
 | L8  | `nm` vide : mode nuit proposé                                                            | proposé             |
 | L9  | Plus ancienne version 2.x qui lit le format Lunii                                        | toute 2.x (supposé) |
 | L10 | Noms `rf/000/` par rang (`00000000`…) aussi bien lus que les noms de Lunii.QT            | indifférent         |
-| L11 | `optionIndex` à `-1` (choix aléatoire ?)                                                 | inconnu             |
+| L11 | `optionIndex` à `-1` (tirage au hasard de STUdio) écrit tel quel dans `ni` ; accepté depuis le 13/11/2026 par décision du mainteneur (#608), **non mesuré** sur une Flam 2.x, essai confié à un testeur (fiche M12 de `docs/tests-manuels.md`) | inconnu (une option tirée au hasard, si le firmware suit STUdio) |
 | L12 | Histoire sans image ou sans son (`ri` ou `si` vide)                                      | inconnu             |
 | L13 | Même UUID passé du format Flam au format Lunii : progressions `usr/0/`                   | inconnu             |
 | L14 | `library.cache` reconstruit avec des histoires des deux formats                          | reconstruit         |
@@ -660,7 +667,7 @@ variantes de `info` ; STUdio 7z.
 | Q2  | Accepter les packs Lunii « plain » fournis par l'utilisateur ?                                                                                  | non pour l'instant (histoires du commerce) ; techniquement simple ensuite (§ 5.2)                                           |
 | Q3  | Noms `rf/000/` : règle de Lunii.QT quand elle est sûre, rang sinon (§ 3.4) ?                                                                    | oui : parité pour #520, aucun écrasement possible                                                                           |
 | Q4  | `info` : copie exacte de Lunii.QT (ASCII, `No authors.`) pour le premier essai ?                                                                | oui, puis essai UTF-8 et ligne d'auteur vide (L4) ; garder ce qui s'affiche le mieux                                        |
-| Q5  | `optionIndex` à `-1` : accepter ?                                                                                                               | accepter (converti en `0`) quand le nœud d'action n'a qu'une option ; refuser sinon tant que L11 n'est pas mesuré ; Lunii.QT recopie la valeur sans contrôle. Établi par l'éditeur STUdio (`writer.js`, `reader.js`, `ActionNodeModel.js`) : `-1` est le port « Random option » du nœud d'action, option tirée au hasard uniformément ; avec une seule option la conversion en `0` est exacte. Inconnu (L11) : le comportement de la Flam devant un `-1` dans `ni`                                            |
+| Q5  | `optionIndex` à `-1` : accepter ?                                                                                                               | tranchée le 13/11/2026 par décision du mainteneur (#608) : accepter. Converti en `0` quand le nœud d'action n'a qu'une option (exact, et indépendant du comportement de la Flam) ; avec plusieurs options, gardé et écrit `-1` (`FF FF FF FF`, entier signé de 32 bits) dans le champ d'option de `ni`, position dans `li` et nombre d'options renseignés : c'est ce que fait Lunii.QT, qui recopie la valeur sans contrôle (`StudioStory`, `pkg/api/stories.py`, commit c8afe43). OK et maison sont traités de même (le `writer.js` de STUdio peut produire `-1` pour les deux). Établi par l'éditeur STUdio (`writer.js`, `reader.js`, `ActionNodeModel.js`) : `-1` est le port « Random option » du nœud d'action, option tirée au hasard uniformément. Aucun avertissement dans l'interface. Inconnu (L11) : le comportement de la Flam 2.x devant ce `-1` ; mesure confiée à un testeur (M12) |
 | Q6  | MP3 à 48 kHz mono : transcoder (plus strict que Lunii.QT) ?                                                                                     | oui : 44,1 kHz est la seule fréquence connue de la Flam                                                                     |
 | Q7  | Extension `.lunii.pk` dans la bibliothèque ?                                                                                                    | oui : aucun code Flam ne la confond avec un `.plain.pk`                                                                     |
 | Q8  | Zip avec un dossier unique à la racine : accepter ?                                                                                             | oui (cas fréquent d'une recompression) ; tout autre emplacement refusé                                                      |

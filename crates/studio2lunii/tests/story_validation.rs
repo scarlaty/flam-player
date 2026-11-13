@@ -3,8 +3,8 @@
 use serde_json::{json, Value};
 use studio2lunii::index::{build_index, IndexError, Naming};
 use studio2lunii::story::{
-    parse_story, StoryError, MAX_ASSETS, MAX_ASSET_NAME_BYTES, MAX_OPTIONS, MAX_STAGE_NODES,
-    MAX_STORY_JSON_BYTES,
+    parse_story, OptionChoice, StoryError, MAX_ASSETS, MAX_ASSET_NAME_BYTES, MAX_OPTIONS,
+    MAX_STAGE_NODES, MAX_STORY_JSON_BYTES,
 };
 
 const U0: &str = "00000000-0000-4000-8000-000000000000";
@@ -351,29 +351,40 @@ fn option_index() {
     }
 }
 
+/// Octets du champ « optionIndex » de la transition OK (`+0x10`) ou maison (`+0x1C`) du nœud `n`.
+fn champ_option(ni: &[u8], n: usize, maison: bool) -> [u8; 4] {
+    let at = 0x200 + n * 0x2C + if maison { 0x1C } else { 0x10 };
+    ni[at..at + 4].try_into().unwrap()
+}
+
 #[test]
 fn option_index_moins_un_une_option_devient_zero() {
     let mut v = base();
     v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(-1);
     let story = parse(&v).expect("-1 avec une seule option est accepté");
     let t = story.stage_nodes()[0].ok_transition.expect("transition");
-    assert_eq!(t.option_index, 0);
-    // Jamais -1 dans `ni` : le champ vaut 0 (nœud 0 : transition OK à 0x200 + 8, indice à +8).
+    assert_eq!(t.option, OptionChoice::Index(0));
+    // Une seule option : 0 dans `ni`, jamais -1.
     let ni = build_index(&story).ni;
-    assert_eq!(&ni[0x210..0x214], &0u32.to_le_bytes());
+    assert_eq!(champ_option(&ni, 0, false), 0u32.to_le_bytes());
 }
 
 #[test]
-fn option_index_moins_un_plusieurs_options_refuse() {
+fn option_index_moins_un_plusieurs_options_aleatoire() {
     let mut v = base();
     v["actionNodes"][0]["options"] = json!([U1, U0]);
     v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(-1);
-    let e = err(&v);
-    assert!(
-        matches!(e, StoryError::OptionIndexAleatoire { options: 2, .. }),
-        "{e}"
-    );
-    assert!(e.to_string().contains("choix au hasard parmi 2 options"));
+    let story = parse(&v).expect("-1 avec plusieurs options est accepté (#608)");
+    let t = story.stage_nodes()[0].ok_transition.expect("transition");
+    assert_eq!(t.action_node, 0);
+    assert_eq!(t.option, OptionChoice::Aleatoire);
+    // Transition OK du nœud 0 : position 0 dans `li`, 2 options, puis -1 (FF FF FF FF).
+    let ni = build_index(&story).ni;
+    assert_eq!(&ni[0x208..0x20C], &0i32.to_le_bytes());
+    assert_eq!(&ni[0x20C..0x210], &2i32.to_le_bytes());
+    assert_eq!(champ_option(&ni, 0, false), [0xFF; 4]);
+    // La transition maison absente du nœud 0 reste à -1 partout.
+    assert_eq!(&ni[0x214..0x220], &[0xFF; 12]);
 }
 
 #[test]
@@ -382,23 +393,78 @@ fn option_index_moins_un_maison_une_option_devient_zero() {
     v["stageNodes"][0]["homeTransition"] = json!({"actionNode": "a", "optionIndex": -1});
     let story = parse(&v).expect("-1 avec une seule option est accepté");
     let t = story.stage_nodes()[0].home_transition.expect("transition");
-    assert_eq!(t.option_index, 0);
-    // Nœud 0 à 0x200 ; Maison à +0x14, son optionIndex à +8 : 0x21C.
+    assert_eq!(t.option, OptionChoice::Index(0));
     let ni = build_index(&story).ni;
-    assert_eq!(&ni[0x21C..0x220], &0u32.to_le_bytes());
+    assert_eq!(champ_option(&ni, 0, true), 0u32.to_le_bytes());
 }
 
 #[test]
-fn option_index_moins_un_maison_plusieurs_options_refuse() {
+fn option_index_moins_un_maison_plusieurs_options_aleatoire() {
     let mut v = base();
-    v["actionNodes"][0]["options"] = json!([U1, U0]);
-    v["stageNodes"][0]["homeTransition"] = json!({"actionNode": "a", "optionIndex": -1});
-    let e = err(&v);
-    assert!(
-        matches!(e, StoryError::OptionIndexAleatoire { options: 2, .. }),
-        "{e}"
-    );
-    assert!(e.to_string().contains("homeTransition"), "{e}");
+    v["actionNodes"][1]["options"] = json!([U0, U1, U0]);
+    v["stageNodes"][1]["homeTransition"]["optionIndex"] = json!(-1);
+    let story = parse(&v).expect("-1 avec plusieurs options est accepté (#608)");
+    let n1 = &story.stage_nodes()[1];
+    assert_eq!(n1.home_transition.unwrap().option, OptionChoice::Aleatoire);
+    assert_eq!(n1.ok_transition.unwrap().option, OptionChoice::Index(0));
+    // Nœud 1 à 0x22C ; maison à +0x14 : position 1 dans `li` (après l'option de « a »),
+    // 3 options, puis -1. La transition OK vers le même actionNode garde l'indice 0.
+    let ni = build_index(&story).ni;
+    let maison = 0x200 + 0x2C + 0x14;
+    assert_eq!(&ni[maison..maison + 4], &1i32.to_le_bytes());
+    assert_eq!(&ni[maison + 4..maison + 8], &3i32.to_le_bytes());
+    assert_eq!(champ_option(&ni, 1, true), [0xFF; 4]);
+    assert_eq!(champ_option(&ni, 1, false), 0u32.to_le_bytes());
+}
+
+#[test]
+fn option_index_negatif_ou_hors_bornes_avec_plusieurs_options() {
+    for bad in [-2i64, 2, i64::MIN] {
+        let mut v = base();
+        v["actionNodes"][0]["options"] = json!([U1, U0]);
+        v["stageNodes"][0]["okTransition"]["optionIndex"] = json!(bad);
+        assert!(
+            matches!(err(&v), StoryError::OptionIndexHorsBornes { index, options: 2, .. } if index == bad),
+            "{bad}"
+        );
+    }
+}
+
+/// Plusieurs centaines de transitions aléatoires vers des actionNodes de 2 à 50 options.
+#[test]
+fn centaines_de_transitions_aleatoires() {
+    const NODES: usize = 600;
+    let uuid = |i: usize| format!("00000000-0000-4000-8000-{i:012x}");
+    let actions: Vec<Value> = (0..NODES)
+        .map(|i| {
+            let n = 2 + i % 49;
+            let options: Vec<String> = (0..n).map(|k| uuid((i + k + 1) % NODES)).collect();
+            json!({"id": format!("a{i}"), "options": options})
+        })
+        .collect();
+    let stages: Vec<Value> = (0..NODES)
+        .map(|i| {
+            json!({
+                "uuid": uuid(i),
+                "okTransition": {"actionNode": format!("a{i}"), "optionIndex": -1},
+                "homeTransition": {"actionNode": format!("a{}", (i + 1) % NODES), "optionIndex": -1},
+                "controlSettings": {"wheel": true, "ok": true, "home": true,
+                                    "pause": false, "autoplay": false}
+            })
+        })
+        .collect();
+    let v = json!({"format": "v1", "version": 1, "stageNodes": stages, "actionNodes": actions});
+    let story = parse(&v).unwrap();
+    let ni = build_index(&story).ni;
+    assert_eq!(ni.len(), 0x200 + NODES * 0x2C);
+    for (n, s) in story.stage_nodes().iter().enumerate() {
+        assert_eq!(s.ok_transition.unwrap().option, OptionChoice::Aleatoire);
+        assert_eq!(s.home_transition.unwrap().option, OptionChoice::Aleatoire);
+        assert_eq!(champ_option(&ni, n, false), [0xFF; 4], "nœud {n}");
+        assert_eq!(champ_option(&ni, n, true), [0xFF; 4], "nœud {n}");
+        let count = i32::from_le_bytes(ni[0x200 + n * 0x2C + 0x0C..][..4].try_into().unwrap());
+        assert_eq!(count as usize, 2 + n % 49);
+    }
 }
 
 #[test]
