@@ -56,19 +56,20 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   const removing = stories.removing(entry.uuid);
   const removeStatusId = useId();
   // Suppression lancée depuis cette fiche : au retour, la fiche ne se ferme que si elle est
-  // toujours celle de cette histoire et si la confirmation n'a pas été quittée entre-temps
-  // (sinon `onClose` fermerait la fiche d'une autre histoire).
-  const removeAttempt = useRef(0);
+  // toujours montée sur cette histoire (sinon `onClose` fermerait la fiche d'une autre
+  // histoire). Le jeton change au démontage et au changement d'histoire ; fermer la
+  // confirmation pendant l'appel ne l'invalide pas.
+  const viewToken = useRef(0);
   const entryUuid = useRef(entry.uuid);
   useEffect(() => {
     if (entryUuid.current !== entry.uuid) {
       entryUuid.current = entry.uuid;
-      removeAttempt.current += 1;
+      viewToken.current += 1;
     }
   }, [entry.uuid]);
   useEffect(
     () => () => {
-      removeAttempt.current += 1;
+      viewToken.current += 1;
     },
     [],
   );
@@ -105,9 +106,9 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
   async function confirmedRemove(purgeSaves: boolean) {
     // Verrou pendant l'appel (partagé : une seconde instance reçoit la même promesse).
     if (removing) return;
-    const attempt = ++removeAttempt.current;
+    const token = viewToken.current;
     const removed = await stories.remove(entry.uuid, entry.title, purgeSaves);
-    if (removeAttempt.current !== attempt) return;
+    if (viewToken.current !== token) return;
     setConfirmRemove(false);
     if (removed && source.type === "library") onClose();
   }
@@ -163,8 +164,13 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                       size="sm"
                       icon="refresh"
                       title={text.updateHelp}
-                      aria-describedby={updateHelpId}
-                      onClick={() => stories.install(entry)}
+                      aria-disabled={removing || undefined}
+                      aria-describedby={
+                        removing ? `${updateHelpId} ${removeStatusId}` : updateHelpId
+                      }
+                      onClick={() => {
+                        if (!removing) stories.install(entry);
+                      }}
                     >
                       {text.update}
                     </Button>
@@ -353,7 +359,12 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
               <Banner
                 tone="danger"
                 action={
-                  <Button onClick={() => stories.retry(failed.id)}>
+                  <Button
+                    aria-disabled={removing || undefined}
+                    onClick={() => {
+                      if (!removing) stories.retry(failed.id);
+                    }}
+                  >
                     {t.errors.retry}
                   </Button>
                 }
@@ -373,11 +384,7 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
         open={confirmRemove}
         title={entry.title}
         busy={removing}
-        onCancel={() => {
-          // Confirmation quittée : la suppression en cours ne fermera plus la fiche à son retour.
-          removeAttempt.current += 1;
-          setConfirmRemove(false);
-        }}
+        onCancel={() => setConfirmRemove(false)}
         onConfirm={(purge) => void confirmedRemove(purge)}
       />
     </>

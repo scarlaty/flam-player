@@ -301,9 +301,6 @@ it("avec deux dialogues empilés, seul le dernier piège le focus (#581)", () =>
   );
 });
 
-// React 18 ne connaît pas `inert` : l'attribut est posé à la main.
-const makeInert = (element: HTMLElement | null) => element?.setAttribute("inert", "");
-
 it("ignore un élément `inert` ou dans un parent `inert` dans la boucle de Tab (#581)", () => {
   render(
     <Dialog
@@ -313,10 +310,10 @@ it("ignore un élément `inert` ou dans un parent `inert` dans la boucle de Tab 
       footer={
         <>
           <button type="button">Utile</button>
-          <button type="button" ref={makeInert}>
+          <button type="button" inert>
             Inerte
           </button>
-          <div ref={makeInert}>
+          <div inert>
             <button type="button">Dans un parent inerte</button>
           </div>
         </>

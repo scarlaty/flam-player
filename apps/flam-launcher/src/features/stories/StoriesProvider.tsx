@@ -677,6 +677,8 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
 
   // Suppressions en cours, par histoire : un second appel pour la même histoire rend la même
   // promesse (pas de second `library_remove`), et l'état est lisible par la fiche et la carte.
+  // Une suppression qui ne répond jamais laisse l'histoire verrouillée jusqu'au redémarrage :
+  // voulu, l'appel court toujours côté backend.
   const removals = useRef(new Map<string, Promise<boolean>>());
   const [removingUuids, setRemovingUuids] = useState<ReadonlySet<string>>(new Set());
   const remove = useCallback(

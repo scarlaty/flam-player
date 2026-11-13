@@ -92,7 +92,8 @@ export interface StoriesApi {
   playFromFolder: (entry: StoryEntry, fromSourceId?: string) => void;
   /**
    * Désinstalle l'histoire ; renvoie vrai si elle a été supprimée. `purgeSaves` efface aussi la
-   * progression de l'enfant (conservée par défaut).
+   * progression de l'enfant (conservée par défaut). Un second appel pour la même histoire pendant
+   * la suppression rend la promesse du premier : ses options (titre, `purgeSaves`) sont ignorées.
    */
   remove: (uuid: string, title: string, purgeSaves?: boolean) => Promise<boolean>;
   /** Une suppression de cette histoire (par UUID) est en cours. */

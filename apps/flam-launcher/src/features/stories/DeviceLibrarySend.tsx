@@ -10,7 +10,7 @@ const text = t.deviceTransfer.fromLibrary;
  * Flam » (bouton désactivé avec sa raison si l'envoi est impossible).
  */
 export function DeviceLibrarySend() {
-  const { installed, sourceChanged } = useStories();
+  const { installed, sourceChanged, removing } = useStories();
   return (
     <section className="fl-device-stories" aria-labelledby="fl-device-send-title">
       <h2 id="fl-device-send-title" className="fl-device-card__title">
@@ -33,6 +33,7 @@ export function DeviceLibrarySend() {
                   size={entry.size}
                   format={entry.format}
                   stale={sourceChanged(entry.uuid)}
+                  locked={removing(entry.uuid)}
                 />
               </div>
             </li>

@@ -124,7 +124,7 @@ export function SendToDeviceButton({
         {text.send}
       </Button>
       {locked && (
-        <span id={lockedId} className="fl-visually-hidden">
+        <span id={lockedId} className="fl-send__reason">
           {t.stories.actions.removing}
         </span>
       )}

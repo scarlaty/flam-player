@@ -1520,10 +1520,49 @@ it("la suppression qui revient ne ferme pas la fiche d'une autre histoire (#581)
     release();
     await flushPromises();
   });
+  // Marqueur positif du retour de la suppression : sa notification et la relecture de la liste.
+  await screen.findByText("« Les trois ours » a été supprimée");
   await waitFor(() => expect(callsOf("library_list").length).toBeGreaterThan(lists));
   // La première suppression est revenue : la confirmation de l'autre histoire reste.
   expect(screen.getByRole("alertdialog")).toBeInTheDocument();
   expect(callsOf("library_remove")).toHaveLength(1);
+});
+
+it("la suppression réussie après « Fermer » ferme la fiche encore ouverte sur cette histoire (#581)", async () => {
+  const release = await startPendingRemoval();
+  // « Fermer » la confirmation : la fiche revient, la suppression continue.
+  fireEvent.keyDown(document, { key: "Escape" });
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  await act(async () => {
+    release();
+    await flushPromises();
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+it("« Mettre à jour » ne lance rien pendant la suppression de l'histoire (#581)", async () => {
+  let release!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  installed = [installedEntry(ours({ version: 1 }))];
+  catalogEntries = [ours({ version: 2 })];
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
+  const confirm = await screen.findByRole("alertdialog");
+  fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+  await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+  fireEvent.keyDown(document, { key: "Escape" });
+  const back = await screen.findByRole("dialog", { name: "Les trois ours" });
+  const update = within(back).getByRole("button", { name: "Mettre à jour" });
+  expect(update).toHaveAttribute("aria-disabled", "true");
+  expect(update).toHaveAccessibleDescription(/Suppression en cours\./);
+  fireEvent.click(update);
+  expect(callsOf("install_start")).toHaveLength(0);
+  await act(async () => {
+    release();
+  });
 });
 
 it("une suppression en attente n'est pas relancée par la carte ni par une fiche rouverte (#581)", async () => {
