@@ -1685,10 +1685,22 @@ fn remplacement_lie_a_l_uuid_vise() {
 #[test]
 fn racine_hors_des_lecteurs_detectes_refusee() {
     let roots = [PathBuf::from("D:"), PathBuf::from("E:/")];
-    for ok in ["D:", "d:", "D:/", "e:", "E:/"] {
+    for ok in ["D:/", "d:\\", "e:/", "E:\\"] {
         ensure_root_among(Path::new(ok), &roots).unwrap_or_else(|e| panic!("{ok} : {e}"));
     }
-    for bad in ["", "C:", "D:/dossier", "/", "F:"] {
+    // #577 : `E:` sans séparateur final désigne le dossier courant du lecteur, pas sa racine
+    // (`E:` joint à `.mdf` donne `E:.mdf`).
+    for bad in [
+        "",
+        "C:",
+        "D:/dossier",
+        "/",
+        "F:",
+        "D:",
+        "d:",
+        "e:",
+        r"\\?\E:",
+    ] {
         assert!(
             matches!(
                 ensure_root_among(Path::new(bad), &roots),
@@ -1858,6 +1870,148 @@ fn comm_avant_main_et_version_nue() {
         firmware_field(&mdf_v1_real()),
         Some(("1.15.14".to_string(), VersionForm::Bare))
     );
+}
+
+/// #577 : la garde refuse `Z:` (relatif au dossier courant du lecteur) même quand `Z:\` est
+/// détecté, avant tout accès au lecteur.
+#[test]
+fn garde_refuse_une_lettre_de_lecteur_sans_separateur() {
+    let session = crate::device::guard::KeySession::default();
+    let ctx = WriteContext::new(
+        &session,
+        Some(vec![PathBuf::from("Z:\\")]),
+        Default::default(),
+    );
+    let kind = crate::device::guard::WriteKind::Other;
+    assert_eq!(
+        crate::device::guard::check_write(Path::new("Z:"), &ctx, kind).unwrap_err(),
+        WriteRefused::InvalidRoot
+    );
+}
+
+/// #577 : la Flam A est débranchée pendant la préparation et une Flam B (autre `.mdf`) prend la
+/// même lettre : l'envoi est refusé avant toute écriture, reprise comprise, avec le permis de A.
+#[test]
+fn autre_flam_branchee_pendant_la_preparation_rien_n_est_ecrit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), true);
+    write(&root.join(MDF_FILE), &mdf("2.4.2"));
+    // Résidu d'un envoi interrompu sur B : la reprise n'y touche pas non plus.
+    write(
+        &root
+            .join(TRANSFER_DIR)
+            .join(format!("{OTHER}{INCOMING_SUFFIX}"))
+            .join("info"),
+        b"x",
+    );
+    write(&root.join("etc/library/list.new"), b"partiel");
+    let before = snapshot(&root);
+    let p = prepared(tmp.path(), 1);
+    let result = send(&FaultyFs::new(), &root, &p, true);
+    assert!(
+        matches!(result, Err(TransferError::DeviceChanged)),
+        "{result:?}"
+    );
+    assert_eq!(snapshot(&root), before);
+    let message = AppError::from(result.unwrap_err()).to_string();
+    assert!(message.contains("rien n'a été écrit"), "{message}");
+}
+
+/// Envoi dont le `.mdf` est modifié par `swap` une fois la copie relue, juste avant la
+/// promotion (mise à jour de `NEW`).
+fn send_swapping_mdf_before_promotion(
+    root: &Path,
+    p: &PreparedStory,
+    swap: &dyn Fn(&Path),
+) -> Result<TransferReport, TransferError> {
+    let mdf_path = root.join(MDF_FILE);
+    send_with(
+        &FaultyFs::new(),
+        &permit(),
+        root,
+        p,
+        Some(NEW),
+        &AtomicBool::new(false),
+        &mut |e: Progress| {
+            if e.phase == Phase::Verify && e.done == e.total {
+                swap(&mdf_path);
+            }
+        },
+    )
+}
+
+/// #577 : `.mdf` remplacé (ou disparu) entre la copie et la promotion : rien n'est installé,
+/// l'ancienne version, l'index et le cache sont intacts ; la copie temporaire est laissée à la
+/// reprise, qui la supprime au retour de la Flam.
+/// Changement de `.mdf` simulé : nom et action.
+type MdfSwap = (&'static str, fn(&Path));
+
+#[test]
+fn autre_flam_branchee_avant_la_promotion_rien_n_est_installe() {
+    let swaps: [MdfSwap; 2] = [
+        ("remplacé", |path: &Path| write(path, &mdf("2.4.2"))),
+        // Appelé deux fois (dernier bloc relu, puis fin de la relecture).
+        ("retiré", |path: &Path| {
+            let _ = std::fs::remove_file(path);
+        }),
+    ];
+    for (n, (what, swap)) in swaps.into_iter().enumerate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = device(&tmp.path().join(format!("{n}")), true);
+        let old = files_of(&root.join("str").join(NEW));
+        let list_before = std::fs::read(root.join("etc/library/list")).unwrap();
+        let p = prepared(tmp.path(), 1);
+        let result = send_swapping_mdf_before_promotion(&root, &p, &swap);
+        assert!(
+            matches!(result, Err(TransferError::DeviceChangedDuringSend)),
+            "{what} : {result:?}"
+        );
+        assert_eq!(files_of(&root.join("str").join(NEW)), old, "{what}");
+        assert_eq!(
+            std::fs::read(root.join("etc/library/list")).unwrap(),
+            list_before,
+            "{what}"
+        );
+        assert!(root.join(LIBRARY_CACHE).exists(), "{what}");
+        assert!(!previous_dir(&root, &id(NEW)).exists(), "{what}");
+        assert_eq!(
+            files_of(&incoming_dir(&root, &id(NEW))),
+            files_of(&p.dir),
+            "{what} : copie temporaire laissée à la reprise"
+        );
+        // Retour de la Flam A : la reprise supprime la copie temporaire.
+        write(&root.join(MDF_FILE), &mdf_v1_real());
+        restart(&root);
+        assert!(!root.join(TRANSFER_DIR).exists(), "{what}");
+        assert_eq!(files_of(&root.join("str").join(NEW)), old, "{what}");
+    }
+}
+
+/// #577 : une entrée de `.flam-transfer` en échec (verrouillée) n'empêche pas la reprise des
+/// index ; la première erreur est rendue ensuite.
+#[test]
+fn reprise_des_index_faite_malgre_une_entree_en_echec() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let locked = root
+        .join(TRANSFER_DIR)
+        .join(format!("{OTHER}{INCOMING_SUFFIX}"));
+    write(&locked.join("info"), b"x");
+    write(&root.join("etc/library/list.new"), b"partiel");
+    let fs = FaultyFs {
+        locked: Some(OTHER),
+        ..FaultyFs::new()
+    };
+    let result = recover_device_with(&fs, &permit(), &root);
+    assert!(
+        matches!(&result, Err(TransferError::Io(e)) if e.kind() == io::ErrorKind::PermissionDenied),
+        "{result:?}"
+    );
+    assert!(
+        !root.join("etc/library/list.new").exists(),
+        "reprise de l'index sautée"
+    );
+    assert!(locked.join("info").is_file());
 }
 
 /// Un permis obtenu pour une Flam ne permet aucune écriture sur une autre (#317).

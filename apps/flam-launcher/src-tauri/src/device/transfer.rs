@@ -17,7 +17,8 @@
 //!    clés, ni conservation). En 2.x, préparation par [`prepare_lunii::prepare`] au lieu de
 //!    [`prepare::prepare_story`] ; les étapes suivantes sont identiques (`send_with` ne
 //!    distingue pas les formats).
-//! 1. Vérifications, sans rien écrire : appareil (`.mdf`), UUID, verrou de l'appareil
+//! 1. Vérifications, sans rien écrire : appareil (`.mdf` relu, identique à celui de la garde,
+//!    sinon [`TransferError::DeviceChanged`], #577), UUID, verrou de l'appareil
 //!    ([`DeviceLock`](super::lock::DeviceLock)), reprise d'un transfert interrompu ([`recover`]) et des index
 //!    ([`index::recover`]), index lisibles, histoire ni masquée ni déjà présente (sauf mise à
 //!    jour demandée), espace libre suffisant (taille arrondie aux clusters, plus
@@ -27,7 +28,9 @@
 //!    la source.
 //! 3. Vérification : chaque fichier est relu sur l'appareil (sous Windows sans le cache du
 //!    système, `FILE_FLAG_NO_BUFFERING`) ; taille et empreinte comparées.
-//! 4. Dernier point d'annulation. Mise à jour : l'ancien `str/<uuid>/` est mis de côté par
+//! 4. Dernier point d'annulation, puis `.mdf` relu une dernière fois (#577 : différent ou
+//!    illisible, [`TransferError::DeviceChangedDuringSend`], rien n'est installé et `<uuid>.in/`
+//!    est laissé à la reprise). Mise à jour : l'ancien `str/<uuid>/` est mis de côté par
 //!    renommage en `.flam-transfer/<uuid>.old/` (rien n'est supprimé).
 //! 5. Renommage de `<uuid>.in/` en `str/<uuid>/`. En cas d'échec, l'ancienne version est remise
 //!    en place.
@@ -66,9 +69,11 @@
 //! |--------------------------------|-----------------------------------------------|-------------------------------------------|
 //! | (Lunii) le refus du firmware 1.x | rien de modifié, reprise comprise           | aucune                                    |
 //! | (Lunii) une préparation refusée (pack invalide, trop gros) | rien de modifié sur la Flam | aucune                |
+//! | (refus) `.mdf` changé depuis la garde, à l'entrée de l'envoi | rien de modifié, reprise comprise | aucune             |
 //! | les vérifications              | rien de modifié                               | aucune                                    |
 //! | une copie partielle            | `<uuid>.in/` incomplet ; index, `str/` intacts | `<uuid>.in/` supprimé                     |
 //! | la vérification                | `<uuid>.in/` complet mais non promu            | `<uuid>.in/` supprimé (copie à refaire)   |
+//! | (refus) `.mdf` changé avant la promotion | `<uuid>.in/` complet, non promu, laissé tel quel | `<uuid>.in/` supprimé              |
 //! | la mise de côté (mise à jour)  | `<uuid>.old/`, `<uuid>.in/`, pas de `str/<uuid>` | `<uuid>.old/` remis en `str/<uuid>/`, `.in` supprimé |
 //! | le renommage final             | `str/<uuid>/` complet, peut-être `<uuid>.old/` | `<uuid>.old/` supprimé, cache supprimé   |
 //! | (installation) avant l'index   | `str/<uuid>/` complet hors index (orphelin)   | aucune ; un nouvel envoi le remplace      |
@@ -255,6 +260,15 @@ pub enum TransferError {
     /// Refus de la garde commune des écritures ([`super::guard`]).
     #[error(transparent)]
     Refused(#[from] WriteRefused),
+    /// `.mdf` relu à l'entrée de l'envoi différent de celui contrôlé par la garde avant la
+    /// préparation (#577) : une autre Flam a pu prendre la même lettre de lecteur. Refus avant
+    /// toute écriture, reprise comprise.
+    #[error("la Flam branchée n'est plus celle vérifiée avant la préparation (fichier .mdf différent) : rien n'a été écrit ; rebranchez la Flam choisie puis réessayez")]
+    DeviceChanged,
+    /// `.mdf` illisible ou différent juste avant la promotion (#577) : rien n'est installé ; la
+    /// copie temporaire reste dans `.flam-transfer/`, supprimée par la prochaine reprise.
+    #[error("la Flam a été débranchée ou remplacée pendant l'envoi : l'histoire n'a pas été installée ; sa copie temporaire sera supprimée au prochain branchement de la Flam")]
+    DeviceChangedDuringSend,
     #[error("transfert annulé : la Flam est inchangée")]
     Cancelled,
     #[error("vérification échouée ({0}) : la copie relue sur la Flam diffère de l'original ; rien n'a été installé")]
@@ -321,6 +335,8 @@ impl From<TransferError> for AppError {
             | TransferError::NotEnoughSpace { .. }
             | TransferError::AlreadyInstalled { .. }
             | TransferError::ReplaceMismatch { .. }
+            | TransferError::DeviceChanged
+            | TransferError::DeviceChangedDuringSend
             | TransferError::UnsupportedFirmware(_)
             | TransferError::KeyUnavailable(_)
             | TransferError::Busy(_)
@@ -666,6 +682,15 @@ pub(crate) fn send_with(
     if !root.join(MDF_FILE).is_file() {
         return Err(TransferError::DeviceNotFound);
     }
+    // La Flam doit être celle que la garde a contrôlée avant la préparation (#577) : débranchée
+    // pendant la préparation, elle a pu être remplacée par une autre sous la même lettre de
+    // lecteur. Relu avant toute écriture, reprise comprise (126 octets, sans coût mesurable).
+    if !permit.same_mdf(&read_mdf(root)?) {
+        tracing::warn!(
+            "autre Flam sous la même lettre de lecteur : envoi refusé, rien n'est écrit"
+        );
+        return Err(TransferError::DeviceChanged);
+    }
     let id = StoryId::parse(&prepared.uuid)
         .filter(|id| id.as_str() == prepared.uuid)
         .ok_or(TransferError::InvalidId)?;
@@ -761,6 +786,16 @@ pub(crate) fn send_with(
             }
             other => other,
         });
+    }
+
+    // Dernier contrôle avant la promotion (#577) : `.mdf` relu, toujours celui de la garde. Sinon
+    // rien n'est installé (ni `str/`, ni index, ni cache touchés) et la copie temporaire n'est
+    // pas supprimée : elle peut être sur l'autre Flam ou à cheval sur les deux ; la reprise du
+    // prochain branchement s'en charge. Aucun contrôle après la promotion : un envoi installé
+    // n'est jamais présenté comme un échec.
+    if !matches!(read_mdf(root), Ok(mdf) if permit.same_mdf(&mdf)) {
+        tracing::warn!(%id, "Flam débranchée ou remplacée avant l'installation : copie temporaire laissée à la reprise");
+        return Err(TransferError::DeviceChangedDuringSend);
     }
 
     // 4 et 5. Promotion : plus d'annulation possible à partir d'ici.
@@ -1340,7 +1375,10 @@ pub(crate) fn ensure_detected_root(root: &Path) -> Result<(), TransferError> {
 }
 
 /// Contrôle de [`ensure_detected_root`] sur une liste de racines : comparaison sans tenir
-/// compte de la casse ni du séparateur final (`d:`, `D:\`, `D:/`).
+/// compte de la casse ni de la forme du séparateur final (`D:\`, `d:/`). Une lettre de lecteur
+/// sans séparateur (`D:`) est refusée (#577) : sous Windows elle désigne le dossier courant du
+/// lecteur, pas sa racine (`D:` joint à `.mdf` donne `D:.mdf`). La détection rend toujours
+/// `D:\` ([`super::detect`]) ; l'éjection, qui n'en garde que la lettre, n'est pas concernée.
 pub(crate) fn ensure_root_among(root: &Path, roots: &[PathBuf]) -> Result<(), TransferError> {
     let norm = |p: &Path| {
         p.to_string_lossy()
@@ -1348,11 +1386,21 @@ pub(crate) fn ensure_root_among(root: &Path, roots: &[PathBuf]) -> Result<(), Tr
             .to_ascii_lowercase()
     };
     let wanted = norm(root);
-    if !wanted.is_empty() && roots.iter().any(|r| norm(r) == wanted) {
+    if !wanted.is_empty()
+        && !drive_relative(&root.to_string_lossy())
+        && roots.iter().any(|r| norm(r) == wanted)
+    {
         Ok(())
     } else {
         Err(TransferError::InvalidRoot)
     }
+}
+
+/// Lettre de lecteur sans séparateur (`E:`, `\\?\E:`) : chemin relatif au dossier courant de ce
+/// lecteur.
+fn drive_relative(text: &str) -> bool {
+    let text = text.strip_prefix(r"\\?\").unwrap_or(text);
+    matches!(text.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic())
 }
 
 /// Drapeau d'annulation du transfert en cours (un seul à la fois, sous le verrou).
@@ -1549,15 +1597,35 @@ pub async fn device_carrier_preview(
 /// interrompus (voir le tableau du module). À appeler à chaque détection de l'appareil, avant
 /// de lire son contenu ; refusé (`Busy`) pendant une autre opération.
 pub fn recover_device(
-    guard: &OpGuard<'_>,
+    _guard: &OpGuard<'_>,
     root: &Path,
     ctx: &WriteContext<'_>,
 ) -> Result<TransferRecovery, TransferError> {
     let permit = check_write(root, ctx, WriteKind::Other)?;
-    let report = recover(guard, &permit, root)?;
-    for kind in IndexKind::ALL {
-        index::recover(root, kind)?;
+    recover_device_with(&RealFs::default(), &permit, root)
+}
+
+/// Corps de [`recover_device`] (opérations injectables pour les tests). La reprise des index
+/// a lieu même si celle d'une entrée de [`TRANSFER_DIR`] échoue (dossier verrouillé, #577) :
+/// elle n'en dépend pas. La première erreur est rendue ensuite (celle des transferts d'abord).
+/// Seul un permis qui ne couvre pas `root` empêche toute reprise.
+pub(crate) fn recover_device_with(
+    fs: &dyn DeviceFs,
+    permit: &WritePermit,
+    root: &Path,
+) -> Result<TransferRecovery, TransferError> {
+    let transfers = recover_with(fs, permit, root);
+    if matches!(transfers, Err(TransferError::InvalidRoot)) {
+        return transfers;
     }
+    let indexes = IndexKind::ALL
+        .into_iter()
+        .try_for_each(|kind| index::recover(root, kind).map(drop));
+    if let (Err(_), Err(err)) = (&transfers, &indexes) {
+        tracing::warn!("reprise des index de la Flam impossible : {err}");
+    }
+    let report = transfers?;
+    indexes?;
     Ok(report)
 }
 

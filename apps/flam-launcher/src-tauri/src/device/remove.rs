@@ -27,7 +27,7 @@
 //! | la validation                  | rien de modifié                                | aucune                                       |
 //! | une étape de l'index           | voir `index` : ancien ou nouvel index          | `index::recover`                             |
 //! | l'index de `list` (UUID aussi dans `list.hidden`) | UUID encore dans `list.hidden`, dossier intact | nouveau retrait                  |
-//! | l'index réécrit                | dossier entier dans `str/`, absent de l'index  | orphelin signalé, retrait sur confirmation   |
+//! | l'index réécrit (ou renommage refusé malgré les nouveaux essais) | dossier entier dans `str/`, absent de l'index | orphelin signalé, retrait sur confirmation |
 //! | le renommage en corbeille      | dossier dans `.flam-trash/`                     | [`purge_trash`] au début de chaque opération |
 //! | une suppression partielle      | restes dans `.flam-trash/`                      | [`purge_trash`]                              |
 //!
@@ -36,6 +36,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -47,6 +48,7 @@ use super::index::{
 };
 use super::lock::{Busy, DeviceLock, Operation, DEVICE_LOCK};
 use crate::catalog::blocking;
+use crate::storage::retry_transient;
 use crate::{AppError, AppResult};
 
 /// Dossier des histoires masquées, relatif à la racine.
@@ -138,6 +140,41 @@ enum Step {
     Purged,
 }
 
+/// Déplacements et suppressions de dossiers de la corbeille, injectables pour les tests de
+/// panne (#577). Chaque opération passe par [`retried`].
+trait TrashFs {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
+    fn remove_file(&self, path: &Path) -> io::Result<()>;
+    /// Attente entre deux essais.
+    fn sleep(&self, delay: Duration);
+}
+
+/// Opérations réelles.
+struct RealTrashFs;
+
+impl TrashFs for RealTrashFs {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        fs::remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)
+    }
+    fn sleep(&self, delay: Duration) {
+        std::thread::sleep(delay);
+    }
+}
+
+/// Exécute `op` en la réessayant sur un verrou passager (antivirus, indexeur : refus d'accès
+/// ou violation de partage), comme les écritures du transfert ([`retry_transient`], environ
+/// 1 s au plus) ; toute autre erreur est rendue tout de suite (#577).
+fn retried(ops: &dyn TrashFs, op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    retry_transient(op, |delay| ops.sleep(delay))
+}
+
 /// Racine d'un appareil : chemin absolu, `.mdf` présent (fichier, pas un lien). Garde-fou
 /// contre une racine arbitraire transmise par l'interface.
 fn check_device(root: &Path) -> Result<(), RemoveError> {
@@ -219,10 +256,11 @@ fn is_trash_name(name: &str) -> bool {
 
 /// Vide la corbeille de l'appareil (restes d'un retrait interrompu). Seules les entrées
 /// nommées par [`remove_story`] sont supprimées ; les autres sont laissées. Rend le nombre
-/// d'entrées supprimées ; continue après une entrée verrouillée et rend la première erreur à
-/// la fin. Ne suit aucun lien : une corbeille qui n'est pas un vrai dossier est laissée telle
-/// quelle. À appeler sous [`DeviceLock`].
-fn purge_trash(root: &Path) -> io::Result<usize> {
+/// d'entrées supprimées ; un verrou passager est réessayé ([`retried`]) ; continue après une
+/// entrée restée verrouillée et rend la première erreur à la fin. Ne suit aucun lien : une
+/// corbeille qui n'est pas un vrai dossier est laissée telle quelle. À appeler sous
+/// [`DeviceLock`].
+fn purge_trash(root: &Path, ops: &dyn TrashFs) -> io::Result<usize> {
     let trash = root.join(TRASH_DIR);
     if !is_real_dir(&trash)? {
         return Ok(0);
@@ -236,9 +274,9 @@ fn purge_trash(root: &Path) -> io::Result<usize> {
             }
             let path = entry.path();
             if is_real_dir(&path)? {
-                fs::remove_dir_all(&path)?;
+                retried(ops, || ops.remove_dir_all(&path))?;
             } else {
-                fs::remove_file(&path)?;
+                retried(ops, || ops.remove_file(&path))?;
             }
             Ok(true)
         });
@@ -307,17 +345,27 @@ pub fn remove_story(
     confirmed: bool,
     ctx: &WriteContext<'_>,
 ) -> Result<RemoveReport, RemoveError> {
-    remove_with(root, lock, id, confirmed, ctx, &mut |_| Ok(()))
+    remove_with(
+        root,
+        lock,
+        id,
+        confirmed,
+        ctx,
+        &RealTrashFs,
+        &mut |_| Ok(()),
+    )
 }
 
-/// Corps de [`remove_story`]. `hook` est appelé après chaque étape ; une erreur rendue par
-/// `hook` interrompt le retrait sans aucun nettoyage, comme une coupure.
+/// Corps de [`remove_story`]. `ops` : déplacements et suppressions de la corbeille. `hook`
+/// est appelé après chaque étape ; une erreur rendue par `hook` interrompt le retrait sans aucun
+/// nettoyage, comme une coupure.
 fn remove_with(
     root: &Path,
     lock: &DeviceLock,
     id: &str,
     confirmed: bool,
     ctx: &WriteContext<'_>,
+    ops: &dyn TrashFs,
     hook: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> Result<RemoveReport, RemoveError> {
     if !confirmed {
@@ -329,7 +377,7 @@ fn remove_with(
     // Garde commune, sous le verrou et avant toute écriture (corbeille, reprise d'index).
     check_write(root, ctx, WriteKind::Other)?;
 
-    if let Err(err) = purge_trash(root) {
+    if let Err(err) = purge_trash(root, ops) {
         tracing::warn!("restes d'un retrait précédent non supprimés : {err}");
     }
 
@@ -396,7 +444,8 @@ fn remove_with(
     for folder in &folders {
         fs::create_dir_all(&trash).map_err(RemoveError::FolderLeft)?;
         let target = trash.join(format!("{id}-{}", uuid::Uuid::new_v4().simple()));
-        fs::rename(folder, &target).map_err(RemoveError::FolderLeft)?;
+        // Un verrou passager ne doit pas laisser l'histoire en orphelin (#577).
+        retried(ops, || ops.rename(folder, &target)).map_err(RemoveError::FolderLeft)?;
         moved.push(target);
         hook(Step::MovedToTrash)?;
     }
@@ -405,7 +454,7 @@ fn remove_with(
     // vidée à la prochaine opération.
     let mut cleanup_pending = false;
     for target in &moved {
-        if let Err(err) = fs::remove_dir_all(target) {
+        if let Err(err) = retried(ops, || ops.remove_dir_all(target)) {
             tracing::warn!("dossier retiré non supprimé, nouvel essai plus tard : {err}");
             cleanup_pending = true;
         }
