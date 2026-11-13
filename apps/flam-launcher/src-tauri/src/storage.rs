@@ -229,6 +229,19 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     result
 }
 
+/// Nom du fichier visé si `name` est celui d'un temporaire de [`write_atomic`]
+/// (`.<fichier>.<pid>-<n>.tmp`, `pid` et `n` en chiffres décimaux), sinon `None`. Sert à
+/// reconnaître les restes d'une écriture interrompue (preuve d'usage du cache, #591).
+pub(crate) fn atomic_tmp_target(name: &str) -> Option<&str> {
+    let (target, counters) = name
+        .strip_prefix('.')?
+        .strip_suffix(".tmp")?
+        .rsplit_once('.')?;
+    let (pid, n) = counters.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (!target.is_empty() && digits(pid) && digits(n)).then_some(target)
+}
+
 /// Sérialise `value` en JSON indenté et l'écrit de façon atomique.
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
@@ -679,6 +692,29 @@ mod tests {
         assert_eq!(utc_stamp(1_700_000_000), "20231114-221320");
         // 29 février 2024, 23:59:59.
         assert_eq!(utc_stamp(1_709_251_199), "20240229-235959");
+    }
+
+    #[test]
+    fn atomic_tmp_target_reconnait_les_temporaires_de_write_atomic() {
+        // Forme écrite par `write_atomic` : `.<fichier>.<pid>-<n>.tmp`.
+        let tmp = format!(".catalog.json.{}-7.tmp", std::process::id());
+        assert_eq!(atomic_tmp_target(&tmp), Some("catalog.json"));
+        assert_eq!(
+            atomic_tmp_target(".a-1.zip.meta.json.42-0.tmp"),
+            Some("a-1.zip.meta.json")
+        );
+        for refused in [
+            "catalog.json",
+            "catalog.json.42-0.tmp",
+            ".catalog.json.42-0.TMP",
+            ".catalog.json.42.tmp",
+            ".catalog.json.42-.tmp",
+            ".catalog.json.x-0.tmp",
+            "..42-0.tmp",
+            ".42-0.tmp",
+        ] {
+            assert_eq!(atomic_tmp_target(refused), None, "{refused}");
+        }
     }
 
     #[test]

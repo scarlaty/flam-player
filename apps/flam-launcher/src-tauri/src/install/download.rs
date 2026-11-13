@@ -61,10 +61,13 @@ pub struct Download<'a> {
     pub ignores_proxy: bool,
 }
 
+/// Suffixe du fichier en cours de téléchargement ([`part_path`]).
+pub const PART_SUFFIX: &str = ".part";
+
 /// `<dest>.part`.
 pub fn part_path(dest: &Path) -> PathBuf {
     let mut name = dest.file_name().unwrap_or_default().to_os_string();
-    name.push(".part");
+    name.push(PART_SUFFIX);
     dest.with_file_name(name)
 }
 

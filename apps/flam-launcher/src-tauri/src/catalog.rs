@@ -68,8 +68,16 @@ const THUMB_CONCURRENCY: usize = 6;
 const THUMB_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Délai avant de retenter la revalidation d'une vignette qui vient d'échouer.
 const THUMB_RETRY_SECS: u64 = 600;
-const CACHE_FILE: &str = "catalog.json";
-const META_FILE: &str = "meta.json";
+/// Sous-dossier du cache des catalogues (listé dans `cache::APP_CACHE_SUBDIRS`) : un dossier
+/// par source ([`source_dir`]).
+pub(crate) const CATALOGS_DIR: &str = "catalogs";
+/// Catalogue en cache et sa mémoire, dans le dossier d'une source.
+pub(crate) const CACHE_FILE: &str = "catalog.json";
+pub(crate) const META_FILE: &str = "meta.json";
+/// Vignettes d'une source, dans son dossier ([`thumb_path`], [`thumb_meta_path`]).
+pub(crate) const THUMBS_DIR: &str = "thumbs";
+const THUMB_EXT: &str = ".img";
+const THUMB_META_EXT: &str = ".meta.json";
 
 /// Décide si une redirection est suivie : 5 sauts au plus, jamais de https vers http.
 fn redirect_check(previous: &[Url], next: &Url) -> Result<(), &'static str> {
@@ -666,13 +674,24 @@ fn thumb_stem(thumb_url: &str) -> String {
 
 /// Fichier de la vignette `thumb_url` dans le dossier de cache `dir` d'une source.
 fn thumb_path(dir: &Path, thumb_url: &str) -> PathBuf {
-    dir.join("thumbs")
-        .join(format!("{}.img", thumb_stem(thumb_url)))
+    dir.join(THUMBS_DIR)
+        .join(format!("{}{THUMB_EXT}", thumb_stem(thumb_url)))
 }
 
 fn thumb_meta_path(dir: &Path, thumb_url: &str) -> PathBuf {
-    dir.join("thumbs")
-        .join(format!("{}.meta.json", thumb_stem(thumb_url)))
+    dir.join(THUMBS_DIR)
+        .join(format!("{}{THUMB_META_EXT}", thumb_stem(thumb_url)))
+}
+
+/// `name` est celui d'une vignette ou de son suivi tels que [`thumb_path`] et
+/// [`thumb_meta_path`] les nomment : [`thumb_stem`] (32 chiffres hexadécimaux minuscules) suivi
+/// de `.img` ou `.meta.json`, casse exacte. Preuve d'usage du cache (#591).
+pub(crate) fn is_thumb_file(name: &str) -> bool {
+    [THUMB_EXT, THUMB_META_EXT].iter().any(|ext| {
+        name.strip_suffix(ext).is_some_and(|stem| {
+            stem.len() == 32 && stem.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    })
 }
 
 async fn read_thumb_meta(path: &Path) -> Option<ThumbMeta> {
@@ -946,17 +965,22 @@ struct Cached {
 
 /// Dossier de cache d'une source. L'identifiant doit être un nom de dossier sûr.
 fn source_dir(cache_root: &Path, source_id: &str) -> AppResult<PathBuf> {
-    let safe = !source_id.is_empty()
-        && source_id.len() <= 64
-        && source_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if !safe {
+    if !is_source_dir_name(source_id) {
         return Err(AppError::Validation(format!(
             "identifiant de source invalide : {source_id}"
         )));
     }
-    Ok(cache_root.join("catalogs").join(source_id))
+    Ok(cache_root.join(CATALOGS_DIR).join(source_id))
+}
+
+/// Identifiant de source accepté comme nom de dossier par [`source_dir`] : 1 à 64 caractères
+/// ASCII alphanumériques, `-` ou `_`.
+pub(crate) fn is_source_dir_name(source_id: &str) -> bool {
+    !source_id.is_empty()
+        && source_id.len() <= 64
+        && source_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Charge le cache d'une source s'il est lisible et correspond à `url`.
