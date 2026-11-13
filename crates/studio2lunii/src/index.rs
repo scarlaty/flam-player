@@ -63,13 +63,18 @@
 //! | 0x04     | 4 (s)  | numéro du son dans `si`, -1 si aucun                              |
 //! | 0x08     | 4 (s)  | OK : position dans `li` de la 1re option de l'actionNode visé     |
 //! | 0x0C     | 4 (s)  | OK : nombre d'options de cet actionNode                           |
-//! | 0x10     | 4 (s)  | OK : `optionIndex`                                                |
+//! | 0x10     | 4 (s)  | OK : `optionIndex`, ou -1 pour un tirage au hasard                |
 //! | 0x14     | 12     | maison : mêmes trois champs                                       |
 //! | 0x20     | 2 × 5  | contrôles `wheel`, `ok`, `home`, `pause`, `autoplay` (0 ou 1)     |
 //! | 0x2A     | 2      | zéros                                                             |
 //!
 //! Sans transition, ses trois champs valent `FF FF FF FF`. `controlSettings` étant obligatoire
 //! ([`crate::story`]), le remplissage `0xAA` de Lunii.QT n'apparaît jamais.
+//!
+//! Un tirage au hasard ([`OptionChoice::Aleatoire`], actionNode d'au moins deux options) ne met
+//! `FF FF FF FF` que dans le champ d'option, les deux autres restant renseignés : c'est
+//! l'encodage de Lunii.QT (`optionIndex` recopié en entier signé de 32 bits). Son effet sur la
+//! Flam 2.x n'est pas mesuré (L11 de la note).
 //!
 //! # `li` : options des actionNodes
 //!
@@ -108,7 +113,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-use crate::story::{StageNode, Story, Transition};
+use crate::story::{OptionChoice, StageNode, Story, Transition};
 
 /// Taille de l'en-tête de `ni`, qui est aussi la position du premier nœud.
 pub const NI_HEADER_SIZE: usize = 0x200;
@@ -398,9 +403,18 @@ fn put_transition(ni: &mut Vec<u8>, t: Option<Transition>, story: &Story, li_sta
                 ni,
                 to_i32(story.action_nodes()[t.action_node].options.len()),
             );
-            put_u32(ni, t.option_index);
+            put_i32(ni, option_value(t.option));
         }
         None => ni.extend_from_slice(&[0xFF; 12]),
+    }
+}
+
+/// Champ « optionIndex » d'une transition présente : l'indice, ou `-1` pour un tirage au hasard
+/// (valeur de STUdio recopiée par Lunii.QT, entier signé de 32 bits).
+fn option_value(option: OptionChoice) -> i32 {
+    match option {
+        OptionChoice::Index(i) => i32::try_from(i).expect("borné par story"),
+        OptionChoice::Aleatoire => -1,
     }
 }
 

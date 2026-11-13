@@ -181,6 +181,93 @@ async fn installation_studio_de_bout_en_bout() {
     assert_eq!(ctx.service.library_list().await.unwrap().len(), 1);
 }
 
+/// #608 : histoire inventée de plusieurs centaines de transitions (OK et maison) à
+/// `optionIndex: -1` vers des actionNodes de 2 à 50 options, convertie de bout en bout (scan,
+/// installation, préparation Lunii) ; `-1` écrit dans le champ d'option de `ni`, les autres
+/// champs de la transition renseignés.
+#[tokio::test]
+async fn installation_studio_avec_tirages_au_hasard() {
+    const NODES: usize = 300;
+    let uuid = |i: usize| format!("2c3d4e5f-6071-4182-93a4-{i:012x}");
+    let controls =
+        json!({"wheel": true, "ok": true, "home": true, "pause": false, "autoplay": false});
+    let options = |i: usize| -> usize { 2 + i % 49 };
+    let stages: Vec<serde_json::Value> = (0..NODES)
+        .map(|i| {
+            json!({
+                "uuid": uuid(i), "image": "scene.png", "audio": "voix.mp3",
+                "squareOne": i == 0,
+                "okTransition": {"actionNode": format!("a{i}"), "optionIndex": -1},
+                "homeTransition": {"actionNode": format!("a{}", (i + 1) % NODES),
+                                   "optionIndex": -1},
+                "controlSettings": controls
+            })
+        })
+        .collect();
+    let actions: Vec<serde_json::Value> = (0..NODES)
+        .map(|i| {
+            let opts: Vec<String> = (0..options(i)).map(|k| uuid((i + k + 1) % NODES)).collect();
+            json!({"id": format!("a{i}"), "options": opts})
+        })
+        .collect();
+    let story = json!({
+        "format": "v1", "version": 1, "title": "Tirages inventés",
+        "stageNodes": stages, "actionNodes": actions
+    });
+    let ctx = Ctx::new(None);
+    let src = ctx.dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(src.join("tirages.zip")).unwrap());
+    for (name, data) in [
+        ("story.json", serde_json::to_vec(&story).unwrap()),
+        ("thumbnail.png", png(300, 300)),
+        ("assets/scene.png", png(320, 240)),
+        ("assets/voix.mp3", mp3()),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(&data).unwrap();
+    }
+    zip.finish().unwrap();
+    let entry = scanned(&src);
+    let id = uuid(0);
+    assert_eq!(entry.uuid, id);
+
+    let t = ctx.service.start(entry).unwrap();
+    let task = ctx.finished(&t.id).await;
+    assert_eq!(task.state, TaskState::Done, "{:?}", task.error);
+
+    let (path, _) = Library::new(&ctx.cache()).playable(&id).unwrap();
+    let prepared = prepare_lunii::prepare(
+        &path,
+        &test_keys(),
+        &ctx.dir.path().join("travail"),
+        &PrepareLimits::default(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let ni = std::fs::read(prepared.dir.join("ni")).unwrap();
+    assert_eq!(ni.len(), 0x200 + NODES * 0x2C);
+    let field = |at: usize| i32::from_le_bytes(ni[at..at + 4].try_into().unwrap());
+    // Position de « a<i> » dans `li` : somme des options des actionNodes précédents.
+    let li_pos: Vec<i32> = (0..NODES)
+        .map(|i| (0..i).map(options).sum::<usize>() as i32)
+        .collect();
+    for n in 0..NODES {
+        let node = 0x200 + n * 0x2C;
+        assert_eq!(field(node + 0x08), li_pos[n], "nœud {n}");
+        assert_eq!(field(node + 0x14), li_pos[(n + 1) % NODES], "nœud {n}");
+        // OK : nombre d'options de « a<n> », puis -1 ; maison : celui de « a<n+1> », puis -1.
+        assert_eq!(field(node + 0x0C), options(n) as i32, "nœud {n}");
+        assert_eq!(field(node + 0x10), -1, "nœud {n}");
+        assert_eq!(
+            field(node + 0x18),
+            options((n + 1) % NODES) as i32,
+            "nœud {n}"
+        );
+        assert_eq!(field(node + 0x1C), -1, "nœud {n}");
+    }
+}
+
 /// Q10 : l'histoire Telmi convertie (format Flam) de même `uuid` n'est remplacée par le pack
 /// STUdio qu'après confirmation ; sans elle, refus avant toute conversion.
 #[tokio::test]

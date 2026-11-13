@@ -502,8 +502,31 @@ fn ni_li_ri_si_incoherents_refuses() {
         with("ni", node_with(&|n| n.ok = (0, 2, 2))),
         "transition OK",
     ));
+    // -1 est le tirage au hasard (#608) ; toute autre valeur négative reste refusée, et -1 ne
+    // dispense pas de contrôler la position et le nombre d'options.
     cases.push((
-        with("ni", node_with(&|n| n.ok = (0, 2, -1))),
+        with("ni", node_with(&|n| n.ok = (0, 2, -2))),
+        "transition OK",
+    ));
+    cases.push((
+        with("ni", node_with(&|n| n.ok = (2, 2, -1))),
+        "transition OK",
+    ));
+    cases.push((
+        with("ni", node_with(&|n| n.home = (0, 0, -1))),
+        "transition Maison",
+    ));
+    cases.push((
+        with("ni", node_with(&|n| n.home = (-1, 2, -1))),
+        "transition Maison",
+    ));
+    // Transition partiellement absente : refusée.
+    cases.push((
+        with("ni", node_with(&|n| n.ok = (0, -1, -1))),
+        "transition OK",
+    ));
+    cases.push((
+        with("ni", node_with(&|n| n.ok = (-1, -1, 0))),
         "transition OK",
     ));
     cases.push((
@@ -546,6 +569,35 @@ fn ni_li_ri_si_incoherents_refuses() {
     for (entries, needle) in cases {
         expect_invalid(&entries, needle);
     }
+}
+
+#[test]
+fn tirage_au_hasard_accepte() {
+    // `optionIndex` à -1 (tirage au hasard de STUdio, #608) sur les transitions OK et maison :
+    // `ni` copié tel quel, en clair.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut n = nodes();
+    n[0].ok = (0, 2, -1);
+    n[1].home = (0, 2, -1);
+    let ni = ni_bytes(&n, 2, 1);
+    let mut entries = base_entries();
+    set(&mut entries, "ni", ni.clone());
+    let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+    assert_eq!(std::fs::read(prepared.dir.join("ni")).unwrap(), ni);
+}
+
+#[test]
+fn tirage_au_hasard_a_une_option_accepte() {
+    // `(0, 1, -1)` : jamais écrit par `studio2lunii` (un -1 vers une seule option y devient 0),
+    // mais inoffensif (la seule option possible) ; accepté plutôt que de durcir sans mesure.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut n = nodes();
+    n[0].ok = (0, 1, -1);
+    let ni = ni_bytes(&n, 2, 1);
+    let mut entries = base_entries();
+    set(&mut entries, "ni", ni.clone());
+    let prepared = run(&pk_with(tmp.path(), &entries), &tmp.path().join("travail")).unwrap();
+    assert_eq!(std::fs::read(prepared.dir.join("ni")).unwrap(), ni);
 }
 
 #[test]

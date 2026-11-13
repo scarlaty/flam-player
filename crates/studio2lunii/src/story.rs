@@ -24,7 +24,7 @@
 //! | `stageNodes[].okTransition`         | objet, `null` ou absent              | [`Transition`] ou `None`                |
 //! | `stageNodes[].homeTransition`       | objet, `null` ou absent              | [`Transition`] ou `None`                |
 //! | `…Transition.actionNode`            | `id` d'un actionNode                 | [`Transition::action_node`] (indice)    |
-//! | `…Transition.optionIndex`           | entier de 0 à options - 1 (`-1` si 1 option) | [`Transition::option_index`]    |
+//! | `…Transition.optionIndex`           | entier de 0 à options - 1, ou `-1`   | [`Transition::option`] ([`OptionChoice`]) |
 //! | `stageNodes[].controlSettings`      | objet de 5 booléens, obligatoire     | [`StageNode::controls`]                 |
 //! | `actionNodes[]`                     | tableau (peut être vide)             | [`ActionNode`], dans l'ordre            |
 //! | `actionNodes[].id`                  | chaîne unique                        | [`ActionNode::id`]                      |
@@ -39,8 +39,9 @@
 //!
 //! - `format` autre que `"v1"` refusé (Lunii.QT recopie n'importe quel nombre) ;
 //! - `controlSettings` obligatoire (Lunii.QT remplit le nœud de `0xAA`) ;
-//! - `optionIndex` à `-1` : accepté (converti en `0`) si l'actionNode n'a qu'une option, refusé
-//!   sinon tant que son effet sur la Flam n'est pas mesuré (L11) ;
+//! - `optionIndex` à `-1` (tirage au hasard de STUdio) : converti en `0` si l'actionNode n'a
+//!   qu'une option ; sinon gardé ([`OptionChoice::Aleatoire`]) et écrit `-1` dans `ni`, comme
+//!   Lunii.QT (levé par décision du mainteneur, #608 ; effet sur la Flam 2.x non mesuré, L11) ;
 //! - nœud `squareOne` placé en tête (Lunii.QT prend toujours le premier nœud) ;
 //! - toute référence inconnue refusée (Lunii.QT écrit `-1` dans `li` ou lève une exception).
 //!
@@ -58,8 +59,8 @@
 //! - UUID de stageNode uniques (comparés sans la casse), identifiants d'actionNode uniques ;
 //! - transition vers un actionNode inexistant, option vers un stageNode inexistant (comparaison
 //!   exacte des chaînes, comme Lunii.QT), actionNode sans option ;
-//! - `optionIndex` hors de `0..options` (`-1` toléré avec une seule option), `controlSettings`
-//!   absent ;
+//! - `optionIndex` hors de `0..options` et différent de `-1` (`-2`, trop grand…),
+//!   `controlSettings` absent ;
 //! - `format` autre que `"v1"`, `version` hors des 16 bits de son champ dans `ni` ;
 //! - noms d'assets dangereux : blanc, plus de [`MAX_ASSET_NAME_BYTES`] octets, `..`, `/`, `\`,
 //!   `:`, caractère de contrôle ; un même nom employé comme image et comme son (Lunii.QT n'en
@@ -154,14 +155,6 @@ pub enum StoryError {
         index: i64,
         options: usize,
     },
-    #[error(
-        "stageNode {uuid} : la transition {transition} demande un choix au hasard parmi {options} options (optionIndex -1) ; ce n'est pas encore pris en charge sur la Flam"
-    )]
-    OptionIndexAleatoire {
-        uuid: String,
-        transition: &'static str,
-        options: usize,
-    },
     #[error("stageNode {uuid} : nom d'asset refusé {nom:?} ({raison})")]
     NomAsset {
         uuid: String,
@@ -207,8 +200,19 @@ pub struct StageNode {
 pub struct Transition {
     /// Indice de l'actionNode dans [`Story::action_nodes`].
     pub action_node: usize,
-    /// Option choisie, toujours `< options.len()`.
-    pub option_index: u32,
+    /// Option choisie : un indice, ou un tirage au hasard parmi les options.
+    pub option: OptionChoice,
+}
+
+/// Option visée par une [`Transition`] (`optionIndex` de STUdio).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionChoice {
+    /// Option désignée, toujours `< options.len()` de l'actionNode visé.
+    Index(u32),
+    /// `optionIndex: -1` vers un actionNode d'au moins deux options : port « Random option »
+    /// de l'éditeur STUdio, l'option est tirée au hasard. Écrit `-1` dans `ni`
+    /// ([`crate::index`]) ; effet sur la Flam 2.x non mesuré (L11).
+    Aleatoire,
 }
 
 /// Nœud d'action : liste ordonnée de stageNodes proposés.
@@ -642,25 +646,25 @@ fn transition(
         options,
     };
     // -1 est le port « Random option » de l'éditeur STUdio : writer.js l'écrit quand la
-    // transition vise ce port, reader.js le relit comme ce port, et le simulateur
-    // (ActionNodeModel.js) tire alors l'option au hasard, uniformément. Établi pour STUdio ;
-    // le comportement de la Flam devant un -1 dans `ni` reste inconnu (L11).
-    // Avec une seule option, il ne peut désigner que
-    // l'option 0, quel que soit le comportement de la Flam : on le convertit en 0. On n'écrit
-    // jamais -1 dans `ni` pour une transition présente (-1 y signifie « sans transition »).
-    // Avec plusieurs options, son effet sur la Flam n'est pas mesuré : refusé (note, Q5 et L11).
+    // transition (OK ou maison) vise ce port, reader.js le relit comme ce port, et le simulateur
+    // (ActionNodeModel.js) tire alors l'option au hasard, uniformément. Lunii.QT recopie la
+    // valeur telle quelle dans `ni` (entier signé de 32 bits : FF FF FF FF).
+    // - Une seule option : il ne peut désigner que l'option 0, quel que soit le comportement de
+    //   la Flam ; converti en 0, ce qui évite de dépendre d'un comportement non mesuré.
+    // - Plusieurs options : gardé tel quel (OptionChoice::Aleatoire), écrit -1 dans `ni`, levé
+    //   par décision du mainteneur (#608) ; effet sur la Flam 2.x non mesuré (L11).
+    // Dans `ni`, -1 dans le seul champ d'option ne se confond pas avec une transition absente
+    // (les trois champs à -1) : position dans `li` et nombre d'options restent renseignés.
     if raw.option_index == -1 {
-        if options == 1 {
-            return Ok(Some(Transition {
-                action_node: action,
-                option_index: 0,
-            }));
-        }
-        return Err(StoryError::OptionIndexAleatoire {
-            uuid: uuid.to_owned(),
-            transition: which,
-            options,
-        });
+        let option = if options == 1 {
+            OptionChoice::Index(0)
+        } else {
+            OptionChoice::Aleatoire
+        };
+        return Ok(Some(Transition {
+            action_node: action,
+            option,
+        }));
     }
     let option_index = u32::try_from(raw.option_index)
         .ok()
@@ -668,7 +672,7 @@ fn transition(
         .ok_or_else(out_of_range)?;
     Ok(Some(Transition {
         action_node: action,
-        option_index,
+        option: OptionChoice::Index(option_index),
     }))
 }
 

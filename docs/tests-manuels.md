@@ -484,7 +484,17 @@ parenthèses, le point de `studio-lunii.md` § 9) :
    fin du son (L15).
 10. Une histoire dont un écran n'a pas d'image, ou pas de son, ne bloque pas la Flam (L12).
     Sans objet si vous n'en avez pas.
-11. Un choix « au hasard », s'il y en a un, tire bien une option (L11). Sans objet sinon.
+11. **Tirage au hasard** (L11, #608 : accepté par le launcher, jamais essayé sur une Flam 2.x).
+    Il faut une histoire STUdio où une flèche arrive sur le port « aléatoire » (random) d'un
+    nœud de choix d'au moins **deux** options ; dans l'éditeur STUdio, en créer une si besoin :
+    un écran « Départ » dont OK mène, au hasard, à trois écrans aux sons bien distincts (par
+    exemple « un », « deux », « trois »), chacun revenant au départ. Sur la Flam : lancer
+    l'histoire, appuyer **dix fois** sur OK depuis le départ (en revenant au départ entre deux
+    essais) et noter à chaque fois l'écran obtenu. Noter aussi, si l'histoire en a, ce que fait
+    le bouton Maison vers un tirage au hasard. À rapporter : la suite des dix écrans obtenus
+    (par exemple « 2, 1, 1, 3, 2… ») ; si c'est toujours le même écran, lequel (premier, dernier,
+    autre) ; tout comportement anormal (écran noir, son coupé, retour à la liste, redémarrage,
+    Flam bloquée), avec la vérification où il survient. Sans objet sinon.
 12. Si l'histoire propose le **mode nuit**, il est proposé sur la Flam (L8). Sans objet sinon.
 13. Éteindre puis rallumer la Flam : l'histoire est toujours là et se lance encore (L1).
 14. Si une **histoire officielle** était déjà sur la Flam, elle se lance toujours et la liste est
