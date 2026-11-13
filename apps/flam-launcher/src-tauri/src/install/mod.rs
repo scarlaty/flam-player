@@ -2004,8 +2004,12 @@ fn staging_leftover(name: &str) -> Option<(&str, bool)> {
 /// garde les noms à supprimer, puis chacun est revérifié (nom de [`staging_leftover`], enfant
 /// direct, **dossier** réel ou **fichier** ordinaire selon le nom, jamais un lien ni une
 /// jonction) avant `remove_dir_all` ou `remove_file`. Échecs : avertissement, retenté au
-/// prochain démarrage.
+/// prochain démarrage. `staging` vit dans `library/` : rien n'est lu ni supprimé si `library/`
+/// ne porte pas le marqueur de l'application (#591).
 fn sweep_staging_in(staging: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<String>) {
+    if !staging.parent().is_some_and(crate::cache::is_owned) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(staging) else {
         return;
     };

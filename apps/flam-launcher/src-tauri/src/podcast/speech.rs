@@ -291,8 +291,10 @@ fn le32(b: &[u8], at: usize) -> u32 {
 impl Wav {
     /// Contrôle un WAV rendu par un moteur : en-tête RIFF/WAVE, `fmt ` PCM 16 bits mono ou
     /// stéréo, données non vides, durée au plus [`MAX_AUDIO_SECS`]. Un champ de taille de données
-    /// trop grand (flux) est ramené à ce qui est présent.
-    pub fn parse(bytes: Vec<u8>) -> Result<Wav, SpeechError> {
+    /// trop grand (flux) est ramené à ce qui est présent. Les octets rendus sont normalisés : ce
+    /// qui suit le bloc `data` est retiré, et les tailles `RIFF` et `data` de l'en-tête sont
+    /// remises à la valeur réelle (le WAV est remis tel quel à `PlaySoundW`, qui s'y fie).
+    pub fn parse(mut bytes: Vec<u8>) -> Result<Wav, SpeechError> {
         if bytes.len() > MAX_WAV_BYTES {
             return Err(SpeechError::TooLong);
         }
@@ -301,6 +303,8 @@ impl Wav {
         }
         let mut fmt: Option<(u16, u32)> = None;
         let mut data_len = None;
+        // (début des données, position du champ de taille du bloc `data`).
+        let mut data_at = 0usize;
         let mut pos = 12usize;
         while pos + 8 <= bytes.len() {
             let id = &bytes[pos..pos + 4];
@@ -332,6 +336,7 @@ impl Wav {
                 fmt = Some((channels, rate));
             } else if id == b"data" {
                 data_len = Some(size.min(bytes.len() - body));
+                data_at = body;
                 break;
             }
             pos = match body.checked_add(size).and_then(|p| p.checked_add(size & 1)) {
@@ -350,6 +355,12 @@ impl Wav {
         if duration_secs > MAX_AUDIO_SECS {
             return Err(SpeechError::TooLong);
         }
+        // Tailles de l'en-tête remises au contenu réel : `data_len <= MAX_WAV_BYTES`, donc les deux
+        // valeurs tiennent dans 32 bits.
+        bytes.truncate(data_at + data_len);
+        bytes[data_at - 4..data_at].copy_from_slice(&(data_len as u32).to_le_bytes());
+        let riff = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff.to_le_bytes());
         Ok(Wav {
             bytes,
             sample_rate: rate,
