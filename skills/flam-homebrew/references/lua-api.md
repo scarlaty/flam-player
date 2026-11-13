@@ -201,6 +201,23 @@ lv.obj.set_pos(img, x, y)
 game.images = game.images or {}; game.images.hero = data   -- garder la référence
 ```
 
+- **Garder la référence** tant que l'image est affichée. D'après le runtime (ses
+  commentaires) et le binding du simulateur, `lv.img.set_src` ne retient pas la source
+  sur device : une source tenue par une seule variable locale serait libérée au premier
+  passage du ramasse-miettes alors que l'objet l'affiche encore. Non mesuré isolément
+  sur l'appareil (piège 25, suspecté ; invisible au simulateur, qui ancre la source dans
+  l'objet). Relâcher la référence (`game.images.hero = nil`) seulement après avoir
+  supprimé ou masqué l'objet.
+- **Borner les images retenues** : chaque source gardée occupe sa taille décodée en
+  mémoire. Constaté une fois : un menu de 18 images 320×212 qui gardait chaque image vue
+  a fait redémarrer la Flam à la septième image retenue ; le seuil dépend du reste de la
+  mémoire occupée (piège 26). Pour une galerie ou un menu à images, ne garder que celles
+  affichées, relâcher les autres puis `collectgarbage("collect")` avant de charger la
+  suivante (modèle : `syncSources` dans `carousel_1_0_0.lua` du runtime, validé sur device
+  le 13/11/2026 avec des menus de 18 et 30 images dans une histoire convertie par
+  telmi2flam ; le reste du runtime n'est vérifié qu'au simulateur). Le module
+  `image-choice` du runtime ne garde que l'image affichée, sauf avec `preload = true`,
+  qui charge **toutes** les images des choix d'un coup : à éviter au-delà de 2 ou 3.
 - Chemin relatif à `img/` (sous-dossiers permis : `"sprites/a.lif"`). Image absente :
   le simulateur renvoie `nil` sans bruit, le device plante ou gèle → `flam_check.py`
   vérifie les littéraux `"*.lif"`.
@@ -218,12 +235,18 @@ Global.requestAudioStop(true, true)                                 -- couper
 
 - Champs reconnus par le runtime embarqué : `path`, `AFCb`, `priority` (couper la
   piste en cours pour celle-ci : donc un `stop`, à éviter pendant l'action), `showPause` (`false` dans un jeu : pas d'overlay
-  pause plein écran si l'audio est mis en pause).
+  pause plein écran si l'audio est mis en pause), `stopNow` (avec `priority = true` :
+  coupe **tout de suite** la piste en cours et détache son callback, seul le chargement
+  de la nouvelle reste différé ; utilisé par le carrousel et `image-choice` au
+  changement de focus ; un `stop` immédiat, donc à-coup possible pendant l'action).
 - `requestAudioPlay` charge après un délai de 500 ms (`Global.audioDelayValue`) :
   adapté à une musique ou une narration, pas à un bruitage synchrone.
-- Fichier absent : avec ce runtime, le chargement est retenté toutes les 500 ms et
-  `"stop"` n'arrive jamais → toujours vérifier que le `.mp3` existe (`flam_check.py`
-  contrôle les littéraux `"*.mp3"`).
+- Fichier absent ou illisible : le runtime ne retente pas ; il appelle **une seule
+  fois** `AFCb("stop", 0)` (callback détaché avant l'appel), puis ignore le `"stop"`
+  que le firmware pourrait émettre ensuite. Vérifié au simulateur (tests du runtime),
+  pas sur device. Un jeu qui enchaîne sur `"stop"` avancerait donc aussitôt : toujours
+  vérifier que le `.mp3` existe (`flam_check.py` contrôle les littéraux `"*.mp3"`).
+  L'ancien runtime du skill retentait toutes les 500 ms sans jamais envoyer `"stop"`.
 - `AFCb(state, seconds)` reçoit `"play"` (chaque seconde), `"pause"`, `"stop"` (fin).
 - Chaque `.mp3` doit avoir son `.mp3map` (généré par `flam_build.py`).
 - Sans besoin d'audio : ne rien faire (le casse-briques n'a pas de son).
@@ -364,6 +387,7 @@ Préférer cette liste ; tout appel hors liste est à tester sur le device.
   `lv.FLEX_ALIGN_CENTER/START`, `lv.ANIM_ON/OFF`, `lv.ANIM_REPEAT_INFINITE`
 - `audio.` load (1er argument `0`), play, stop, pause, get_status (utilisés par
   `global.lua` ; règles d'emploi §8)
+- `collectgarbage("collect")`, `collectgarbage("count")` (utilisés par `global.lua`)
 - `Global.` load_module, load_image, setBackToLibrary, setBackBehavior,
   setBackModule, requestAudioPlay, requestAudioStop, cleanCurrentModule,
   visual_width, visual_height, screen_width, screen_height, header_height

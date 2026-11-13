@@ -5,7 +5,10 @@ REM  test_run.bat - Lance toutes les suites de tests
 REM  1. Suite    : tests\lua\test_*.lua (hors test_helpers.lua), flam-test,
 REM               un seul processus.
 REM  2. Moteur   : tests\engine\test_*.lua (moteur story.lua/main.lua et
-REM               modules runtime telmi2flam), flam-test.
+REM               modules runtime telmi2flam, garde de derive de la copie
+REM               du skill flam-homebrew : test_skill_runtime_sync.lua),
+REM               flam-test ; puis les tests du runtime (test_runtime*,
+REM               test_carousel_memory) sur la copie du skill (FLAM_RUNTIME_DIR).
 REM  3. Audio    : tests\audio\test_*.lua puis reopen_1/reopen_2 (meme
 REM               processus : fermeture/reouverture du lua_State, issue #1),
 REM               flam-test-audio = vrai sdl_audio.c, pilote SDL dummy.
@@ -75,6 +78,19 @@ if defined ENG_ARGS (
     set "ENGINE_RC=1"
 )
 echo EXIT_CODE=!ENGINE_RC!
+REM Runtime embarque par le skill flam-homebrew (#620) : copie octet pour octet
+REM de tools\telmi2flam\runtime (garde : test_skill_runtime_sync.lua, ci-dessus).
+REM Les tests qui portent sur le runtime et acceptent FLAM_RUNTIME_DIR sont
+REM relances sur cette copie (test_story* testent le moteur de telmi2flam).
+echo --- runtime du skill flam-homebrew : test_runtime, test_runtime_keys, test_carousel_memory ---
+set "SAVED_RUNTIME_DIR=!FLAM_RUNTIME_DIR!"
+set "FLAM_RUNTIME_DIR=%ROOT%skills\flam-homebrew\assets\runtime\script\"
+"%BUILD%\flam-test.exe" --timeout 60 "%ROOT%tests\engine\test_runtime.lua" "%ROOT%tests\engine\test_runtime_keys.lua" "%ROOT%tests\engine\test_carousel_memory.lua"
+set "SKILL_RT_RC=!ERRORLEVEL!"
+set "FLAM_RUNTIME_DIR=!SAVED_RUNTIME_DIR!"
+set "SAVED_RUNTIME_DIR="
+echo EXIT_CODE=!SKILL_RT_RC!
+if "!ENGINE_RC!"=="0" set "ENGINE_RC=!SKILL_RT_RC!"
 
 REM ---------------- 3. Audio reel ----------------
 echo.

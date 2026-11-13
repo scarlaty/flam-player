@@ -202,6 +202,20 @@ class TestRuntimeManifest(Base):
         self.assertEqual(listed, on_disk)
         self.assertEqual(validate.LIF_MAX_DIM, 2047)
 
+    def test_skill_runtime_lists_same_files(self):
+        # Le skill flam-homebrew embarque une copie de ce runtime (#620) : le
+        # contenu est compare octet pour octet par tests/engine/test_skill_runtime_sync.lua ;
+        # ici, aucun fichier en plus ni en moins (flam_build.py embarque tout le dossier).
+        with open(validate.RUNTIME_MANIFEST, encoding="utf-8") as f:
+            listed = sorted(ln.strip().lstrip("!") for ln in f if ln.strip() and not ln.startswith("#"))
+        root = os.path.dirname(validate.RUNTIME_MANIFEST)
+        skill = os.path.join(root, "..", "..", "..", "skills", "flam-homebrew", "assets", "runtime")
+        if not os.path.isdir(skill):
+            self.skipTest("skill flam-homebrew absent")
+        in_skill = sorted(os.path.relpath(os.path.join(dp, n), skill).replace(os.sep, "/")
+                          for dp, _, names in os.walk(skill) for n in names)
+        self.assertEqual(in_skill, listed)
+
 
 class TestParseLuaData(unittest.TestCase):
     def test_subset(self):

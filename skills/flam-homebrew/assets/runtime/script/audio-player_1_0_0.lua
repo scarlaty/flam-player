@@ -28,7 +28,8 @@ audioPlayer.seekingSpeed = 1
 -- store last seek direction for seek speed reset
 audioPlayer.lastSeekDirection = 0
 -- store seek value between slider and audioFeedback (used to synchronize UI and player)
-audioPlayer.seekValue = 0
+-- nil = aucun seek en attente (0 est une position valide : retour au debut)
+audioPlayer.seekValue = nil
 -- Store interraction state ( seeking mode on/off)
 audioPlayer.seeking = false
 -- Store exit callback from args.callback
@@ -41,6 +42,21 @@ audioPlayer.imgForeground = nil
 audioPlayer.imgBackground = nil
 -- store args.ignoreSeek ( used to disable seek restore)
 audioPlayer.ignoreSeekSave = nil
+-- [telmi2flam] args.okCallback : appele sur OK (ENTER), pendant ou apres l'audio
+-- (skip, ctrl.ok TELMI). nil = ENTER ignore.
+audioPlayer.okCallback = nil
+-- ENTER recu, traite par okTimer et jamais dans l'evenement KEY : le callback
+-- recharge un module (lv.obj.clean(window)) et supprimerait l'objet en cours de
+-- dispatch (meme principe que carousel.inputProcessTimer)
+audioPlayer.okRequested = false
+audioPlayer.okTimer = nil
+-- ticks de okTimer depuis create (anti-rebond d'entree, ~200 ms)
+audioPlayer.okTick = 0
+-- true des que la sortie est declenchee (fin d'audio ou OK) : garde anti double appel
+audioPlayer.exited = false
+-- true apres le 'stop' de fin quand args.callback est nil : on reste sur l'image
+-- (scene TELMI non-autoplay) en attendant OK
+audioPlayer.ended = false
 
 --- initialize lvgl styles
 ---@return nil
@@ -53,7 +69,7 @@ function audioPlayer.initStyles()
     lv.style.set_img_opa(audioPlayer.styles.background, 0)
 
     audioPlayer.styles.foreground = lv.style.new()
-    lv.style.set_img_opa(audioPlayer.styles.background, 0)
+    lv.style.set_img_opa(audioPlayer.styles.foreground, 0)
 
     audioPlayer.styles.titleLabel = lv.style.new()
     lv.style.set_text_color(audioPlayer.styles.titleLabel, lv.color.hex(0xffffff))
@@ -95,6 +111,12 @@ function audioPlayer.clean()
         lv.timer.del(audioPlayer.inactivity_timer)
         audioPlayer.inactivity_timer = nil
     end
+    if (audioPlayer.okTimer ~= nil) then
+        lv.timer.del(audioPlayer.okTimer)
+        audioPlayer.okTimer = nil
+    end
+    audioPlayer.okCallback = nil
+    audioPlayer.okRequested = false
 
     lv.group.set_editing(document, false)
     lv.group.remove_all_objs(document)
@@ -116,7 +138,8 @@ function audioPlayer.inactivityCb()
     if (audioPlayer.paused == false) then
         audioPlayer.showLargePlayer()
     end
-    if (audioPlayer.seekValue ~= 0) then
+    -- audio termine (attente OK) : pas de seek, pause/seek/play relancerait la lecture
+    if (audioPlayer.seekValue ~= nil and audioPlayer.ended == false) then
         -- [telmi2flam] Sur device, audio.seek() PENDANT la lecture gele l'appareil
         -- (ecran noir, lv_timer_handler mort - issue #1). Sequence sure, validee
         -- sur device : pause -> seek -> reprise (uniquement si on jouait).
@@ -125,7 +148,7 @@ function audioPlayer.inactivityCb()
         audio.seek(audioPlayer.seekValue)
         if (wasPlaying) then audio.play() end
         print("audio-player_1_0_0.lua: info:  Seeking ...")
-        audioPlayer.seekValue = 0
+        audioPlayer.seekValue = nil
         audioPlayer.seeking = false
     end
 end
@@ -133,14 +156,18 @@ end
 --- Callback for global.audioFeedback is called each seconds by firmware using global, Allow audio state following
 ---@return nil
 function audioPlayer.audioFeedback(audioState, seconds)
-    if (audio.duration() ~= nil and audio.duration() ~= 0) then
-        lv.slider.set_range(audioPlayer.slider, 0, math.floor(audio.duration()))
+    local duration = audio.duration()
+    if (duration ~= nil and duration ~= 0) then
+        -- range >= 1 : un audio de moins d'1 s donnerait floor=0 => slider de range 0
+        -- (division par zero dans lv_bar sur le LVGL non patche du device)
+        lv.slider.set_range(audioPlayer.slider, 0, (duration >= 1) and math.floor(duration) or 1)
     end
 
     if (audioPlayer.audioStarted == false) then
         audioPlayer.audioStarted = true
 
-        if (audioPlayer.ignoreSeekSave == nil or audioPlayer.ignoreSeekSave == false) then
+        -- pas de reprise de position sur un "stop" (fin immediate ou audio.load en echec)
+        if (audioState ~= "stop" and (audioPlayer.ignoreSeekSave == nil or audioPlayer.ignoreSeekSave == false)) then
             if (state.visited_funs[state.current_fun] ~= nil) then
                 if (state.visited_funs[state.current_fun].seekposition ~= nil) then
                     -- [telmi2flam] pause -> seek -> play : seek en lecture gele le
@@ -181,14 +208,71 @@ function audioPlayer.audioFeedback(audioState, seconds)
         if (state.visited_funs[state.current_fun] ~= nil) then
             state.visited_funs[state.current_fun].seekposition = nil
         end
-        audioPlayer.exitCallback()
+        if (audioPlayer.exitCallback ~= nil) then
+            audioPlayer.leave(audioPlayer.exitCallback)
+        else
+            -- [telmi2flam] pas de callback de fin (non-autoplay) : on reste sur
+            -- l'image, seek desactive, OK (okCallback) fait avancer
+            audioPlayer.ended = true
+            audioPlayer.seeking = false
+            audioPlayer.seekValue = nil
+        end
     end
+end
+
+--- [telmi2flam] Sortie unique du module (fin d'audio ou OK) : garde anti double appel
+---@return nil
+function audioPlayer.leave(cb)
+    if (audioPlayer.exited or cb == nil) then
+        return
+    end
+    audioPlayer.exited = true
+    cb()
+end
+
+--- [telmi2flam] Timer okTimer : traite l'ENTER memorise par keyPressed
+---@return nil
+function audioPlayer.processOk()
+    -- anti-rebond d'entree (~200 ms) : ignore l'ENTER qui a valide l'ecran precedent
+    if (audioPlayer.okTick <= 1) then
+        audioPlayer.okTick = audioPlayer.okTick + 1
+        audioPlayer.okRequested = false
+        return
+    end
+    if (audioPlayer.okRequested) then
+        audioPlayer.okRequested = false
+        -- scene quittee : pas de reprise au milieu de cet audio
+        if (state.visited_funs ~= nil and state.visited_funs[state.current_fun] ~= nil) then
+            state.visited_funs[state.current_fun].seekposition = nil
+        end
+        audioPlayer.leave(audioPlayer.okCallback)
+    end
+end
+
+--- Borne une position de seek entre 0 et la fin de l'audio (si la duree est connue)
+---@return number
+local function clampSeek(value)
+    local duration = audio.duration()
+    if (value < 0) then
+        value = 0
+    end
+    if (duration ~= nil and duration > 0 and value > math.floor(duration)) then
+        value = math.floor(duration)
+    end
+    return value
 end
 
 --- KeyPressed event computing
 ---@return nil
 function audioPlayer.keyPressed(e)
-    if (audioPlayer.audioStarted) then
+    -- [telmi2flam] OK (ENTER) : memorise, traite par okTimer (voir processOk)
+    if (string.byte(lv.event.get_key_value(e)) == 10) then
+        if (audioPlayer.okCallback ~= nil) then
+            audioPlayer.okRequested = true
+        end
+        return
+    end
+    if (audioPlayer.audioStarted and audioPlayer.ended == false) then
         local wasSeeking = false
         if (audioPlayer.isLargeView) then
             audioPlayer.showMiniPlayer()
@@ -203,13 +287,13 @@ function audioPlayer.keyPressed(e)
         end
 
         if (string.byte(lv.event.get_key_value(e)) == 19) then
-            audioPlayer.seekValue = lv.slider.get_value(audioPlayer.slider) + audioPlayer.seekingSpeed
+            audioPlayer.seekValue = clampSeek(lv.slider.get_value(audioPlayer.slider) + audioPlayer.seekingSpeed)
             lv.slider.set_value(audioPlayer.slider, audioPlayer.seekValue, lv.ANIM_OFF)
             audioPlayer.seeking = true
             audioPlayer.lastSeekDirection = 19
         end
         if (string.byte(lv.event.get_key_value(e)) == 20) then
-            audioPlayer.seekValue = lv.slider.get_value(audioPlayer.slider) - audioPlayer.seekingSpeed
+            audioPlayer.seekValue = clampSeek(lv.slider.get_value(audioPlayer.slider) - audioPlayer.seekingSpeed)
             lv.slider.set_value(audioPlayer.slider, audioPlayer.seekValue, lv.ANIM_OFF)
             audioPlayer.seeking = true
             audioPlayer.lastSeekDirection = 20
@@ -265,6 +349,11 @@ function audioPlayer.create(args)
     lv.obj.clean(window)
     audioPlayer.initStyles()
     audioPlayer.exitCallback = args.callback
+    audioPlayer.okCallback = args.okCallback
+    audioPlayer.okRequested = false
+    audioPlayer.okTick = 0
+    audioPlayer.exited = false
+    audioPlayer.ended = false
     audioPlayer.ignoreSeekSave = args.ignoreSeek
     audioPlayer.parentContainer = lv.obj.new(window)
     lv.obj.remove_style_all(audioPlayer.parentContainer)
@@ -336,6 +425,14 @@ function audioPlayer.create(args)
         audioPlayer.inactivity_timer = lv.timer.new(audioPlayer.inactivityCb, 1000, nil)
         Global.requestAudioPlay({ path = args.audio_path, AFCb = audioPlayer.audioFeedback, priority = true })
         audioPlayer.showLargePlayer()
+    else
+        -- [telmi2flam] scene image sans audio (non-autoplay) : image visible
+        -- (opa 0 par defaut) et attente de OK, ou de Home seul si ctrl.ok=false
+        -- (sans okCallback : l'image doit quand meme s'afficher, sinon ecran noir)
+        audioPlayer.showLargePlayer()
+    end
+    if (audioPlayer.okCallback ~= nil) then
+        audioPlayer.okTimer = lv.timer.new(audioPlayer.processOk, 100, nil)
     end
 end
 

@@ -3,7 +3,8 @@ name: player
 # Tests du player C et du moteur (#568) : `flam-test`, `flam-test-audio`, les `regress_/poc_/fuzz_*.lua`,
 # les tests Python du convertisseur d'outils et les e2e `e2e_telmi.py` / `e2e_embed.py`, via
 # `test_run.bat strict`. Ce workflow est le seul à les exécuter : ses déclencheurs couvrent tout ce dont
-# ils dépendent (player, moteur, sous-modules, binaire `telmi2flam`, outils Python).
+# ils dépendent (player, moteur, sous-modules, binaire `telmi2flam`, outils Python, runtime embarqué
+# par le skill `flam-homebrew`, testé et comparé à celui de telmi2flam à l'étape 2).
 on:
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "patches/**"
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
+      - "skills/flam-homebrew/assets/runtime/**"
       - "tools/telmi2flam/*.py"
       - "tools/telmi2flam/tests/**"
       - "Cargo.toml"
@@ -34,6 +36,7 @@ on:
       - "patches/**"
       - "tools/telmi2flam/engine/**"
       - "tools/telmi2flam/runtime/**"
+      - "skills/flam-homebrew/assets/runtime/**"
       - "tools/telmi2flam/*.py"
       - "tools/telmi2flam/tests/**"
       - "Cargo.toml"
