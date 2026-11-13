@@ -298,6 +298,9 @@ fn proven_by_content(name: &str, dir: &Path) -> bool {
 /// `.feed.xml.<pid>-<n>.tmp` et `.meta.json.<pid>-<n>.tmp` (`storage::write_atomic`), dossiers
 /// `mp3` (`podcast::mp3cache`) et `thumbs` (`podcast::thumb`, depuis la bêta.3). Un autre nom, un
 /// lien ou un type inattendu : refus (#591). Le contenu de `mp3/` et `thumbs/` n'est pas examiné.
+/// Exception : `desktop.ini`, `Thumbs.db` (casse indifférente) et `.DS_Store`, s'ils sont des
+/// fichiers ordinaires, sont ignorés ; ils ne prouvent rien (un dossier de source qui ne contient
+/// qu'eux est jugé comme un dossier vide).
 fn podcast_source_children_known(dir: &Path) -> bool {
     const FILES: [&str; 2] = ["feed.xml", "meta.json"];
     const DIRS: [&str; 2] = ["mp3", "thumbs"];
@@ -320,6 +323,10 @@ fn podcast_source_children_known(dir: &Path) -> bool {
         if kind.is_dir() {
             return DIRS.contains(&name.as_str());
         }
+        // Fichiers déposés par l'explorateur (Windows, macOS) : ignorés, sans valoir preuve.
+        if kind.is_file() && is_os_junk(&name) {
+            return true;
+        }
         kind.is_file()
             && (FILES.contains(&name.as_str())
                 || FILES.iter().any(|file| {
@@ -328,6 +335,14 @@ fn podcast_source_children_known(dir: &Path) -> bool {
                         .is_some_and(|rest| rest.starts_with('.') && rest.ends_with(".tmp"))
                 }))
     })
+}
+
+/// Fichier que l'explorateur de Windows (`desktop.ini`, `Thumbs.db`, casse indifférente) ou le
+/// Finder de macOS (`.DS_Store`) dépose dans un dossier ouvert.
+fn is_os_junk(name: &str) -> bool {
+    name.eq_ignore_ascii_case("desktop.ini")
+        || name.eq_ignore_ascii_case("Thumbs.db")
+        || name == ".DS_Store"
 }
 
 /// Tous les éléments de `library/` ont une forme que l'application écrit à sa racine (vide
@@ -1369,6 +1384,36 @@ mod tests {
         );
         assert!(!marked(&|s| write(&s.join("mp3"), 3)), "mp3 fichier");
         assert!(!marked(&|s| write(&s.join(".feed.xmlx.tmp"), 3)));
+        // Fichiers de l'explorateur : ignorés à côté d'une forme valide, ou seuls (dossier vide).
+        for junk in [
+            "desktop.ini",
+            "DESKTOP.INI",
+            "Thumbs.db",
+            "thumbs.db",
+            ".DS_Store",
+        ] {
+            assert!(
+                marked(&|s| {
+                    write(&s.join("feed.xml"), 3);
+                    write(&s.join(junk), 3);
+                }),
+                "{junk}"
+            );
+            assert!(marked(&|s| write(&s.join(junk), 3)), "{junk} seul");
+        }
+        // Seulement en fichier ordinaire, et seulement ces noms-là.
+        assert!(
+            !marked(&|s| {
+                write(&s.join("feed.xml"), 3);
+                fs::create_dir_all(s.join("desktop.ini")).unwrap();
+            }),
+            "desktop.ini dossier"
+        );
+        assert!(!marked(&|s| {
+            write(&s.join("feed.xml"), 3);
+            write(&s.join("notes.txt"), 3);
+        }));
+        assert!(!marked(&|s| write(&s.join(".ds_store"), 3)), "casse exacte");
     }
 
     #[test]
@@ -1411,6 +1456,34 @@ mod tests {
             usage_report(dir.path()).unwrap(),
             (4, vec!["archives".to_string(), "library".to_string()])
         );
+    }
+
+    /// `podcasts/` : un lien ou une jonction dans un dossier de source (`mp3`, `thumbs`, ou un nom
+    /// de fichier de l'explorateur) empêche le marquage (#591).
+    #[cfg(windows)]
+    #[test]
+    fn une_jonction_dans_un_dossier_de_source_podcast_empeche_le_marquage() {
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["mp3", "thumbs", "desktop.ini"] {
+            let config = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            // Séparateurs Windows : `mklink` lirait `/src` comme une option.
+            let source = cache.path().join("podcasts").join("src");
+            write(&source.join("feed.xml"), 3);
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(source.join(name))
+                .arg(outside.path())
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "mklink /J a échoué");
+            let roots = [cache.path().to_path_buf()];
+            migrate_markers(&config.path().join(MIGRATION_WITNESS), &roots).unwrap();
+            assert!(
+                !is_owned(&cache.path().join("podcasts")),
+                "{name} en jonction"
+            );
+        }
     }
 
     #[cfg(windows)]

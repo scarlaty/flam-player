@@ -73,6 +73,11 @@ impl StartupGate {
     /// autre fil. Sans cela, quelques commandes en attente pendant une migration lente gelaient
     /// tout le runtime asynchrone, y compris les commandes qui ne lisent pas le cache (#591).
     /// L'appelant attend toujours la fin de la migration : seule la façon d'attendre change.
+    ///
+    /// À ne pas appeler depuis un `LocalSet` (par exemple `LocalSet::block_on` sur un runtime
+    /// multi-fils) : porte fermée, `block_in_place` y panique. Dans un runtime à un seul fil, même
+    /// imbriqué dans un contexte multi-fils, le runtime courant est celui à un seul fil : attente
+    /// simple, sans `block_in_place`.
     pub fn wait(&self) {
         if self.is_open() {
             return;
@@ -138,7 +143,8 @@ impl ConfigState {
     }
 
     /// Attend la porte de démarrage, puis prend le verrou (un verrou empoisonné reste
-    /// utilisable : les fichiers sont atomiques).
+    /// utilisable : les fichiers sont atomiques). Comme [`StartupGate::wait`] : à ne pas appeler
+    /// depuis un `LocalSet` (`block_in_place` y panique tant que la porte est fermée).
     pub fn guard(&self) -> MutexGuard<'_, ()> {
         self.gate.wait();
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)

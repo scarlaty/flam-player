@@ -536,6 +536,9 @@ export const fr = {
                 ? "Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. "
                 : ""
             }Seuls les dossiers créés par Flam Launcher (${dirs.join(", ")}) seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
+      /** Relevé du cache illisible à l'ouverture de la confirmation : le pire est annoncé (#591). */
+      confirmDescriptionUnknown: (path: string) =>
+        `Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché.`,
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",
