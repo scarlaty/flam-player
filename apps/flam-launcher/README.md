@@ -823,9 +823,9 @@ avec une charge utile sérialisable typée côté `src/api/`.
 | Événement             | Charge                                                                                                                                                          |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `install://progress`  | `{ task_id, state, percent, received, total, phase }` (au plus toutes les 200 ms par tâche, plus chaque changement d'état)                                      |
-| `install://done`      | `{ task_id, entry: LibraryEntry, warnings }`                                                                                                                    |
+| `install://done`      | `{ task_id, entry: LibraryEntry, warnings, pack }` (`pack` : `PackStatus` d'un pack de podcasts, sinon nul)                                                     |
 | `install://error`     | `{ task_id, state: "failed" \| "cancelled", error: TaskError }`                                                                                                 |
-| `player://started`    | `PlayerSession { origin, uuid, title, pid, started_at }`                                                                                                        |
+| `player://started`    | `PlayerSession { origin, uuid, title, pid, started_at, embedded }`                                                                                              |
 | `player://exited`     | `{ session, code, success, duration_ms, stderr, saves_error }` (`code` nul : processus tué ; `saves_error` : progression non conservée telle quelle, sinon nul) |
 | `player://updated`    | `PlayerSession` (le player s'est replié en fenêtre séparée : `embedded` faux)                                                                                   |
 | `player://focus-host` | aucune (F6 dans le player incrusté : le clavier revient au launcher)                                                                                            |
@@ -1109,18 +1109,26 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   sa source** (`source_id`, `entry_id` : cache du catalogue, ou analyse récursive du dossier)
   au lieu d'être reprise du fichier ; introuvable, la tâche est abandonnée (journal). Une tâche
   relue dont l'`uuid` a déjà une tâche connue, quel que soit son état (demandée pendant la
-  ré-résolution, même terminée ou annulée, ou doublon du fichier), est écartée, et seules les
-  tâches relues sont lancées : une exécution par tâche, et la demande la plus récente l'emporte
-  (#569). Les
+  ré-résolution, même terminée ou annulée), est écartée, et seules les tâches relues sont
+  lancées : une exécution par tâche, et la demande la plus récente l'emporte (#569). Entre
+  tâches relues de même `uuid` (doublons du fichier), la plus récente (`created_at` maximal ; à
+  égalité, la dernière du fichier) est gardée (#578). Les
   téléchargements reprennent si le lien et la version n'ont pas changé. Tout chemin dérivé
   (`.staging/<tâche>.plain.pk`, `archives/<uuid>-<version>.<ext>`) est vérifié directement sous
   son dossier. Une tâche annulée (y compris en attente du créneau de conversion) supprime son
-  archive téléchargée.
+  archive téléchargée, de même qu'un échec de conversion qui met l'archive en cause (#578 :
+  codes `archive_unreadable`, `not_telmi`, `invalid_content`, `missing_asset` de `telmi2flam` ;
+  `invalid_archive`, `invalid_story`, `missing_asset`, `too_large`, `unreadable_image`,
+  `unreadable_audio` de la conversion STUdio ; `.plain.pk` refusé, `download_invalid`) : la
+  tentative suivante la retélécharge. Toute autre panne (`unsupported_format`, sortie, erreur
+  interne, convertisseur absent, E/S) la garde, et une archive locale (source dossier) n'est
+  jamais supprimée.
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
   d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
   une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et
   sa taille correspondent (sinon elle est retéléchargée). L'écriture de `install_queue.json` se
-  fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées.
+  fait hors des verrous, sur un thread bloquant, avec des écritures ordonnées. Versions de
+  schéma : comme l'index de la bibliothèque (ci-dessous), lue en v0 à v2, écrite en v1.
 - **Convertisseur** : `<exe>/telmi2flam/telmi2flam.exe` (application installée ; construit par `npm run build:converter`, voir « Convertisseur embarqué »), sinon en
   développement `telmi2flam.exe` à côté de l'exécutable (même `target/` Cargo, `cargo build -p telmi2flam`). Absent : `converter_unavailable`. Plus de Python ni de script Python du convertisseur (#138 ; supprimé du dépôt, #140).
 - **Bibliothèque** : `library.json` = `{ schema_version, stories: LibraryEntry[] }` avec
@@ -1130,7 +1138,15 @@ thumb, source_stamp }`.
   (#60), avec en repli l'empreinte `sha256:<12 hex>` de `telmi2flam.exe` (`telmi2flam.py` pour une entrée enregistrée avant #138). **Une installation par `uuid`** : la dernière installée remplace la précédente (autre
   version, ou `.plain` / `.plain.pk` de même `uuid` d'un dossier source). Un index corrompu est
   sauvegardé en `*.bak` et repart vide. `library_list` ignore les entrées dont le fichier a
-  disparu.
+  disparu. Versions de schéma (#578) : les versions 0 à 2 sont lues sans migration ;
+  l'index est écrit à la plus basse version qui décrit son contenu, **v1 aujourd'hui**, histoires
+  STUdio (`source.kind = "studio_zip"`) comprises, car la bêta.4, dernière version publiée, les
+  lit. La v2 est réservée à la première variante que la dernière version publiée ne saura pas
+  lire : cette version refusera alors l'index intact (`config_version`) au lieu de le mettre en
+  quarantaine. On ne monte jamais la version pour une variante déjà lue par la dernière version
+  publiée (règle et énumérations concernées : `StoryKind::min_schema`,
+  `src-tauri/src/story.rs`). Limite connue : revenir à la bêta.3, qui ne connaît pas
+  `studio_zip`, met de côté (`*.bak`) un index qui contient une histoire STUdio (inchangé).
 - **Mises à jour** : `hasUpdate(installed, entry)` (front) et `LibraryEntry::is_outdated_by`
   (Rust) : même `uuid`, versions connues et différentes.
 - **Source dossier modifiée à version égale** (#288, `library_source`) : une histoire d'une source

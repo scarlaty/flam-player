@@ -531,6 +531,17 @@ impl SettingsStore {
         storage::load_or_default(&self.dir, FILE_NAME, SCHEMA_VERSION, MIGRATE)
     }
 
+    /// Lecture **pure** (#578), pour un lecteur qui ne tient pas le verrou `ConfigState`
+    /// (`install::settings_resolver`) : rien n'est écrit ni mis de côté. Absent ou corrompu :
+    /// valeurs par défaut en mémoire (la quarantaine et la restauration restent à
+    /// `settings_get` / `settings_set`, sous le verrou). Version future : erreur, comme [`Self::load`].
+    pub fn peek(&self) -> AppResult<Settings> {
+        Ok(
+            storage::peek_versioned(&self.dir.join(FILE_NAME), SCHEMA_VERSION, MIGRATE)?
+                .unwrap_or_default(),
+        )
+    }
+
     /// Remplace **l'objet complet** après validation (pas de fusion : un champ à `None` repasse
     /// en automatique). Le fichier existant est d'abord relu par le même chemin que `load` :
     /// version future -> refus sans le toucher ; fichier corrompu -> sauvegardé en `*.bak`.
@@ -775,6 +786,32 @@ mod tests {
         fs::write(dir.path().join("settings.json"), r#"{"schema_version":42}"#).unwrap();
         let err = SettingsStore::new(dir.path()).load().unwrap_err();
         assert_eq!(err.kind(), "config_version");
+    }
+
+    /// #578 : lecture pure de `settings_resolver` : fichier corrompu laissé tel quel (ni `.bak`,
+    /// ni restauration mémorisée), absent non créé, valeurs par défaut en mémoire ; version
+    /// future refusée comme par `load`. La quarantaine reste à `load`, sous le verrou.
+    #[test]
+    fn peek_ne_modifie_rien() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let path = dir.path().join("settings.json");
+
+        assert_eq!(store.peek().unwrap(), Settings::default());
+        assert!(!path.exists(), "fichier absent non créé");
+
+        fs::write(&path, "{ corrompu").unwrap();
+        assert_eq!(store.peek().unwrap(), Settings::default());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{ corrompu");
+        assert_eq!(baks(dir.path()), 0);
+        assert!(!pending_recovery_exists(dir.path()));
+
+        fs::write(&path, r#"{"schema_version":1,"max_downloads":3}"#).unwrap();
+        assert_eq!(store.peek().unwrap().max_downloads, 3);
+
+        fs::write(&path, r#"{"schema_version":42}"#).unwrap();
+        assert_eq!(store.peek().unwrap_err().kind(), "config_version");
+        assert_eq!(baks(dir.path()), 0);
     }
 
     #[test]

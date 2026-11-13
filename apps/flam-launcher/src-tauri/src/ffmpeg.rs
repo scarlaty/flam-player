@@ -11,7 +11,10 @@
 //!   garde contre une copie corrompue ou un remplacement partiel, pas contre un attaquant qui
 //!   peut écrire dans le dossier d'installation (qui peut aussi remplacer le launcher). Seule
 //!   exception : une série de lancements courts d'une même étape ([`Ffmpeg::verify`], titres
-//!   lus d'un pack) vérifie l'empreinte une fois, au début de l'étape ;
+//!   lus d'un pack) vérifie l'empreinte une fois, au début de l'étape. Cette vérification ne
+//!   vaut que pour les lancements faits **par ce module** : le chemin de ffmpeg transmis à
+//!   `telmi2flam` par la variable `FLAM_FFMPEG` (`install::convert`, rééchantillonnage audio
+//!   d'une histoire Telmi) n'y est pas vérifié, le convertisseur lance ce binaire lui-même ;
 //! - **lance sans shell**, avec des arguments fixes fournis par l'appelant (un seul argument par
 //!   élément, jamais une ligne à découper), sans fenêtre de console, stdin fermé, dans un
 //!   environnement réduit à l'essentiel ;

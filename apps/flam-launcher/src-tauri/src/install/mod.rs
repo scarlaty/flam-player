@@ -70,7 +70,11 @@ use self::podcast::{PackBackend, PackJob, PackStatus};
 pub const ARCHIVES_DIR: &str = "archives";
 /// File persistée, dans le dossier de configuration.
 pub const QUEUE_FILE: &str = "install_queue.json";
-const QUEUE_SCHEMA: u32 = 1;
+/// Version courante du schéma de la file (lecture des versions 0 à `QUEUE_SCHEMA`, sans
+/// migration). v2 (#578) : réservée à la première variante que la dernière version publiée ne
+/// saura pas lire (règle : [`crate::story::StoryKind::min_schema`]) ; la file est écrite à la
+/// plus basse version qui décrit son contenu ([`crate::story::schema_for`]), v1 aujourd'hui.
+const QUEUE_SCHEMA: u32 = 2;
 /// Taille maximale d'une archive téléchargée.
 const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Délai laissé au convertisseur après la fermeture de stdin avant l'arrêt forcé.
@@ -242,11 +246,18 @@ pub fn detect_rust_converter(env: &Environment) -> Option<PathBuf> {
 /// Résolution réelle : `settings.json` (cache, téléchargements simultanés, vignettes) et
 /// détection du convertisseur. Attend d'abord la porte de démarrage `gate` (migration des
 /// marqueurs du cache terminée, #591).
+///
+/// `settings.json` est lu **sans** le verrou `ConfigState`, par une lecture pure
+/// ([`SettingsStore::peek`]) qui n'écrit ni ne met rien de côté (#578) : avec `load`, un fichier
+/// corrompu pouvait être mis en quarantaine deux fois (résolveur et commande concurrents), ou un
+/// `settings_set` concurrent écrasé par les valeurs par défaut. Aucun verrou n'est pris : le
+/// résolveur, appelé depuis des tâches bloquantes et des commandes, ne peut pas créer
+/// d'interblocage.
 pub fn settings_resolver(config_dir: PathBuf, gate: crate::storage::StartupGate) -> Resolver {
     Arc::new(move || {
         gate.wait();
         let env = Environment::current();
-        let saved = SettingsStore::new(&config_dir).load()?;
+        let saved = SettingsStore::new(&config_dir).peek()?;
         let (resolved, _) = settings::resolve(&saved, &env);
         let cache_root = PathBuf::from(resolved.cache_dir);
         std::fs::create_dir_all(&cache_root)?;
@@ -423,6 +434,34 @@ struct QueueFile {
     tasks: Vec<QueuedTask>,
 }
 
+/// Tâches relues de la file, une par `uuid` (celui de l'entrée ré-résolue) : la plus récente
+/// (`created_at` maximal ; à égalité, la dernière du fichier, ajoutée après) est gardée, les
+/// autres sont écartées avec un avertissement (#578 ; doublons écrits avant #569). L'ordre du
+/// fichier est conservé.
+fn newest_per_uuid(accepted: Vec<(QueuedTask, StoryEntry)>) -> Vec<(QueuedTask, StoryEntry)> {
+    let superseded = |i: usize| {
+        let (q, entry) = &accepted[i];
+        accepted.iter().enumerate().any(|(j, (other, e))| {
+            j != i && e.uuid == entry.uuid && (other.created_at, j) > (q.created_at, i)
+        })
+    };
+    let keep: Vec<bool> = (0..accepted.len()).map(|i| !superseded(i)).collect();
+    accepted
+        .into_iter()
+        .zip(keep)
+        .filter_map(|((q, entry), keep)| {
+            if !keep {
+                tracing::warn!(
+                    "tâche d'installation {} écartée : demande plus récente de {} dans la file",
+                    q.id,
+                    entry.uuid
+                );
+            }
+            keep.then_some((q, entry))
+        })
+        .collect()
+}
+
 fn load_queue(path: &Path) -> Vec<QueuedTask> {
     match storage::load_versioned::<QueueFile>(path, QUEUE_SCHEMA, |_, _| {}) {
         Ok(Loaded::Found(file)) => file.tasks,
@@ -481,6 +520,10 @@ struct Inner {
     /// Purge de la copie de travail du player après un changement de format (#556) ; `None` :
     /// aucune purge (tests sans player).
     play_purger: Mutex<Option<PlayPurger>>,
+    /// Exécutions lancées par [`InstallService::spawn`] et pas encore terminées (tests : attendre
+    /// qu'aucune exécution en double ne puisse plus se manifester, #578).
+    #[cfg(test)]
+    spawned_runs: std::sync::atomic::AtomicUsize,
 }
 
 /// Purge de la copie de travail `<cache>/play/<empreinte>/` de l'histoire de bibliothèque
@@ -517,6 +560,8 @@ impl InstallService {
             queue_written: Mutex::new(0),
             packs: Mutex::new(None),
             play_purger: Mutex::new(None),
+            #[cfg(test)]
+            spawned_runs: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
 
@@ -569,7 +614,9 @@ impl InstallService {
     /// Une entrée introuvable ou invalide abandonne la tâche (journal, pas de reprise).
     /// Une tâche relue dont l'`uuid` a déjà une tâche connue (quel que soit son état) est
     /// écartée, et seules les tâches relues sont lancées (#569) : une exécution par tâche, et
-    /// une tâche demandée pendant la reprise l'emporte toujours sur la tâche relue.
+    /// une tâche demandée pendant la reprise l'emporte toujours sur la tâche relue. Entre tâches
+    /// relues de même `uuid` (doublons du fichier), la plus récente est gardée
+    /// ([`newest_per_uuid`]).
     pub async fn restore<F, Fut>(&self, lookup: F)
     where
         F: Fn(String, String) -> Fut,
@@ -615,6 +662,7 @@ impl InstallService {
                 ),
             }
         }
+        let accepted = newest_per_uuid(accepted);
         let mut restored = Vec::new();
         let snap = {
             let mut tasks = lock(&self.0.tasks);
@@ -623,7 +671,7 @@ impl InstallService {
                     continue;
                 }
                 // Une tâche par `uuid` (#569) : une tâche connue de même `uuid` (créée pendant la
-                // ré-résolution, ou doublon du fichier) l'emporte **quel que soit son état** ;
+                // ré-résolution) l'emporte **quel que soit son état** ;
                 // la tâche restaurée est écartée (retirée de la file à la réécriture). Une tâche
                 // déjà terminée compte aussi : relancer la relue réinstallerait l'ancien choix
                 // (format, version) par-dessus le nouveau, ou malgré une annulation.
@@ -827,20 +875,21 @@ impl InstallService {
     /// Construit le contenu de la file (sous le verrou `tasks`, sans aucune E/S) et lui attribue
     /// un numéro d'ordre. L'écriture se fait ensuite hors du verrou ([`Self::write_queue`]).
     fn snapshot(&self, tasks: &[Slot]) -> QueueSnapshot {
+        let tasks: Vec<QueuedTask> = tasks
+            .iter()
+            .filter(|s| s.task.state.is_active())
+            .map(|s| QueuedTask {
+                id: s.task.id.clone(),
+                entry: s.task.entry.clone(),
+                created_at: s.task.created_at,
+                validator: s.validator.clone(),
+                pack: s.pack.clone(),
+                replace_format: s.replace_format,
+            })
+            .collect();
         let file = QueueFile {
-            schema_version: QUEUE_SCHEMA,
-            tasks: tasks
-                .iter()
-                .filter(|s| s.task.state.is_active())
-                .map(|s| QueuedTask {
-                    id: s.task.id.clone(),
-                    entry: s.task.entry.clone(),
-                    created_at: s.task.created_at,
-                    validator: s.validator.clone(),
-                    pack: s.pack.clone(),
-                    replace_format: s.replace_format,
-                })
-                .collect(),
+            schema_version: crate::story::schema_for(tasks.iter().map(|q| q.entry.kind)),
+            tasks,
         };
         let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
         bytes.push(b'\n');
@@ -889,7 +938,15 @@ impl InstallService {
 
     fn spawn(&self, id: String) {
         let service = self.clone();
-        tauri::async_runtime::spawn(async move { service.run(id).await });
+        #[cfg(test)]
+        self.0.spawned_runs.fetch_add(1, Ordering::SeqCst);
+        tauri::async_runtime::spawn(async move {
+            #[cfg(test)]
+            let inner = service.0.clone();
+            service.run(id).await;
+            #[cfg(test)]
+            inner.spawned_runs.fetch_sub(1, Ordering::SeqCst);
+        });
     }
 
     fn emit(&self, event: InstallProgress) {
@@ -1337,8 +1394,12 @@ impl InstallService {
             Ok(produced) => Ok((downloaded, produced)),
             Err(err) => {
                 // Annulée (en attente du créneau de conversion comme pendant la conversion) :
-                // l'archive téléchargée est abandonnée avec la tâche.
-                if matches!(err, AppError::Cancelled) {
+                // l'archive téléchargée est abandonnée avec la tâche. Mise en cause par la
+                // conversion (#578, [`archive_at_fault`]) : supprimée aussi, sinon chaque
+                // nouvelle tentative la réutiliserait sans la revalider et échouerait de même.
+                // Une archive locale (dossier source) n'est jamais concernée : `downloaded` est
+                // vide.
+                if matches!(err, AppError::Cancelled) || archive_at_fault(&err) {
                     if let Some(archive) = downloaded {
                         let _ = blocking(move || remove_archive(&archive)).await;
                     }
@@ -1786,6 +1847,35 @@ fn write_archive_meta(dest: &Path, url: &str, validator: &Validator) {
     };
     if let Err(err) = storage::write_json(&file, &meta) {
         tracing::warn!("mémoire de l'archive non enregistrée : {err}");
+    }
+}
+
+/// Codes `conversion` qui mettent en cause l'archive elle-même : `telmi2flam`
+/// (`crates/telmi2flam/src/error.rs` : illisible, pas une histoire Telmi, contenu invalide, asset
+/// absent) et conversion STUdio ([`studio`], tableau des pannes). Exclus : `unsupported_format`
+/// (archive saine, format que le convertisseur ne gère pas encore), sortie, erreur interne,
+/// arrêt sans événement (`exit_<n>`), ffmpeg et tout code inconnu.
+const ARCHIVE_FAULT_CODES: &[&str] = &[
+    "archive_unreadable",
+    "not_telmi",
+    "invalid_content",
+    "missing_asset",
+    studio::INVALID_ARCHIVE,
+    studio::INVALID_STORY,
+    studio::TOO_LARGE,
+    studio::UNREADABLE_IMAGE,
+    studio::UNREADABLE_AUDIO,
+];
+
+/// Vrai si `err` (échec de la transformation d'une archive) met l'archive en cause : code de
+/// [`ARCHIVE_FAULT_CODES`], ou `.plain.pk` refusé par [`pack::check_plain_pk`]
+/// (`download_invalid`). Toute autre panne (convertisseur absent, E/S, disque plein,
+/// validation…) la laisse réutilisable (note de conception de #578).
+fn archive_at_fault(err: &AppError) -> bool {
+    match err {
+        AppError::Conversion { code, .. } => ARCHIVE_FAULT_CODES.contains(&code.as_str()),
+        AppError::DownloadInvalid(_) => true,
+        _ => false,
     }
 }
 

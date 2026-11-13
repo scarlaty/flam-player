@@ -320,25 +320,68 @@ pub fn load_versioned<T: DeserializeOwned>(
     current: u32,
     step: MigrationStep,
 ) -> AppResult<Loaded<T>> {
+    match read_versioned(path, current, step)? {
+        Reading::Missing => Ok(Loaded::Missing),
+        Reading::Found(value) => Ok(Loaded::Found(value)),
+        Reading::Corrupt(reason) => quarantine(path, &reason),
+    }
+}
+
+/// Lecture **pure** d'un fichier versionné (#578) : mêmes règles que [`load_versioned`], mais
+/// un fichier corrompu n'est ni renommé ni réécrit : `Ok(None)`, comme un fichier absent.
+/// Version de schéma future : `Err(ConfigVersion)`. Pour un lecteur qui ne tient pas le verrou
+/// des commandes ([`ConfigState`]) : la quarantaine reste à ces dernières.
+pub fn peek_versioned<T: DeserializeOwned>(
+    path: &Path,
+    current: u32,
+    step: MigrationStep,
+) -> AppResult<Option<T>> {
+    Ok(match read_versioned(path, current, step)? {
+        Reading::Found(value) => Some(value),
+        Reading::Missing => None,
+        Reading::Corrupt(reason) => {
+            tracing::debug!(
+                "{} illisible ({reason}) : valeurs par défaut en mémoire",
+                path.display()
+            );
+            None
+        }
+    })
+}
+
+/// Résultat d'une lecture sans effet de bord.
+enum Reading<T> {
+    Missing,
+    Found(T),
+    /// Fichier corrompu (raison), laissé tel quel.
+    Corrupt(String),
+}
+
+fn read_versioned<T: DeserializeOwned>(
+    path: &Path,
+    current: u32,
+    step: MigrationStep,
+) -> AppResult<Reading<T>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Missing),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Reading::Missing),
         // Contenu non UTF-8 : fichier corrompu.
         Err(err) if err.kind() == io::ErrorKind::InvalidData => {
-            return quarantine(path, &err.to_string());
+            return Ok(Reading::Corrupt(err.to_string()));
         }
         Err(err) => return Err(err.into()),
     };
+    let corrupt = |reason: String| Ok(Reading::Corrupt(reason));
     let mut object = match serde_json::from_str::<Value>(&text) {
         Ok(Value::Object(object)) => object,
-        Ok(_) => return quarantine(path, "la racine n'est pas un objet JSON"),
-        Err(err) => return quarantine(path, &err.to_string()),
+        Ok(_) => return corrupt("la racine n'est pas un objet JSON".into()),
+        Err(err) => return corrupt(err.to_string()),
     };
     let found = match object.get("schema_version") {
         None => 0,
         Some(value) => match value.as_u64() {
             Some(version) => version,
-            None => return quarantine(path, "schema_version n'est pas un entier"),
+            None => return corrupt("schema_version n'est pas un entier".into()),
         },
     };
     if found > u64::from(current) {
@@ -353,8 +396,8 @@ pub fn load_versioned<T: DeserializeOwned>(
     }
     object.insert("schema_version".into(), Value::from(current));
     match serde_json::from_value(Value::Object(object)) {
-        Ok(value) => Ok(Loaded::Found(value)),
-        Err(err) => quarantine(path, &err.to_string()),
+        Ok(value) => Ok(Reading::Found(value)),
+        Err(err) => corrupt(err.to_string()),
     }
 }
 
