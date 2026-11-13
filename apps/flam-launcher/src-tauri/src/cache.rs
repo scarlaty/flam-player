@@ -456,7 +456,13 @@ fn mark_existing(
 ) -> io::Result<(usize, Vec<&'static str>)> {
     let mut marked = 0;
     let mut unproven = Vec::new();
-    for name in APP_CACHE_SUBDIRS {
+    // Les sous-dossiers de [`LATE_SUBDIRS`] en dernier : leur marquage exige qu'un autre
+    // sous-dossier de l'application soit déjà marqué ([`has_app_trace`]).
+    let ordered = APP_CACHE_SUBDIRS
+        .iter()
+        .filter(|name| !LATE_SUBDIRS.contains(*name))
+        .chain(LATE_SUBDIRS);
+    for name in ordered {
         match mark_one(root, name, marking, fault) {
             Ok(MarkOutcome::Marked) => marked += 1,
             Ok(MarkOutcome::Unproven) => unproven.push(*name),
@@ -489,6 +495,10 @@ fn mark_one(
         tracing::warn!("cache : marqueur de « {name} » inattendu, non marqué");
         return Ok(MarkOutcome::Skipped);
     }
+    if LATE_SUBDIRS.contains(&name) && !has_app_trace(root) {
+        tracing::warn!("cache : « {name} » sans autre sous-dossier de l'application, non marqué");
+        return Ok(MarkOutcome::Unproven);
+    }
     let proven = match marking {
         Marking::Migration => proven_by_content(name, &dir),
         Marking::Adoption => proven_at_adoption(name, &dir),
@@ -510,6 +520,19 @@ fn mark_one(
         .create_new(true)
         .open(dir.join(MARKER))?;
     Ok(MarkOutcome::Marked)
+}
+
+/// `root` porte une trace d'usage par l'application : au moins un sous-dossier de
+/// [`APP_CACHE_SUBDIRS`] autre que [`LATE_SUBDIRS`] déjà marqué (vrai dossier avec marqueur).
+/// Exigée avant de marquer `flam-transfer` : ses noms (`str/<uuid>/` avec `key`, `info`,
+/// `main.lsf`, `img/`, `sounds/`) sont aussi ceux d'une copie des histoires de la Flam (format de
+/// l'appareil), qu'un utilisateur peut avoir rangée sous ce nom dans un dossier qui n'a jamais
+/// servi de cache : la preuve par les noms ne suffit pas à elle seule.
+fn has_app_trace(root: &Path) -> bool {
+    APP_CACHE_SUBDIRS
+        .iter()
+        .filter(|name| !LATE_SUBDIRS.contains(*name))
+        .any(|name| is_owned(&root.join(name)))
 }
 
 /// Preuve d'usage exigée à l'adoption d'un ancien cache (#591), au moins aussi stricte que celle
@@ -1130,25 +1153,42 @@ fn adopt_legacy_cache_with(root: &Path, fault: Fault) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Pour un dossier de cache `root` choisi par l'utilisateur, hors adoption d'un ancien cache
-/// ([`adopt_legacy_cache`]) : marque les sous-dossiers de [`LATE_SUBDIRS`] (`flam-transfer`) non
-/// marqués, **non vides** et dont le contenu prouve l'usage par l'application (preuve de
-/// l'adoption, [`proven_at_adoption`]). Sans cela, un ancien cache quitté puis repris (dont
+/// Sous-dossiers de [`LATE_SUBDIRS`] de `root` (nouveau dossier de cache choisi, hors adoption
+/// d'un ancien cache, [`adopt_legacy_cache`]) qui seraient marqués : non marqués, **non vides**,
+/// dont le contenu prouve l'usage par l'application ([`proven_at_adoption`]), **et** `root` porte
+/// une autre trace de l'application ([`has_app_trace`], un ancien cache de l'ère des marqueurs a
+/// ses autres sous-dossiers marqués). Sans cela, un ancien cache quitté puis repris (dont
 /// `library.json` dépasse la taille lisible, donc sans adoption) serait refusé pour ce seul
 /// sous-dossier, alors que ses restes sont ceux de l'application. Un dossier vide n'est pas
-/// marqué ici : il peut être un dossier de l'utilisateur, le refus d'un homonyme reste la règle.
-/// Une erreur d'écriture est journalisée, le sous-dossier reste non marqué (et donc refusé).
-pub fn adopt_late_subdirs(root: &Path) {
-    for name in LATE_SUBDIRS.iter().copied() {
-        let dir = root.join(name);
-        let has_content = fs::read_dir(&dir).is_ok_and(|entries| {
-            entries
-                .flatten()
-                .any(|entry| !entry.file_name().to_str().is_some_and(is_os_junk))
-        });
-        if !is_real_dir(&dir) || is_owned(&dir) || !has_content {
-            continue;
-        }
+/// retenu : il peut être un dossier de l'utilisateur, le refus d'un homonyme reste la règle. Ne
+/// modifie rien : l'appelant décide du marquage ([`adopt_late_subdirs`]) une fois le dossier
+/// accepté.
+pub fn late_adoptable(root: &Path) -> Vec<&'static str> {
+    if !has_app_trace(root) {
+        return Vec::new();
+    }
+    LATE_SUBDIRS
+        .iter()
+        .copied()
+        .filter(|name| {
+            let dir = root.join(name);
+            is_real_dir(&dir)
+                && !is_owned(&dir)
+                && fs::symlink_metadata(dir.join(MARKER)).is_err()
+                && fs::read_dir(&dir).is_ok_and(|entries| {
+                    entries
+                        .flatten()
+                        .any(|entry| !entry.file_name().to_str().is_some_and(is_os_junk))
+                })
+                && proven_at_adoption(name, &dir)
+        })
+        .collect()
+}
+
+/// Marque `names` (résultat de [`late_adoptable`]), seulement une fois le dossier accepté. Une
+/// erreur d'écriture est journalisée, le sous-dossier reste non marqué (utilisé comme avant).
+pub fn adopt_late_subdirs(root: &Path, names: &[&'static str]) {
+    for name in names.iter().copied() {
         if let Err(err) = mark_one(root, name, Marking::Adoption, &no_fault) {
             tracing::warn!("cache : marqueur de « {name} » non écrit à l'adoption : {err}");
         }
@@ -3407,6 +3447,8 @@ mod tests {
     /// `root/flam-transfer` de la forme écrite par `prepare` (préparation terminée et chantier
     /// interrompu), sans marqueur : un cache d'avant l'ajout du sous-dossier à la liste.
     fn unmarked_transfer(root: &Path) {
+        // Trace d'usage par l'application exigée pour marquer `flam-transfer` ([`has_app_trace`]).
+        ensure_subdir(root, "archives").unwrap();
         write(&root.join(format!("flam-transfer/str/{STORY}/key")), 16);
         write(&root.join(format!("flam-transfer/str/{STORY}/info")), 5);
         write(&root.join(format!("flam-transfer/{STAGING}/info")), 5);
@@ -3505,10 +3547,12 @@ mod tests {
     fn link_dir(link: &Path, target: &Path) {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+            // Chemins entre guillemets : un dossier temporaire peut contenir des espaces.
+            let quoted = |p: &Path| format!("\"{}\"", p.to_string_lossy().replace('/', "\\"));
             let out = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(link.to_string_lossy().replace('/', "\\"))
-                .arg(target.to_string_lossy().replace('/', "\\"))
+                .arg("/C")
+                .raw_arg(format!("\"mklink /J {} {}\"", quoted(link), quoted(target)))
                 .output()
                 .unwrap();
             assert!(out.status.success(), "mklink /J : {out:?}");
@@ -3664,7 +3708,10 @@ mod tests {
             Migration::AlreadyDone
         );
         // Marqué : compté et vidé.
-        assert_eq!(usage_report(cache.path()).unwrap().1, ["flam-transfer"]);
+        assert_eq!(
+            usage_report(cache.path()).unwrap().1,
+            ["archives", "flam-transfer"]
+        );
         clear_of(cache.path()).unwrap();
         assert_eq!(names_in(&cache.path().join("flam-transfer")), [MARKER]);
     }
@@ -3672,6 +3719,7 @@ mod tests {
     #[test]
     fn la_migration_tardive_ne_marque_pas_un_dossier_personnel_et_le_met_en_attente() {
         let cache = tempfile::tempdir().unwrap();
+        ensure_subdir(cache.path(), "archives").unwrap();
         write(&cache.path().join("flam-transfer/Mes documents/a.txt"), 3);
         let (config, env) = config_with_default(cache.path());
         let witness = config.path().join(MIGRATION_WITNESS);
@@ -3793,6 +3841,59 @@ mod tests {
         );
         assert!(is_owned(&cache.join("flam-transfer")));
         assert!(late.is_file());
+    }
+
+    /// Copie des histoires de la Flam (`str/<uuid>/{key,info,main.lsf,img/,sounds/}`), rangée
+    /// par l'utilisateur sous `flam-transfer` : mêmes noms que la préparation de l'application.
+    fn device_copy(root: &Path) {
+        let story = root.join(format!("flam-transfer/str/{STORY}"));
+        for file in ["key", "info", "main.lsf"] {
+            write(&story.join(file), 8);
+        }
+        write(&story.join("img/a.png"), 8);
+        write(&story.join("sounds/a.mp3"), 8);
+    }
+
+    /// Sans autre sous-dossier marqué (le dossier n'a jamais servi de cache), une copie façon
+    /// appareil n'est marquée par aucun chemin : migration tardive, rattrapage, migration
+    /// complète ; elle reste en attente, jamais comptée ni vidée.
+    #[test]
+    fn une_copie_de_la_flam_sans_autre_trace_n_est_jamais_marquee() {
+        // Migration tardive (cache déjà migré), puis rattrapage à chaque démarrage.
+        let cache = tempfile::tempdir().unwrap();
+        device_copy(cache.path());
+        let (config, env) = config_with_default(cache.path());
+        let witness = config.path().join(MIGRATION_WITNESS);
+        fs::write(&witness, b"").unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                migrate_configured(config.path(), &env).unwrap(),
+                Migration::AlreadyDone
+            );
+            assert!(!is_owned(&cache.path().join("flam-transfer")));
+        }
+        assert_eq!(read_pending(&witness).len(), 1, "en attente");
+        assert_eq!(usage_of(cache.path()).unwrap(), 0);
+        assert_eq!(clear_of(cache.path()).unwrap(), 0);
+
+        // Migration complète.
+        let fresh = tempfile::tempdir().unwrap();
+        device_copy(fresh.path());
+        assert_eq!(migrate_once(fresh.path()), Migration::Done { marked: 0 });
+        assert!(!is_owned(&fresh.path().join("flam-transfer")));
+
+        // Un autre sous-dossier marqué : trace d'usage, la même copie devient prouvée au
+        // rattrapage suivant (limite documentée : indiscernable de la préparation de
+        // l'application dans un dossier qui sert réellement de cache).
+        ensure_subdir(cache.path(), "archives").unwrap();
+        assert_eq!(
+            migrate_configured(config.path(), &env).unwrap(),
+            Migration::CaughtUp { marked: 1 }
+        );
+        assert!(cache
+            .path()
+            .join(format!("flam-transfer/str/{STORY}/key"))
+            .is_file());
     }
 
     #[test]

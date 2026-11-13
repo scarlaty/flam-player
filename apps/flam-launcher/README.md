@@ -1445,8 +1445,18 @@ préparations terminées de `str/`) sont supprimés au début du prochain envoi,
 douze heures (`LEFTOVER_MIN_AGE` : un envoi de 432 Mio a pris 24 min, le plafond de 4 Gio en donnerait environ
 4 h ; deux sessions Windows partageant le même dossier de cache ne se suppriment pas leur préparation en cours ;
 limite : une copie de plus de douze heures n'est pas protégée) et seulement si `flam-transfer/` est marqué ;
-« Vider le cache » les supprime aussi. Un nouveau dossier de cache choisi dont `library.json` n'est pas reconnu mais dont `flam-transfer/` est non vide et
-prouvé voit ce sous-dossier marqué (sinon il serait refusé comme homonyme). Limite : après un retour à une version
+« Vider le cache » les supprime aussi. `flam-transfer/` n'est jamais marqué (migration, rattrapage, adoption, choix d'un nouveau dossier) dans un dossier
+qui ne porte aucune autre trace de l'application (aucun autre sous-dossier de la liste déjà marqué) : ses noms
+(`str/<uuid>/` avec `key`, `info`, `main.lsf`, `img/`, `sounds/`) sont aussi ceux d'une copie des histoires de la Flam,
+qu'un utilisateur peut avoir rangée sous ce nom ; un nouveau dossier de cache dans ce cas est refusé comme avant.
+Un nouveau dossier de cache choisi dont `library.json` n'est pas reconnu mais qui porte une autre trace de
+l'application et dont `flam-transfer/` est non vide et prouvé voit ce sous-dossier marqué, seulement une fois le
+dossier accepté (sinon il serait refusé comme homonyme ; aucun marqueur n'est laissé dans un dossier refusé). Dans un
+dossier qui sert réellement de cache, une copie de la Flam rangée sous `flam-transfer/` reste indiscernable de la
+préparation de l'application (limite connue). Un reste récent (moins de douze heures) d'un envoi interrompu n'est plus
+supprimé au début de l'envoi suivant : sur un disque presque plein, la nouvelle préparation peut manquer de place ;
+« Vider le cache » le libère. Deux sessions Windows qui partagent le même dossier de cache : « Vider le cache » dans
+l'une supprime la préparation en cours de l'autre, comme pour les autres sous-dossiers du cache. Limite : après un retour à une version
 antérieure qui réécrit la liste en attente du témoin principal, une entrée `flam-transfer` en attente en disparaît
 alors que le témoin tardif reste : ce dossier non prouvé ne sera plus réévalué (fuite de place, jamais de perte ;
 créer un fichier vide `.flam-launcher` dedans pour le reconnaître). « Vider le cache » ne casse jamais un envoi : `device_send_story` tient le
