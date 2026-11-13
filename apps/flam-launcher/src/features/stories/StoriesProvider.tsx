@@ -205,18 +205,37 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
 
   // Les relectures de la liste installée se succèdent (fin d'installation, suppression, avant
   // une décision) : une réponse n'est écrite que si aucune plus récente ne l'a déjà été (une
-  // ancienne ne l'écrase pas). Une ancienne réponse valide reste utile si la plus récente échoue.
+  // ancienne ne l'écrase pas). Tant qu'une lecture plus récente est en cours, une réponse plus
+  // ancienne est seulement mise de côté (elle montrerait brièvement une liste périmée) : elle
+  // n'est écrite que si plus aucune lecture n'est en cours et qu'aucune plus récente n'a réussi
+  // (la plus récente a échoué).
   const installedRead = useRef(0);
   const installedApplied = useRef(0);
+  const installedPending = useRef(0);
+  const installedFallback = useRef<{ id: number; list: LibraryEntry[] } | null>(null);
   const readInstalled = useCallback(async (): Promise<LibraryEntry[]> => {
     const id = ++installedRead.current;
-    const list = await listLibrary();
-    if (id > installedApplied.current) {
-      installedApplied.current = id;
+    installedPending.current += 1;
+    const apply = (read: number, list: LibraryEntry[]) => {
+      installedApplied.current = read;
+      installedFallback.current = null;
       setInstalled(list);
       setInstalledRevision((n) => n + 1);
+    };
+    try {
+      const list = await listLibrary();
+      if (id > installedApplied.current) {
+        if (id === installedRead.current) apply(id, list);
+        else if (!installedFallback.current || installedFallback.current.id < id)
+          installedFallback.current = { id, list };
+      }
+      return list;
+    } finally {
+      installedPending.current -= 1;
+      const spare = installedFallback.current;
+      if (installedPending.current === 0 && spare && spare.id > installedApplied.current)
+        apply(spare.id, spare.list);
     }
-    return list;
   }, []);
 
   const refreshInstalled = useCallback(async () => {

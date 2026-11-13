@@ -22,14 +22,18 @@ it("annule sur Annuler et sur Échap hors suppression", () => {
   expect(onCancel).toHaveBeenCalledTimes(2);
 });
 
-it("ignore Annuler, Échap et Fermer pendant la suppression (#581)", () => {
+it("pendant la suppression, seul « Supprimer » est refusé : on peut toujours fermer (#581)", () => {
   const onCancel = vi.fn();
   const onConfirm = vi.fn();
   render(ui(true, onCancel, onConfirm));
+  fireEvent.click(screen.getByRole("button", { name: "Supprimer" }));
+  expect(onConfirm).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Supprimer" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   fireEvent.click(screen.getByRole("button", { name: "Annuler" }));
   fireEvent.keyDown(document, { key: "Escape" });
   fireEvent.click(screen.getByRole("button", { name: "Fermer" }));
-  fireEvent.click(screen.getByRole("button", { name: "Supprimer" }));
-  expect(onCancel).not.toHaveBeenCalled();
-  expect(onConfirm).not.toHaveBeenCalled();
+  expect(onCancel).toHaveBeenCalledTimes(3);
 });

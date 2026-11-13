@@ -6,8 +6,9 @@ export interface RemoveStoryDialogProps {
   open: boolean;
   title: string;
   /**
-   * Suppression en cours : « Supprimer » est refusé (pas de second appel) et la fermeture
-   * (Annuler, Échap, fond, Fermer) est ignorée : la suppression continue, le dialogue reste.
+   * Suppression en cours : seul « Supprimer » est refusé (pas de second appel). La fermeture
+   * reste possible (Annuler, Échap, fond, Fermer) : si l'appel ne répond jamais, le dialogue
+   * n'est pas piégé ; la suppression, elle, continue.
    */
   busy?: boolean;
   onCancel: () => void;
@@ -28,20 +29,17 @@ export function RemoveStoryDialog({
   const text = t.stories.removeDialog;
   // Remise à zéro à la fermeture (pas à la confirmation : la fiche reste ouverte pendant l'appel).
   if (!open && purgeSaves) setPurgeSaves(false);
-  const cancel = () => {
-    if (!busy) onCancel();
-  };
   return (
     <Dialog
       open={open}
-      onClose={cancel}
+      onClose={onCancel}
       role="alertdialog"
       title={text.title(title)}
       description={text.description}
       initialFocus={cancelRef}
       footer={
         <>
-          <Button ref={cancelRef} aria-disabled={busy || undefined} onClick={cancel}>
+          <Button ref={cancelRef} onClick={onCancel}>
             {t.common.cancel}
           </Button>
           <Button

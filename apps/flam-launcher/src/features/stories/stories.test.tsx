@@ -1443,6 +1443,70 @@ it("la fiche ne lance la suppression qu'une fois, même cliquée deux fois (#581
   expect(callsOf("library_remove")).toHaveLength(1);
 });
 
+it("la suppression qui ne répond pas ne piège pas le dialogue : Annuler le ferme (#581)", async () => {
+  let release!: () => void;
+  removeGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  installed = [installedEntry(ours())];
+  window.location.hash = "#/library/library";
+  await renderApp();
+  const dialog = await openFiche();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer" }));
+  const confirm = await screen.findByRole("alertdialog");
+  fireEvent.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+  await waitFor(() => expect(callsOf("library_remove")).toHaveLength(1));
+  // Sans réponse : Échap ferme la confirmation et rend la fiche ; un second clic reste refusé.
+  fireEvent.keyDown(document, { key: "Escape" });
+  await screen.findByRole("dialog", { name: "Les trois ours" });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Supprimer" }));
+  const again = await screen.findByRole("alertdialog");
+  fireEvent.click(within(again).getByRole("button", { name: "Supprimer" }));
+  expect(callsOf("library_remove")).toHaveLength(1);
+  await act(async () => {
+    release();
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+it("une lecture lancée avant un changement n'affiche pas brièvement la liste périmée (#581)", async () => {
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  // Chargement initial : la liste contient l'histoire, mais la réponse tarde.
+  installed = [installedEntry(ours())];
+  listGates = [
+    new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    }),
+    new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    }),
+  ];
+  await renderApp();
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(1));
+  // L'histoire est supprimée ailleurs : seconde lecture (liste vide), elle aussi retenue.
+  installed = [];
+  await send("install://done", {
+    task_id: "t1",
+    entry: installedEntry(ours()),
+    warnings: 0,
+  });
+  await waitFor(() => expect(callsOf("library_list")).toHaveLength(2));
+  // La première réponse (périmée) arrive avant la seconde : elle n'est pas écrite.
+  await act(async () => {
+    releaseFirst();
+    await flushPromises();
+  });
+  const dialog = await openFiche();
+  expect(within(dialog).queryByRole("button", { name: "Supprimer" })).toBeNull();
+  await act(async () => {
+    releaseSecond();
+    await flushPromises();
+  });
+  expect(within(dialog).queryByRole("button", { name: "Supprimer" })).toBeNull();
+});
+
 it("une réponse ancienne de la liste installée n'écrase pas une plus récente (#581)", async () => {
   let releaseFirst!: () => void;
   // Premier appel (chargement initial) : la bibliothèque est vide, mais la réponse tarde.

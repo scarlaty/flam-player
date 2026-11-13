@@ -326,13 +326,19 @@ function DeviceStoriesList() {
   // Un envoi terminé pour un UUID (« Remplacer sur la Flam » le garde) : titre et vignette lus
   // avant l'envoi sont oubliés et relus.
   const sent = useMemo(() => sentStamps(queue), [queue]);
-  // Relecture de la liste, même identique : relance la lecture des titres restés sans réponse
-  // (clés illisibles), sinon « Actualiser » laisserait le bandeau en place.
+  // « Actualiser » demandé : à l'arrivée de la liste relue, même identique, le compteur avance et
+  // relance la lecture des titres restés sans réponse (clés illisibles), sinon le bandeau
+  // resterait en place. Les rechargements silencieux (après un envoi ou un retrait) n'y touchent
+  // pas : `device_story_titles` n'est pas rappelé à chacun quand les clés sont illisibles.
+  const [rereadAsked, setRereadAsked] = useState(false);
   const [reads, setReads] = useState<{ report: DeviceStories | null; count: number }>({
     report: null,
     count: 0,
   });
-  if (report && reads.report !== report) setReads({ report, count: reads.count + 1 });
+  if (report && reads.report !== report) {
+    setReads({ report, count: reads.count + (rereadAsked ? 1 : 0) });
+    if (rereadAsked) setRereadAsked(false);
+  }
   const { titles, lunii, keysProblem } = useDeviceStoryTitles(
     root,
     uuids,
@@ -392,6 +398,7 @@ function DeviceStoriesList() {
   function refresh() {
     // Le bouton cliqué disparaît pendant le chargement : le focus passe à un élément stable.
     wrapperRef.current?.focus();
+    setRereadAsked(true);
     reloadStories();
   }
 

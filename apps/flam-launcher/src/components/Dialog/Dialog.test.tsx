@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useRef, useState } from "react";
 import { expect, it, vi } from "vitest";
 import { expectNoAxeViolations, PAGE_LEVEL_RULES } from "../../test/axe";
@@ -181,4 +181,122 @@ it("Tab hors du dialogue y revient, et Tab au milieu reste au navigateur", () =>
   cancel.focus();
   const notPrevented = fireEvent.keyDown(cancel, { key: "Tab" });
   expect(notPrevented).toBe(true);
+});
+
+function Hidden() {
+  return (
+    <Dialog
+      open
+      onClose={() => {}}
+      title="Réglages"
+      footer={
+        <>
+          <button type="button">Premier</button>
+          <button type="button">Dernier</button>
+          <button type="button" hidden>
+            Caché
+          </button>
+          <div hidden>
+            <button type="button">Dans un parent caché</button>
+          </div>
+          <button type="button" style={{ visibility: "hidden" }}>
+            Invisible
+          </button>
+        </>
+      }
+    />
+  );
+}
+
+it("ignore les éléments masqués dans la boucle de Tab (#581)", () => {
+  render(<Hidden />);
+  const last = screen.getByRole("button", { name: "Dernier" });
+  last.focus();
+  fireEvent.keyDown(last, { key: "Tab" });
+  expect(screen.getByRole("button", { name: "Fermer" })).toHaveFocus();
+  fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+  expect(last).toHaveFocus();
+});
+
+it("ignore un dernier élément masqué par `display: none` (#581)", () => {
+  render(
+    <Dialog
+      open
+      onClose={() => {}}
+      title="Réglages"
+      footer={
+        <>
+          <button type="button">Visible</button>
+          <button type="button" style={{ display: "none" }}>
+            Absent
+          </button>
+        </>
+      }
+    />,
+  );
+  const visible = screen.getByRole("button", { name: "Visible" });
+  visible.focus();
+  fireEvent.keyDown(visible, { key: "Tab" });
+  expect(screen.getByRole("button", { name: "Fermer" })).toHaveFocus();
+});
+
+it("laisse Ctrl+Tab, Alt+Tab et Méta+Tab au navigateur (#581)", () => {
+  render(<Harness />);
+  open();
+  const install = screen.getByRole("button", { name: "Installer" });
+  install.focus();
+  for (const modifier of ["ctrlKey", "altKey", "metaKey"] as const) {
+    const notPrevented = fireEvent.keyDown(install, { key: "Tab", [modifier]: true });
+    expect(notPrevented).toBe(true);
+    expect(install).toHaveFocus();
+  }
+});
+
+it("ne ré-enregistre pas les écouteurs du document quand onClose change à chaque rendu (#581)", () => {
+  const add = vi.spyOn(document, "addEventListener");
+  const calls: string[] = [];
+  const { rerender } = render(
+    <Dialog open onClose={() => calls.push("a")} title="Fiche" />,
+  );
+  const registered = add.mock.calls.filter(([type]) => type === "keydown").length;
+  rerender(<Dialog open onClose={() => calls.push("b")} title="Fiche" />);
+  expect(add.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(registered);
+  // C'est bien le dernier `onClose` qui répond.
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(calls).toEqual(["b"]);
+  add.mockRestore();
+});
+
+it("avec deux dialogues empilés, seul le dernier piège le focus (#581)", () => {
+  render(
+    <>
+      <Dialog
+        open
+        onClose={() => {}}
+        title="Dessous"
+        footer={<button type="button">Bas</button>}
+      />
+      <Dialog
+        open
+        onClose={() => {}}
+        title="Dessus"
+        footer={<button type="button">Haut</button>}
+      />
+    </>,
+  );
+  const top = screen.getByRole("dialog", { name: "Dessus" });
+  const haut = screen.getByRole("button", { name: "Haut" });
+  // Le dialogue du dessous ne doit pas toucher au focus.
+  const lowerClose = within(
+    screen.getByRole("dialog", { name: "Dessous", hidden: true }),
+  ).getByRole("button", { name: "Fermer", hidden: true });
+  const lowerFocus = vi.spyOn(lowerClose, "focus");
+  haut.focus();
+  fireEvent.keyDown(haut, { key: "Tab" });
+  expect(lowerFocus).not.toHaveBeenCalled();
+  // Un seul piège agit : le focus va au premier élément du dialogue du dessus.
+  expect(top).toContainElement(document.activeElement as HTMLElement);
+  expect(document.activeElement).toBe(
+    within(top).getByRole("button", { name: "Fermer" }),
+  );
 });
