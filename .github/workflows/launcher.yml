@@ -394,12 +394,35 @@ jobs:
               throw "dossier d'installation toujours présent après 10 tentatives (dernière erreur : $(if ($err) { $err } else { 'aucune, suppression en attente ?' })). Restant : $($left -join ', ')"
             }
           }
+          function Invoke-Uninstall($label) {
+            # Désinstallation de préparation du scénario. Comportement d'échec inchangé : une seule
+            # exécution, et tout code non nul fait échouer l'étape aussitôt. Le désinstallateur a déjà
+            # rendu 2 (abandon par son script) sans cause visible (#576) : seul un diagnostic est ajouté,
+            # pour connaître la cause à la prochaine occurrence. Il donne le code, les processus de la
+            # liste encore ouverts (noms seulement ; relevés APRÈS la sortie du désinstallateur, donc
+            # uniquement ce qui vit encore à ce moment-là) et les fichiers restés dans le dossier
+            # d'installation (chemins relatifs à ce dossier, 50 au plus, avec le total).
+            $exe = Join-Path $dest 'uninstall.exe'
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "$label : uninstall.exe absent du dossier d'installation" }
+            $u = Start-Process -FilePath $exe -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
+            if ($u.ExitCode -eq 0) { return }
+            $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(flam-launcher|flam-player|telmi2flam|ffmpeg|ffprobe|uninstall|msedgewebview2)$' } |
+              ForEach-Object { $_.Name } | Sort-Object -Unique)
+            $left = @(Get-ChildItem -LiteralPath $dest -Recurse -Force -File -ErrorAction SilentlyContinue |
+              ForEach-Object { [IO.Path]::GetRelativePath($dest, $_.FullName) })
+            # Une seule ligne, sans nom de fichier (un nom pourrait contenir « % ») : les fichiers vont dans
+            # le journal simple ci-dessous, en retrait pour qu'aucune ligne ne commence par « :: ».
+            Write-Host "::warning::$label : code $($u.ExitCode). Processus encore ouverts : $(if ($procs) { $procs -join ', ' } else { 'aucun' }). Fichiers restants : $($left.Count) (liste dans le journal de l'étape)."
+            Write-Host "$label : $($left.Count) fichier(s) restant(s) dans le dossier d'installation (50 premiers) :"
+            $left | Select-Object -First 50 | ForEach-Object { Write-Host "  - $_" }
+            if ($left.Count -gt 50) { Write-Host "  - ... et $($left.Count - 50) de plus" }
+            throw "$label : code $($u.ExitCode)"
+          }
           $ref = Get-Content (Join-Path $env:RUNNER_TEMP 'arbre-installation-N.txt')
           if (-not $ref) { throw 'arbre de référence de N vide' }
 
           # Repartir d'une machine propre : on retire l'installation de N faite à l'étape précédente.
-          $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
-          if ($u.ExitCode -ne 0) { throw "désinstallation préalable : code $($u.ExitCode)" }
+          Invoke-Uninstall 'désinstallation préalable'
           Remove-InstallDir
 
           # 1. Installer N-1 et le vérifier.
@@ -473,8 +496,7 @@ jobs:
           # bloquer sur une boîte de dialogue invisible (CheckIfAppIsRunning de Tauri, désinstallateur de
           # N-1), ni laisser N-1 en cours d'exécution. Délai borné : au-delà, l'installateur (lancé par
           # ce script, tout comme N-1) est arrêté et l'étape échoue.
-          $u = Start-Process -FilePath (Join-Path $dest 'uninstall.exe') -ArgumentList @('/S', "_?=$dest") -Wait -PassThru
-          if ($u.ExitCode -ne 0) { throw "désinstallation avant le scénario application ouverte : code $($u.ExitCode)" }
+          Invoke-Uninstall 'désinstallation avant le scénario application ouverte'
           Remove-InstallDir
           Invoke-Setup $env:FLAM_PREV_SETUP 'installation N-1 (application ouverte)'
           $app = Start-Process -FilePath (Join-Path $dest 'flam-launcher.exe') -PassThru
