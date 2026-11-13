@@ -72,6 +72,9 @@ jobs:
         run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings
 
       - name: Tests
+        # Un cas sauté (jonction ou lien impossible à créer) échoue au lieu de passer pour vert.
+        env:
+          FLAM_NO_SKIP: "1"
         run: cargo test -p telmi2flam --locked
 
       # Déterminisme du JPEG (#459, PORT-RUST.md §4.4) : zune-jpeg choisit ses chemins AVX2/NEON
@@ -136,6 +139,9 @@ jobs:
         run: cargo clippy -p telmi2flam --all-targets --locked -- -D warnings
 
       - name: Tests
+        # Un cas sauté (jonction ou lien impossible à créer) échoue au lieu de passer pour vert.
+        env:
+          FLAM_NO_SKIP: "1"
         run: cargo test -p telmi2flam --locked --no-fail-fast
 
   # Parité avec les références figées de l'ancien oracle Python (PORT-RUST.md §4.3 et §4.5, #134,

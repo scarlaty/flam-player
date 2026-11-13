@@ -2304,6 +2304,21 @@ mod tests {
         return false;
     }
 
+    /// [`make_dir_link`], avec trace `SKIP` quand le lien ne peut pas être créé. Avec
+    /// `FLAM_NO_SKIP=1` (CI), le cas sauté échoue au lieu de passer pour vert : la jonction
+    /// Windows (`mklink /J`) n'exige aucun privilège, le lien symbolique POSIX non plus.
+    fn make_dir_link_or_skip(link: &Path, target: &Path, what: &str) -> bool {
+        if make_dir_link(link, target) {
+            return true;
+        }
+        assert!(
+            std::env::var_os("FLAM_NO_SKIP").is_none_or(|v| v != "1"),
+            "lien impossible à créer ({what}) et FLAM_NO_SKIP=1"
+        );
+        eprintln!("SKIP {what} : lien impossible à créer");
+        false
+    }
+
     /// `.plain` existant dont la racine, ou un sous-dossier, est un lien ou une jonction : la
     /// publication est refusée (`output_error`) avant le premier renommage, rien n'est écrit
     /// derrière le lien, l'ancien contenu et le lien restent, aucun `.part`.
@@ -2325,13 +2340,11 @@ mod tests {
             } else {
                 plain.clone()
             };
-            if !make_dir_link(&link, &outside) {
-                // `FLAM_NO_SKIP=1` (CI) : un cas sauté échoue au lieu de passer pour vert.
-                assert!(
-                    std::env::var_os("FLAM_NO_SKIP").is_none_or(|v| v != "1"),
-                    "lien impossible à créer (nested = {nested}, pk = {with_pk}) et FLAM_NO_SKIP=1"
-                );
-                eprintln!("SKIP nested = {nested}, pk = {with_pk} : lien impossible à créer");
+            if !make_dir_link_or_skip(
+                &link,
+                &outside,
+                &format!("nested = {nested}, pk = {with_pk}"),
+            ) {
                 continue;
             }
             let pk = d.join("o.plain.pk");
@@ -2388,7 +2401,7 @@ mod tests {
         let outside = d.join("dehors");
         fs::create_dir(&outside).unwrap();
         let link = root.join("lien");
-        if make_dir_link(&link, &outside) {
+        if make_dir_link_or_skip(&link, &outside, "make_dirs") {
             match make_dirs(&root, &["lien", "x"]) {
                 Err(Fail::Conv(e)) => assert_eq!(e.code, "invalid_content"),
                 _ => panic!("lien suivi"),
@@ -2638,9 +2651,10 @@ mod tests {
         .unwrap();
         assert_eq!(read_pk(&d.join("o.plain.pk")), mem.entries);
         assert_eq!(fs::read(d.join("o.plain/sounds/s.mp3")).unwrap(), mp3);
-        // Deux tours après le premier, au `.plain.pk` puis au dossier.
+        // Deux tours après le premier, au `.plain.pk` puis au dossier ; la lecture de l'entrée
+        // consulte aussi l'annulation avant chaque morceau lu (#580) : un par tour (trois), par copie.
         let total = calls.get();
-        assert_eq!(total, 2 * mem.entries.len() + 1 + 2 * 2);
+        assert_eq!(total, 2 * mem.entries.len() + 1 + 2 * 2 + 2 * 3);
         for n in 0..total {
             old_output(&d);
             let (archive, _) = streamed_sample(&mp3);

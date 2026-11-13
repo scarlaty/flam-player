@@ -1889,7 +1889,11 @@ fn write_archive_meta(dest: &Path, url: &str, validator: &Validator) {
 /// (`crates/telmi2flam/src/error.rs` : illisible, pas une histoire Telmi, contenu invalide, asset
 /// absent) et conversion STUdio ([`studio`], tableau des pannes). Exclus : `unsupported_format`
 /// (archive saine, format que le convertisseur ne gère pas encore), sortie, erreur interne,
-/// arrêt sans événement (`exit_<n>`), ffmpeg et tout code inconnu.
+/// arrêt sans événement (`exit_<n>`), ffmpeg et tout code inconnu. `archive_io` (le système
+/// refuse d'ouvrir ou de lire l'archive : antivirus, fichier verrouillé, volume retiré) en est
+/// **volontairement** absent : le support local est en cause, pas l'archive, qui est gardée
+/// comme pour l'erreur `io` des conversions faites dans le processus (test
+/// `archive_mise_en_cause_par_la_conversion_supprimee`).
 const ARCHIVE_FAULT_CODES: &[&str] = &[
     "archive_unreadable",
     "not_telmi",
@@ -1910,11 +1914,10 @@ const ARCHIVE_FAULT_CODES: &[&str] = &[
 /// Erreur d'entrée/sortie du système en lisant l'archive ([`system_io`]) : la conversion STUdio
 /// et [`pack::check_plain_pk`] rendent `io`, l'archive est gardée (exceptions et limites :
 /// [`system_io`] ; erreur `io` persistante : « Vider le cache », si `archives/` est marqué).
-/// Limite connue : `telmi2flam`
-/// (processus séparé) rend `archive_unreadable` pour une archive corrompue **comme** pour une
-/// archive que le système refuse de lire (antivirus, volume retiré) ; l'archive est alors
-/// supprimée et retéléchargée à la tentative suivante (coût réseau, aucune perte de données :
-/// l'archive téléchargée est une copie). Les distinguer demande un code dédié dans la crate.
+/// `telmi2flam` (processus séparé) distingue les deux par son code : `archive_io` (le système
+/// refuse de lire l'archive : antivirus, volume retiré) garde l'archive, `archive_unreadable`
+/// (archive corrompue) la met en cause, avec la même règle que [`system_io`] (une seule
+/// fonction, `telmi2flam::error::system_io`).
 fn archive_at_fault(err: &AppError) -> bool {
     match err {
         AppError::Conversion { code, .. } => ARCHIVE_FAULT_CODES.contains(&code.as_str()),
@@ -1942,12 +1945,11 @@ fn archive_at_fault(err: &AppError) -> bool {
 ///
 /// Limite connue : sous Unix, `EIO` reste une erreur du système (ambigu : secteur défectueux
 /// ou volume amovible retiré) ; l'archive est gardée.
+///
+/// La règle est celle de `telmi2flam::error::system_io`, que le convertisseur applique aussi
+/// pour rendre `archive_io` : une seule définition.
 pub(super) fn system_io(err: &std::io::Error) -> bool {
-    /// `ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT` (Windows).
-    const STORED_CONTENT_UNREADABLE: [i32; 3] = [23, 1392, 1393];
-    err.raw_os_error()
-        .is_some_and(|code| !(cfg!(windows) && STORED_CONTENT_UNREADABLE.contains(&code)))
-        && err.kind() != std::io::ErrorKind::InvalidInput
+    telmi2flam::error::system_io(err)
 }
 
 /// Supprime l'archive téléchargée, son `.part` et sa mémoire.

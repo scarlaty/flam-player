@@ -8,9 +8,10 @@ use std::path::Path;
 
 use unicode_normalization::UnicodeNormalization;
 
+use crate::error::system_io;
 use crate::error::ConvError;
 use crate::text::py_repr;
-use crate::zipread::{system_io, ChunkStop, ZipError, ZipReader};
+use crate::zipread::{ChunkStop, ZipError, ZipReader};
 
 /// `_fold` : clé de recherche d'asset, NFC puis minuscules (`str.lower()`, sigma final et
 /// U+0130 compris).
@@ -100,6 +101,24 @@ pub struct Archive<R> {
     source: String,
 }
 
+/// L'ouverture a échoué à cause du chemin lui-même (absent, composant qui n'est pas un dossier,
+/// nom invalide ou trop long, boucle de liens) et non d'un refus du système. Les genres
+/// `InvalidFilename` et `FilesystemLoop` sont instables : codes de l'OS en dur.
+fn bad_path(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{IsADirectory, NotADirectory, NotFound};
+    // Windows : `ERROR_INVALID_NAME` 123, `ERROR_BAD_PATHNAME` 161, `ERROR_FILENAME_EXCED_RANGE`
+    // 206. Linux : `ENAMETOOLONG` 36, `ELOOP` 40. macOS : `ENAMETOOLONG` 63, `ELOOP` 62.
+    let codes: &[i32] = if cfg!(windows) {
+        &[123, 161, 206]
+    } else if cfg!(target_os = "linux") {
+        &[36, 40]
+    } else {
+        &[62, 63]
+    };
+    matches!(e.kind(), NotFound | NotADirectory | IsADirectory)
+        || e.raw_os_error().is_some_and(|c| codes.contains(&c))
+}
+
 impl Archive<BufReader<File>> {
     /// `zipfile.ZipFile(path, "r")` : archive absente, illisible ou corrompue →
     /// `archive_unreadable` (code 3).
@@ -113,8 +132,10 @@ impl Archive<BufReader<File>> {
             )));
         }
         let file = File::open(path).map_err(|e| {
-            // Absente : `archive_unreadable` ; refusée par le système : `archive_io` (#580).
-            if e.kind() != std::io::ErrorKind::NotFound && system_io(&e) {
+            // Chemin absent ou invalide (absent, composant qui n'est pas un dossier, nom
+            // invalide, boucle de liens) : `archive_unreadable` ; refusée par le système
+            // (accès, verrou, support retiré) : `archive_io` (#580).
+            if !bad_path(&e) && system_io(&e) {
                 ConvError::archive_io(format!("{source} : {e}"))
             } else {
                 ConvError::archive_unreadable(format!("{source} : {e}"))
@@ -254,7 +275,8 @@ mod tests {
         );
         let data = std::fs::read(path).unwrap();
         type Make = fn() -> std::io::Error;
-        let cases: [(Make, &str); 4] = [
+        #[allow(unused_mut)]
+        let mut cases: Vec<(Make, &str)> = vec![
             // Accès refusé : `EACCES` (13) sous Unix, `ERROR_ACCESS_DENIED` (5) sous Windows.
             (
                 || std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 }),
@@ -276,6 +298,23 @@ mod tests {
                 "archive_unreadable",
             ),
         ];
+        // Windows : contenu stocké illisible (`ERROR_CRC`, `ERROR_FILE_CORRUPT`,
+        // `ERROR_DISK_CORRUPT`), l'archive reste en cause.
+        #[cfg(windows)]
+        {
+            cases.push((
+                || std::io::Error::from_raw_os_error(23),
+                "archive_unreadable",
+            ));
+            cases.push((
+                || std::io::Error::from_raw_os_error(1392),
+                "archive_unreadable",
+            ));
+            cases.push((
+                || std::io::Error::from_raw_os_error(1393),
+                "archive_unreadable",
+            ));
+        }
         for (i, (error, code)) in cases.into_iter().enumerate() {
             let fail = std::rc::Rc::new(std::cell::Cell::new(false));
             let reader = Failing {
@@ -297,6 +336,32 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(e.code, "archive_unreadable");
+    }
+
+    /// #580 : archive ouverte sans partage par un autre processus (violation de partage,
+    /// `ERROR_SHARING_VIOLATION`) : `archive_io` ; absente ou dossier : `archive_unreadable`.
+    #[cfg(windows)]
+    #[test]
+    fn ouverture_refusee_par_le_systeme() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = std::env::temp_dir().join(format!("t2f-archive-io-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("a.zip");
+        std::fs::write(&path, b"PK").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let e = Archive::open(&path).err().unwrap();
+        drop(held);
+        assert_eq!((e.code, e.exit_code), ("archive_io", 3), "{e}");
+        let e = Archive::open(&d.join("absente.zip")).err().unwrap();
+        assert_eq!(e.code, "archive_unreadable");
+        let e = Archive::open(&d).err().unwrap();
+        assert_eq!(e.code, "archive_unreadable");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// #580 : `read_cancellable` lit comme `read`, et s'arrête sur l'annulation.

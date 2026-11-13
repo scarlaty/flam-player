@@ -1184,8 +1184,11 @@ autre (fichier remplacé au même chemin) donne `not_found` sans rien installer.
   « Vider le cache » la supprime, une fois `archives/` marqué : voir « Marqueur
   d'appartenance ») ; sous Windows, un contenu stocké illisible (`ERROR_CRC`,
   `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`) la met en cause, elle est retéléchargée ; sous
-  Unix, `EIO` (secteur défectueux ou volume retiré, indiscernables) la garde. `telmi2flam` ne
-  la distingue pas encore d'une archive corrompue (`archive_unreadable` : archive retéléchargée).
+  Unix, `EIO` (secteur défectueux ou volume retiré, indiscernables) la garde. `telmi2flam`
+  la distingue d'une archive corrompue : code `archive_io` (archive gardée, message fixe « la
+  lecture de l'archive a été refusée par le système… »), alors qu'`archive_unreadable` met
+  l'archive en cause (retéléchargée). La règle est la même que pour les conversions faites dans
+  le processus (une seule fonction, `telmi2flam::error::system_io`).
   Les tâches terminées ne sont gardées qu'en mémoire (100 au plus). Le lien et le validateur
   d'une archive sont mémorisés dans `archives/<archive>.meta.json` (4 Kio au plus, validateur revalidé) : une nouvelle demande après
   une coupure reprend le `.part`, et une archive complète n'est réutilisée que si son lien et

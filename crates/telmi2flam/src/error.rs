@@ -69,6 +69,23 @@ impl ConvError {
     }
 }
 
+/// L'erreur vient-elle du système (elle porte un code de l'OS : accès refusé par un antivirus,
+/// fichier verrouillé, volume retiré) plutôt que du contenu de l'archive ? Règle unique, aussi
+/// utilisée par le launcher pour décider de garder l'archive téléchargée. Exclus, l'archive
+/// reste en cause : le positionnement refusé (`InvalidInput` : décalage absurde lu dans
+/// l'archive, zip64 forgé) et, sous Windows, le contenu stocké illisible (`ERROR_CRC` 23,
+/// `ERROR_FILE_CORRUPT` 1392, `ERROR_DISK_CORRUPT` 1393 : une copie du fichier ailleurs sur le
+/// disque le réparerait). Les erreurs construites par le lecteur zip (CRC, en-tête,
+/// troncature) n'ont pas de code de l'OS. Limite : sous Unix, `EIO` reste une erreur du
+/// système (secteur défectueux ou volume retiré, indiscernables).
+pub fn system_io(e: &std::io::Error) -> bool {
+    /// `ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT` (Windows).
+    const STORED_CONTENT_UNREADABLE: [i32; 3] = [23, 1392, 1393];
+    e.raw_os_error()
+        .is_some_and(|code| !(cfg!(windows) && STORED_CONTENT_UNREADABLE.contains(&code)))
+        && e.kind() != std::io::ErrorKind::InvalidInput
+}
+
 impl fmt::Display for ConvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
@@ -80,5 +97,41 @@ impl std::error::Error for ConvError {}
 impl From<crate::json::ContentError> for ConvError {
     fn from(e: crate::json::ContentError) -> Self {
         ConvError::invalid_content(e.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_io;
+    use std::io::{Error, ErrorKind};
+
+    /// Règle unique du convertisseur et du launcher (#580).
+    #[test]
+    fn erreur_du_systeme_ou_du_contenu() {
+        // Erreurs construites sans code de l'OS : contenu en cause.
+        assert!(!system_io(&Error::new(ErrorKind::UnexpectedEof, "tronque")));
+        assert!(!system_io(&Error::from(ErrorKind::InvalidInput)));
+        // Code de l'OS : le système est en cause (13 : `EACCES`, 5 : accès refusé sous Windows).
+        assert!(system_io(&Error::from_raw_os_error(if cfg!(windows) {
+            5
+        } else {
+            13
+        })));
+        // `EINVAL` / `ERROR_INVALID_PARAMETER` : positionnement refusé, `InvalidInput`.
+        assert!(!system_io(&Error::from_raw_os_error(if cfg!(windows) {
+            87
+        } else {
+            22
+        })));
+        // Windows : contenu stocké illisible, l'archive reste en cause.
+        #[cfg(windows)]
+        for code in [23, 1392, 1393] {
+            assert!(!system_io(&Error::from_raw_os_error(code)), "{code}");
+        }
+        // Les mêmes nombres ne sont pas ces erreurs ailleurs.
+        #[cfg(not(windows))]
+        for code in [23, 1392, 1393] {
+            assert!(system_io(&Error::from_raw_os_error(code)), "{code}");
+        }
     }
 }

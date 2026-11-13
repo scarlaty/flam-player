@@ -149,6 +149,9 @@ fn fixed_message(code: &str) -> String {
     match code {
         UNSUPPORTED_FORMAT_CODE => UNSUPPORTED_FORMAT.to_string(),
         "archive_unreadable" => "l'archive de l'histoire est illisible".into(),
+        "archive_io" => "la lecture de l'archive a été refusée par le système (antivirus, fichier \
+             verrouillé, support retiré) ; réessayez"
+            .into(),
         "not_telmi" => "l'archive n'est pas une histoire Telmi".into(),
         "invalid_content" => "le contenu de l'histoire est invalide".into(),
         "missing_asset" => "une image ou un son de l'histoire est absent de l'archive".into(),
@@ -797,6 +800,7 @@ b"
     async fn echecs_rendus_tels_quels() {
         for (mode, code) in [
             ("err:archive_unreadable:3", "archive_unreadable"),
+            ("err:archive_io:3", "archive_io"),
             ("err:validation:4", "validation"),
             ("err:missing_asset:5", "missing_asset"),
             ("err:output_error:6", "output_error"),
@@ -819,12 +823,28 @@ b"
                 panic!("{mode} : {result:?}")
             };
             assert_eq!(got, code, "{mode}");
+            if code == "archive_io" {
+                assert_eq!(message, fixed_message("archive_io"), "{mode}");
+            }
             // La sortie d'erreur du convertisseur n'est jamais reprise (nom de fichier possible).
             assert!(!message.contains("histoire-secrete"), "{mode} : {message}");
             assert!(!message.contains("Traceback"), "{mode} : {message}");
             assert!(!banc.output.exists(), "{mode}");
             assert!(banc.staging_is_empty(), "{mode} : temporaire laissé");
         }
+    }
+
+    /// #580 : `archive_io` a un message fixe qui ne dit pas « erreur du convertisseur » et ne
+    /// porte ni chemin ni nom de fichier.
+    #[test]
+    fn message_fixe_de_archive_io() {
+        let m = fixed_message("archive_io");
+        assert_ne!(m, fixed_message("code_inconnu"));
+        assert!(
+            m.contains("refusée par le système") && m.contains("réessayez"),
+            "{m}"
+        );
+        assert!(!m.contains(['/', '\\', ':']), "{m}");
     }
 
     #[test]
