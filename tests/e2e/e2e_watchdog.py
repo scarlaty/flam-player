@@ -139,7 +139,9 @@ SCEN_H = _lua("fill = {}",
               "  if not ok then break end",
               "  put(s)",
               "end",
-              "io.stderr:write('FILLED ', collectgarbage('count'), '\\n')")
+              "io.stderr:write('FILLED ', collectgarbage('count'), '\\n')",
+              "local ok1 = pcall(rep, 'x', 1 << 20)",
+              "io.stderr:write('PROBE_1MB ', tostring(ok1), '\\n')")
 # J : warn() et un finaliseur en erreur
 SCEN_J = _lua("warn('@on')",
               "setmetatable({}, {__gc = function() error('boom_gc') end})",
@@ -273,8 +275,9 @@ def main():
         sh = os.path.join(tmp, "exhaust.lua")
         with open(sh, "w", newline="") as f:
             f.write(SCEN_H)
-        out, rc = run(exe, sh, tmp, "FILLED", ("--lua-mem", "16"))
+        out, rc = run(exe, sh, tmp, "PROBE_1MB", ("--lua-mem", "16", "--watchdog", "120000"))
         check("FILLED 1638" in out, "memoire remplie jusqu'au plafond (16 Mo)", out)
+        check("PROBE_1MB false" in out, "memoire pleine : 1 Mo refuse au script (reserve de l'hote fermee)", out)
         check("PANIC" not in out, "memoire pleine : pas de PANIC de l'etat Lua", out)
         check(rc == 0, "memoire pleine : le player reste en vie et quitte (code %r)" % rc, out)
 
@@ -294,6 +297,12 @@ def main():
             err = p.stderr.decode("utf-8", "replace")
             check(p.returncode == 2 and "--lua-mem" in err and "invalide" in err,
                   "--lua-mem %r refuse (code %r)" % (bad, p.returncode), err)
+        # sans valeur, en dernier argument : refuse (et non pris pour le chemin de l'histoire)
+        p = subprocess.run([exe, s2_dummy(tmp), "--lua-mem"], capture_output=True, timeout=20,
+                           env=dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy"))
+        err = p.stderr.decode("utf-8", "replace")
+        check(p.returncode == 2 and "demande une valeur" in err,
+              "--lua-mem sans valeur refuse (code %r)" % p.returncode, err)
 
         s2 = os.path.join(tmp, "legit.lua")
         with open(s2, "w", newline="") as f:

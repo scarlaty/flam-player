@@ -1383,6 +1383,10 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--watchdog") == 0 && i + 1 < argc) {
             long ms = strtol(argv[++i], NULL, 10);
             g_watchdog_ms = ms > 0 ? (uint32_t)ms : 0;
+        } else if (strcmp(argv[i], "--lua-mem") == 0 && i + 1 >= argc) {
+            fprintf(stderr, "Erreur: --lua-mem demande une valeur (0 = aucun plafond, sinon %u a %u Mo)\n",
+                    LUA_MEM_MIN_MB, LUA_MEM_MAX_MB);
+            return 2;
         } else if (strcmp(argv[i], "--lua-mem") == 0 && i + 1 < argc) {
             const char *v = argv[++i];
             char *end = NULL;

@@ -236,7 +236,15 @@ histoires, le player pourrait le refuser de même (non vérifié sur l'appareil)
 
 Sans périphérique audio (session sans son, machine virtuelle) ou si l'envoi du son échoue, la lecture
 est cadencée sur l'horloge murale : sans cela, l'horloge audio, donc les callbacks `play`/`stop` et
-les enchaînements, courait environ dix fois trop vite. `FLAM_AUDIO_NO_DEVICE=1` simule ce cas.
+les enchaînements, courait environ dix fois trop vite. `FLAM_AUDIO_NO_DEVICE=1` simule ce cas et
+`FLAM_AUDIO_QUEUE_FAIL=1` fait échouer l'envoi du son : ce sont des aides de test lues par le
+binaire, seule la valeur exacte `1` compte (`0` ou toute autre valeur est sans effet).
+
+Réserve mémoire : au-delà du plafond `--lua-mem`, l'hôte (le player, hors exécution d'un script)
+peut encore allouer jusqu'à 4 Mo pour ses propres appels, afin qu'un script ayant rempli la mémoire
+ne fasse pas paniquer l'état Lua. Le test vérifie que la réserve est refusée au script ; l'autre sens
+(la réserve effectivement accordée à l'hôte) n'est pas testé. Le plancher de `--lua-mem` est de 8 Mo :
+un parcours complet d'une histoire convertie y tient (`tests/e2e/e2e_telmi.py`, cas B8).
 
 Le navigateur détecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et
 les titres, et offre un bouton « Choisir un dossier... » pour changer le répertoire de recherche.

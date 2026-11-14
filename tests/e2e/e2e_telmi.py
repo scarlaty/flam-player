@@ -262,6 +262,37 @@ def main():
             fails.append("B : erreurs Lua sur stdout :\n    " + "\n    ".join(lua_err[:20]))
         if fails and not a.keep:
             print("[e2e] stderr B (fin) :\n" + "\n".join(err.splitlines()[-30:]))
+
+        # 5. B8 : meme parcours au plancher du plafond memoire (--lua-mem 8) : les
+        # bibliotheques, les bindings et le runtime doivent tenir dans 8 Mo (#575)
+        run8 = os.path.join(tmp, "B8")
+        plain8 = os.path.join(run8, "E2E.plain")
+        shutil.copytree(plain, plain8)
+        result8 = os.path.join(run8, "e2e_result.txt")
+        with open(os.path.join(plain8, "main.lua"), "a", encoding="utf-8", newline="\n") as f:
+            f.write(DRIVER % {"out": lua_str(result8)})
+
+        def finished8():
+            if not os.path.isfile(result8):
+                return False
+            with open(result8, encoding="utf-8") as f:
+                txt = f.read()
+            return "DONE" in txt or "FAIL" in txt
+
+        code, out8, err8, dt = run_player(exe, ["--lua-mem", "8", plain8], run8, 90.0, until=finished8)
+        steps8 = open(result8, encoding="utf-8").read() if os.path.isfile(result8) else ""
+        print("[e2e] B8 (--lua-mem 8) : %.1f s, %s" % (dt, "parcours termine" if "DONE" in steps8 else "parcours NON termine"))
+        if code is not None:
+            fails.append("B8 : flam-player s'est arrete seul (code %s)" % code)
+        if "DONE" not in steps8:
+            fails.append("B8 : parcours non termine avec --lua-mem 8")
+        if "not enough memory" in out8 + err8:
+            fails.append("B8 : memoire Lua insuffisante a 8 Mo")
+        if "returning to story browser" not in err8:
+            fails.append("B8 : pas de retour bibliotheque apres la fin")
+        bad = [l for l in err8.splitlines() if ERR_RE.search(l)]
+        if bad:
+            fails.append("B8 : erreurs sur stderr :\n    " + "\n    ".join(bad[:20]))
     finally:
         if a.keep or fails:
             print("[e2e] dossier conserve : %s" % tmp)

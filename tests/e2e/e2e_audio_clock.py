@@ -34,6 +34,8 @@ import time
 SKIP = 77
 FRAMES = 96                      # MPEG-1 Layer III 44,1 kHz, 1152 echantillons/trame
 DURATION = FRAMES * 1152 / 44100.0   # ~2,51 s
+FRAMES_LONG = 215                # piste du scenario D : ~5,6 s, la pause tombe avant la fin
+DURATION_LONG = FRAMES_LONG * 1152 / 44100.0
 FRAME_BYTES = 417                # 144 * 128000 / 44100, sans bourrage
 
 SCRIPT = r'''audio.load(0, "clock.mp3", function(s, t)
@@ -42,7 +44,7 @@ end)
 audio.play()
 '''
 # pause a ~0,6 s, seek a 1,0 s pendant la pause, reprise a ~2,6 s
-SCRIPT_PAUSE = SCRIPT + r'''local n = 0
+SCRIPT_PAUSE = SCRIPT.replace("clock.mp3", "clock_long.mp3") + r'''local n = 0
 lv.timer.new(function()
   n = n + 1
   if n == 6 then audio.pause(); audio.seek(1.0)
@@ -60,15 +62,15 @@ def check(cond, what, err=""):
     print("[OK] " + what)
 
 
-def make_mp3(path):
+def make_mp3(path, frames=FRAMES):
     frame = bytes([0xFF, 0xFB, 0x90, 0x00]) + bytes(FRAME_BYTES - 4)
     with open(path, "wb") as f:
-        f.write(frame * FRAMES)
+        f.write(frame * frames)
     # table de seek .mp3map (unites de 1/88200 s) : le seek en depend
     upf = 1152 * 88200 // 44100
     with open(path + "map", "wb") as f:
-        f.write(struct.pack("<III", FRAMES * upf, 0, 0))
-        for i in range(FRAMES):
+        f.write(struct.pack("<III", frames * upf, 0, 0))
+        for i in range(frames):
             f.write(struct.pack("<II", i * FRAME_BYTES, i * upf))
 
 
@@ -105,7 +107,7 @@ def run(exe, tmp, mode, script):
         t.start()
     rc = None
     try:
-        deadline = time.monotonic() + DURATION + 15
+        deadline = time.monotonic() + DURATION_LONG + 15
         while (time.monotonic() < deadline and proc.poll() is None
                and not any("AUDIO_EV stop" in l for _, l in list(events))):
             time.sleep(0.02)
@@ -147,6 +149,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="flam-aud-")
     try:
         make_mp3(os.path.join(tmp, "clock.mp3"))
+        make_mp3(os.path.join(tmp, "clock_long.mp3"), FRAMES_LONG)
         with open(os.path.join(tmp, "clock.lua"), "w", newline="") as f:
             f.write(SCRIPT)
         with open(os.path.join(tmp, "clock_pause.lua"), "w", newline="") as f:
@@ -191,7 +194,7 @@ def main():
             t_resume = events[idx_res][0]
             t_stop = next((t for t, l in events[idx_res:] if "AUDIO_EV stop" in l), None)
             check(t_stop is not None, "%s : 'stop' apres la reprise" % label, out)
-            check(t_stop - t_resume >= 0.8 * (DURATION - 1.1),
+            check(t_stop - t_resume >= 0.8 * (DURATION_LONG - 1.1),
                   "%s : duree restante respectee (%.2f s)" % (label, t_stop - t_resume), out)
             check(events[idx_res][0] - events[idx_pause][0] >= 1.5,
                   "%s : pause d'au moins 1,5 s (%.2f s)"

@@ -102,6 +102,9 @@ if exist "%BUILD%\flam-test-audio.exe" (
     REM ordre impose : reopen_1 laisse un etat ouvert, reopen_2 le verifie
     set "AUD_ARGS=!AUD_ARGS! "%ROOT%tests\audio\reopen_1_open.lua" "%ROOT%tests\audio\reopen_2_reuse.lua""
     if not defined SDL_AUDIODRIVER set "SDL_AUDIODRIVER=dummy"
+    REM Premier passage : chemin reel (variables d'aide au test videes, sinon il ne serait plus teste)
+    set "FLAM_AUDIO_NO_DEVICE="
+    set "FLAM_AUDIO_QUEUE_FAIL="
     "%BUILD%\flam-test-audio.exe" --timeout 120!AUD_ARGS!
     set "AUDIO_RC=!ERRORLEVEL!"
     echo EXIT_CODE=!AUDIO_RC!
