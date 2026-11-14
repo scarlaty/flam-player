@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// Nom du fichier marqueur, à la racine du volume.
 pub const MDF_FILE: &str = ".mdf";
@@ -141,9 +142,36 @@ pub struct DetectedDevice {
     /// Résultat du décodage de `.mdf` : `None` si décodé, sinon l'erreur typée.
     pub mdf_error: Option<MdfError>,
     pub warnings: Vec<DeviceWarning>,
-    /// Contenu de `.mdf` (jamais sérialisé), pour [`backup_mdf`].
+    /// Contenu de `.mdf` (jamais sérialisé), pour [`backup_mdf`]. Effacé à la libération.
     #[serde(skip)]
-    pub mdf_bytes: Option<Vec<u8>>,
+    pub mdf_bytes: Option<MdfBytes>,
+}
+
+/// Contenu de `.mdf` lu sur l'appareil. En firmware 2.x il porte les clés et le numéro de série :
+/// la mémoire est mise à zéro à la libération de la dernière copie (#652), et le format de
+/// débogage n'en montre que la taille. Se lit comme une tranche d'octets (`Deref`).
+#[derive(Clone, PartialEq, Eq)]
+pub struct MdfBytes(Zeroizing<Vec<u8>>);
+
+impl MdfBytes {
+    /// Contenu déjà lu (tests et appelants qui ont leur propre lecture).
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+}
+
+impl std::ops::Deref for MdfBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for MdfBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MdfBytes({} octets)", self.0.len())
+    }
 }
 
 /// Résultat d'un balayage (miroir côté interface).
@@ -163,7 +191,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Lit `.mdf` : `(octets lus, erreur typée)`. `None` si le volume a disparu en cours de route.
-fn read_mdf(mdf_path: &Path, size: u64) -> Option<(Option<Vec<u8>>, Option<MdfError>)> {
+/// Le tampon est effacé à la libération sur tous les chemins ; sa capacité suit la taille relevée
+/// pour que la lecture ne le réalloue pas (une réallocation laisserait une copie non effacée),
+/// sauf si le fichier grandit entre-temps.
+fn read_mdf(mdf_path: &Path, size: u64) -> Option<(Option<MdfBytes>, Option<MdfError>)> {
     let too_large = |size| MdfError::TooLarge {
         size,
         max: MDF_MAX_SIZE,
@@ -172,7 +203,8 @@ fn read_mdf(mdf_path: &Path, size: u64) -> Option<(Option<Vec<u8>>, Option<MdfEr
         return Some((None, Some(too_large(size))));
     }
     // Lecture bornée : le fichier peut grandir entre `metadata` et `read`.
-    let mut buf = Vec::new();
+    let capacity = usize::try_from(size).unwrap_or(0).saturating_add(1);
+    let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
     fs::File::open(mdf_path)
         .ok()?
         .take(MDF_MAX_SIZE + 1)
@@ -190,7 +222,7 @@ fn read_mdf(mdf_path: &Path, size: u64) -> Option<(Option<Vec<u8>>, Option<MdfEr
     } else {
         parse_mdf(&buf).err()
     };
-    Some((Some(buf), error))
+    Some((Some(MdfBytes(buf)), error))
 }
 
 /// Sonde une racine : `None` si ce n'est pas une Flam ou si le volume a disparu en cours de
@@ -281,7 +313,8 @@ pub fn backup_mdf(dir: &Path, device: &DetectedDevice) -> std::io::Result<Option
         &hash[..16]
     );
     let target = dir.join(name);
-    if fs::read(&target).is_ok_and(|existing| existing == *bytes) {
+    let existing = fs::read(&target).ok().map(Zeroizing::new);
+    if existing.is_some_and(|existing| existing.as_slice() == &bytes[..]) {
         return Ok(Some(target));
     }
     crate::storage::write_atomic(&target, bytes)?;
@@ -628,6 +661,23 @@ mod tests {
         assert_eq!(sanitize_label(""), "flam");
         assert_eq!(sanitize_label("é/é"), "flam");
         assert_eq!(sanitize_label(&"a".repeat(80)).len(), 32);
+    }
+
+    /// #652 : le contenu lu se lit comme une tranche, et le format de débogage (journal d'un
+    /// `DetectedDevice` entier) n'en montre que la taille.
+    #[test]
+    fn le_contenu_de_mdf_n_apparait_pas_au_debogage() {
+        let mdf = synthetic_mdf();
+        let (_dev, d) = first_device(&mdf);
+        let bytes = d.mdf_bytes.clone().unwrap();
+        assert_eq!(&bytes[..], &mdf[..]);
+        assert_eq!(
+            format!("{bytes:?}"),
+            format!("MdfBytes({} octets)", mdf.len())
+        );
+        let debug = format!("{d:?}");
+        let listed = format!("{:?}", &mdf[..8]);
+        assert!(!debug.contains(&listed[1..listed.len() - 1]), "{debug}");
     }
 
     #[test]
