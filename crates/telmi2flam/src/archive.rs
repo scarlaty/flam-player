@@ -103,7 +103,7 @@ pub struct Archive<R> {
 
 /// L'ouverture a échoué à cause du chemin lui-même (absent, composant qui n'est pas un dossier,
 /// nom invalide ou trop long, boucle de liens) et non d'un refus du système. `InvalidFilename`
-/// (stable depuis Rust 1.83) couvre le nom invalide ou trop long ; `FilesystemLoop` est encore
+/// (stable depuis Rust 1.87) couvre le nom invalide ou trop long ; `FilesystemLoop` est encore
 /// instable : seule la boucle de liens garde un code de l'OS en dur. Un système sans code connu
 /// ici rend `archive_io` (archive gardée) : jamais `archive_unreadable` (archive supprimée) sur
 /// une erreur qui pourrait venir du disque.
@@ -112,14 +112,15 @@ fn bad_path(e: &std::io::Error) -> bool {
     matches!(
         e.kind(),
         NotFound | NotADirectory | IsADirectory | InvalidFilename
-    ) || e.raw_os_error() == LINK_LOOP
+    ) || LINK_LOOP.is_some_and(|code| e.raw_os_error() == Some(code))
 }
 
-/// Code de l'OS de la boucle de liens symboliques : `ELOOP` 40 (Linux, Android), `ELOOP` 62
-/// (macOS, iOS et BSD), `ERROR_CANT_RESOLVE_FILENAME` 1921 (Windows).
-const LINK_LOOP: Option<i32> = if cfg!(windows) {
-    Some(1921)
-} else if cfg!(any(target_os = "linux", target_os = "android")) {
+/// Code de l'OS de la boucle de liens symboliques : `ELOOP` 40 (Linux et Android, sauf MIPS et
+/// SPARC où il vaut 90 : la boucle y rend `archive_io`, archive gardée), `ELOOP` 62 (macOS, iOS
+/// et BSD). Windows n'en a pas ici : `ERROR_CANT_RESOLVE_FILENAME` (1921) est aussi rendu pour
+/// un point d'analyse non résolu (dossier synchronisé dont le client est arrêté, jonction vers
+/// un volume absent), où l'archive est saine : elle est gardée (`archive_io`).
+const LINK_LOOP: Option<i32> = if cfg!(any(target_os = "linux", target_os = "android")) {
     Some(40)
 } else if cfg!(any(
     target_os = "macos",
@@ -410,10 +411,26 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            // `ERROR_CANT_RESOLVE_FILENAME`.
-            assert!(bad_path(&Error::from_raw_os_error(1921)));
+            // `ERROR_CANT_RESOLVE_FILENAME` : aussi un point d'analyse non résolu (dossier
+            // synchronisé, jonction vers un volume absent). L'archive est gardée.
+            let e = Error::from_raw_os_error(1921);
+            assert!(!bad_path(&e) && system_io(&e));
             // `ERROR_INVALID_NAME`, `ERROR_BAD_PATHNAME`, `ERROR_FILENAME_EXCED_RANGE`.
             for code in [123, 161, 206] {
+                assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
+            }
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            // `ELOOP`, `ENAMETOOLONG`.
+            for code in [62, 63] {
                 assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
             }
         }

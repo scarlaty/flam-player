@@ -149,11 +149,15 @@ fn fixed_message(code: &str) -> String {
     match code {
         UNSUPPORTED_FORMAT_CODE => UNSUPPORTED_FORMAT.to_string(),
         "archive_unreadable" => "l'archive de l'histoire est illisible".into(),
-        // L'archive téléchargée est gardée (le support local est en cause, pas l'archive) :
-        // réessayer suffit si la cause a disparu ; sinon « Vider le cache » la retire.
+        // Le support local est en cause, pas l'archive : rien n'est supprimé, réessayer suffit si
+        // la cause a disparu. Le message ne sait pas d'où vient l'archive (téléchargée dans le
+        // cache, ou fichier d'une source locale que « Vider le cache » ne touche pas) : la piste
+        // du cache n'est donnée que pour une archive téléchargée, sans promettre le résultat
+        // (tout le cache est vidé, et seulement si `archives/` est marqué).
         "archive_io" => "la lecture de l'archive a été refusée par le système (antivirus, fichier \
-             verrouillé, support retiré) ; l'archive est conservée, réessayez, et si l'erreur \
-             persiste, « Vider le cache » la retire pour la retélécharger"
+             verrouillé, support retiré) ; rien n'a été supprimé, réessayez. Si l'archive a été \
+             téléchargée et que l'erreur persiste, « Vider le cache » (Réglages) vide tout le \
+             cache, archive comprise, pour la retélécharger"
             .into(),
         "not_telmi" => "l'archive n'est pas une histoire Telmi".into(),
         "invalid_content" => "le contenu de l'histoire est invalide".into(),
@@ -847,11 +851,14 @@ b"
             m.contains("refusée par le système") && m.contains("réessayez"),
             "{m}"
         );
-        // Piste exacte : l'archive est gardée, « Vider le cache » la retire.
+        // Rien n'est supprimé ; la piste du cache ne vaut que pour une archive téléchargée (une
+        // archive locale n'est pas dans le cache) et dit que tout le cache est vidé.
+        assert!(m.contains("rien n'a été supprimé"), "{m}");
         assert!(
-            m.contains("conservée") && m.contains("Vider le cache"),
+            m.contains("Si l'archive a été téléchargée") && m.contains("vide tout le cache"),
             "{m}"
         );
+        assert!(!m.contains("la retire"), "{m}");
         assert!(!m.contains(['/', '\\', ':']), "{m}");
     }
 
