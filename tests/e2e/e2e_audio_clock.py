@@ -39,7 +39,7 @@ DURATION_LONG = FRAMES_LONG * 1152 / 44100.0
 FRAME_BYTES = 417                # 144 * 128000 / 44100, sans bourrage
 
 SCRIPT = r'''audio.load(0, "clock.mp3", function(s, t)
-  io.stderr:write("AUDIO_EV " .. s .. " " .. string.format("%.2f", t) .. "\n")
+  print("AUDIO_EV " .. s .. " " .. string.format("%.2f", t))
 end)
 audio.play()
 '''

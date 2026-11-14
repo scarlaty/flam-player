@@ -93,14 +93,14 @@ def story_files():
 
 
 # Pilote ajoute a la fin de main.lua (copie) : joue l'histoire via les vrais
-# modules runtime (clics / touches LVGL), ecrit son resultat dans un fichier.
+# modules runtime (clics / touches LVGL), ecrit son resultat sur stdout (lignes
+# "E2E ...", print vide le tampon) : le bac a sable du player n'expose ni io ni os,
+# l'histoire et le pilote tournent donc sans bibliotheque supplementaire.
 DRIVER = r'''
 -- ==== [E2E] pilote automatique (ajoute par tests/e2e/e2e_telmi.py) ====
 do
-    local OUT = %(out)s
     local function report(s)
-        local f = io.open(OUT, "a"); if f then f:write(s, "\n"); f:close() end
-        print("E2E " .. s); io.stdout:flush()
+        print("E2E " .. s)
     end
     local _setup = setup
     function setup()
@@ -124,7 +124,7 @@ do
                 cur, age, stage = id, 0, 0
                 seq[#seq + 1] = name
                 report("step " .. name)
-                if chose and name:match("^audio%%-player") then afterChoice = true end
+                if chose and name:match("^audio%-player") then afterChoice = true end
                 return
             end
             age = age + 1
@@ -152,7 +152,7 @@ do
                     report("key ENTER (option " .. tostring(m.answerIterator) .. ")")
                     lv.event.send(m.parentContainer, lv.EVENT_KEY, 10)
                 end
-            elseif name:match("^audio%%-player") and m.parentContainer and age >= 12 and stage < 3 then
+            elseif name:match("^audio%-player") and m.parentContainer and age >= 12 and stage < 3 then
                 -- scene non autoplay : toujours la apres ~3 s (audio ~1 s) => OK
                 stage = stage + 1
                 report("key ENTER (fin de scene)")
@@ -162,6 +162,14 @@ do
     end
 end
 '''
+
+
+def e2e_lines(stdout_log):
+    """Lignes "E2E ..." du pilote lues dans stdout.log du player (sans le prefixe)."""
+    if not os.path.isfile(stdout_log):
+        return ""
+    with open(stdout_log, encoding="utf-8", errors="replace") as f:
+        return "".join(l[4:].rstrip("\r\n") + "\n" for l in f if l.startswith("E2E "))
 
 
 def lua_str(s):
@@ -223,19 +231,16 @@ def main():
         runB = os.path.join(tmp, "B")
         plainB = os.path.join(runB, "E2E.plain")
         shutil.copytree(plain, plainB)
-        result = os.path.join(runB, "e2e_result.txt")
+        result = os.path.join(runB, "stdout.log")
         with open(os.path.join(plainB, "main.lua"), "a", encoding="utf-8", newline="\n") as f:
-            f.write(DRIVER % {"out": lua_str(result)})
+            f.write(DRIVER)
 
         def finished():
-            if not os.path.isfile(result):
-                return False
-            with open(result, encoding="utf-8") as f:
-                txt = f.read()
+            txt = e2e_lines(result)
             return "DONE" in txt or "FAIL" in txt
 
         code, out, err, dt = run_player(exe, [plainB], runB, 90.0, until=finished)
-        steps = open(result, encoding="utf-8").read() if os.path.isfile(result) else ""
+        steps = e2e_lines(result)
         print("[e2e] B : %.1f s, pilote :\n    %s" % (dt, "\n    ".join(steps.splitlines()) or "(rien)"))
         if code is not None:
             fails.append("B : flam-player s'est arrete seul (code %s)" % code)
@@ -268,19 +273,16 @@ def main():
         run8 = os.path.join(tmp, "B8")
         plain8 = os.path.join(run8, "E2E.plain")
         shutil.copytree(plain, plain8)
-        result8 = os.path.join(run8, "e2e_result.txt")
+        result8 = os.path.join(run8, "stdout.log")
         with open(os.path.join(plain8, "main.lua"), "a", encoding="utf-8", newline="\n") as f:
-            f.write(DRIVER % {"out": lua_str(result8)})
+            f.write(DRIVER)
 
         def finished8():
-            if not os.path.isfile(result8):
-                return False
-            with open(result8, encoding="utf-8") as f:
-                txt = f.read()
+            txt = e2e_lines(result8)
             return "DONE" in txt or "FAIL" in txt
 
         code, out8, err8, dt = run_player(exe, ["--lua-mem", "8", plain8], run8, 90.0, until=finished8)
-        steps8 = open(result8, encoding="utf-8").read() if os.path.isfile(result8) else ""
+        steps8 = e2e_lines(result8)
         print("[e2e] B8 (--lua-mem 8) : %.1f s, %s" % (dt, "parcours termine" if "DONE" in steps8 else "parcours NON termine"))
         if code is not None:
             fails.append("B8 : flam-player s'est arrete seul (code %s)" % code)

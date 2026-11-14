@@ -486,9 +486,9 @@ do
     local SEED, MAX_STEPS = %(seed)d, %(max_steps)d
     local BACK_EVERY = %(back_every)d     -- test retour / menu M toutes les N scenes audio (0 : jamais)
     local _print = print
-    -- stdout redirige = tampon : vider a chaque ligne (le player est tue a la fin)
-    print = function(...) _print(...); io.stdout:flush() end
-    local function emit(s) _print("[EXPLORE] " .. s); io.stdout:flush() end
+    -- print de Lua vide stdout a chaque appel (le player est tue a la fin) : ni io ni
+    -- os, que le bac a sable du player ne laisse pas aux scripts (#575)
+    local function emit(s) _print("[EXPLORE] " .. s) end
 
     %(frontier)s
 
@@ -968,11 +968,13 @@ class _Watcher(object):
 
 
 def explore(player_exe, story_path, timeout_s=120, seed=0, max_steps=200,
-            stuck_s=30.0, back_every=8, strict=False, keep=False):
+            stuck_s=30.0, back_every=8, strict=False, keep=False, player_args=()):
     """Explore une histoire (.plain ou .plain.pk) avec flam-player sans fenetre.
     stuck_s : delai sans aucune ligne du pilote => `stuck`. back_every : test du
     retour / menu M toutes les N nouvelles scenes audio (0 : jamais). strict : option
-    --strict du player (require() limite a script/, comme le device)."""
+    --strict du player (require() limite a script/, comme le device). player_args :
+    options supplementaires du player (tests : --unsafe-libs pour un script qui
+    appelle os.exit)."""
     work = tempfile.mkdtemp(prefix="flam_explore_")
     try:
         plain = prepare(story_path, work)
@@ -981,7 +983,7 @@ def explore(player_exe, story_path, timeout_s=120, seed=0, max_steps=200,
             f.write(DRIVER % {"frontier": FRONTIER_LUA, "seed": int(seed), "max_steps": int(max_steps),
                                  "back_every": max(0, int(back_every))})
         watch = _Watcher(work, stuck_s)
-        args = (["--strict"] if strict else []) + [plain]
+        args = (["--strict"] if strict else []) + list(player_args) + [plain]
         code, out, err, dt = run_player(player_exe, args, work, timeout_s, until=watch)
         watch()   # dernieres lignes
         return _result(code, out, err, dt, total, watch, int(seed), work if keep else None)

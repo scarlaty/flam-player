@@ -5,6 +5,7 @@
 
 #include "lua_lv.h"
 #include "formats/lif_decoder.h"
+#include "formats/path_guard.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -1170,6 +1171,14 @@ static int g_strict = 0;
 void lua_lv_set_strict(int strict) { g_strict = strict ? 1 : 0; }
 int  lua_lv_get_strict(void) { return g_strict; }
 
+/* Confinement au dossier de l'histoire (main.c, mode histoire) : chemin absolu,
+   "..", lecteur ou nom de peripherique refuses (formats/path_guard.h). Desactive
+   par defaut : les tests et les scripts lances directement donnent des chemins
+   absolus. */
+static int g_confine = 0;
+
+void lua_lv_set_confine_paths(int on) { g_confine = on ? 1 : 0; }
+
 void lua_lv_set_img_base_path(const char *path) {
     if (path) {
         strncpy(g_img_base_path, path, sizeof(g_img_base_path) - 1);
@@ -1181,6 +1190,15 @@ void lua_lv_set_img_base_path(const char *path) {
 
 static int l_img_src_load(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
+
+    /* Chemin hors de l'histoire : traite comme un fichier absent (nil, ou
+       erreur en --strict), sans toucher au disque */
+    if (g_confine && !path_guard_is_confined(path)) {
+        fprintf(stderr, "lv.img_src.load: chemin hors de l'histoire refuse\n");
+        if (g_strict) return luaL_error(L, "lv.img_src.load: fichier absent: %s", path);
+        lua_pushnil(L);
+        return 1;
+    }
 
     /* Construire le chemin complet */
     char full_path[1024];

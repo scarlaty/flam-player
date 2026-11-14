@@ -13,6 +13,7 @@
 
 #include "sdl_audio.h"
 #include "formats/mp3map_parser.h"
+#include "formats/path_guard.h"
 
 #include "SDL.h"
 #include "lua.h"
@@ -238,6 +239,12 @@ void sdl_audio_quit(void) {
         g_audio.dev_id = 0;
     }
 }
+
+/* Confinement au dossier de l'histoire (main.c, mode histoire) ; desactive par
+   defaut (tests et scripts lances directement : chemins absolus). */
+static int g_confine_paths = 0;
+
+void sdl_audio_set_confine_paths(int on) { g_confine_paths = on ? 1 : 0; }
 
 void sdl_audio_set_base_path(const char *path) {
     if (path) {
@@ -474,6 +481,13 @@ static int l_audio_load(lua_State *L) {
     if (lua_isfunction(L, 3)) {
         lua_pushvalue(L, 3);
         g_audio.callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    /* Chemin hors de l'histoire (confinement actif) : echec comme un fichier
+       absent, sans toucher au disque */
+    if (g_confine_paths && !path_guard_is_confined(path)) {
+        fprintf(stderr, "audio.load: chemin hors de l'histoire refuse\n");
+        goto fail;
     }
 
     /* Construire le chemin complet */

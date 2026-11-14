@@ -101,15 +101,15 @@ SCEN_E = _lua("ran = 0",
               "end)",
               "root()")
 # F : debug.sethook() retire le watchdog quand `debug` est expose
-SCEN_F = _lua("io.stderr:write('DEBUG_TYPE ' .. type(debug) .. ' ' .. type(package.loaded.debug) .. '\\n')",
-              "io.stderr:write('REQUIRE_DEBUG ' .. tostring((pcall(require, 'debug'))) .. '\\n')",
+SCEN_F = _lua("print('DEBUG_TYPE ' .. type(debug) .. ' ' .. type(package.loaded.debug))",
+              "print('REQUIRE_DEBUG ' .. tostring((pcall(require, 'debug'))))",
               "if debug then debug.sethook() end",
               "while true do end")
 # G : fonction C longue, plafonnee par l'allocateur
 SCEN_G = _lua("local ok, e = pcall(string.rep, 'x', 32 * 1024 * 1024)",
-              "io.stderr:write('REP_RESULT ' .. tostring(ok) .. ' ' .. tostring(e):sub(1, 40) .. '\\n')",
+              "print('REP_RESULT ' .. tostring(ok) .. ' ' .. tostring(e):sub(1, 40))",
               "local small = string.rep('y', 1000)",
-              "io.stderr:write('AFTER_OK ' .. #small .. '\\n')")
+              "print('AFTER_OK ' .. #small)")
 # H : memoire remplie jusqu'aux derniers octets (chaines de taille decroissante,
 # sans fermeture ni concatenation pendant le remplissage), puis retour a l'hote
 SCEN_H = _lua("fill = {}",
@@ -139,14 +139,20 @@ SCEN_H = _lua("fill = {}",
               "  if not ok then break end",
               "  put(s)",
               "end",
-              "io.stderr:write('FILLED ', collectgarbage('count'), '\\n')",
+              "local cnt = collectgarbage('count')",
               "local ok1 = pcall(rep, 'x', 1 << 20)",
-              "io.stderr:write('PROBE_1MB ', tostring(ok1), '\\n')")
+              # memoire pleine : print ne peut rien allouer (io.stderr:write n'allouait
+              # pas, mais io n'existe plus) ; liberer avant d'ecrire
+              "fill = nil",
+              "collectgarbage('restart')",
+              "collectgarbage()",
+              "print('FILLED ' .. cnt)",
+              "print('PROBE_1MB ' .. tostring(ok1))")
 # J : warn() et un finaliseur en erreur
 SCEN_J = _lua("warn('@on')",
               "setmetatable({}, {__gc = function() error('boom_gc') end})",
               "collectgarbage()",
-              "io.stderr:write('WARN_DONE\\n')")
+              "print('WARN_DONE')")
 LEGIT = ('local ok, err = pcall(error, "attendue")\n'
          'local ok2 = pcall(function() return 1 end)\n'
          'print("LEGIT_DONE", ok, ok2)\n')

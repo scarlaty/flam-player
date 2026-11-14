@@ -5,6 +5,10 @@
  * Usage : flam-player <chemin/vers/histoire.plain>
  *         flam-player <script.lua> [--img-dir ...] [--sounds-dir ...] [--save-dir ...]
  * Options : --strict        require() limite a script/ (comme le device)
+ *           --unsafe-libs   DEVELOPPEMENT : rouvre io, os, package.loadlib,
+ *                           dofile, loadfile, string.dump et le bytecode aux
+ *                           scripts (le device n'expose rien de tout cela) ;
+ *                           avertissement sur stderr, jamais par defaut
  *           --lua-mem <Mo>  plafond memoire de l'etat Lua (defaut 256, 0 = aucun)
  *           --watchdog <ms> delai max d'un script Lua sans rendre la main
  *                           (defaut 10000, 0 = desactive)
@@ -26,6 +30,7 @@
 #include "firmware/fw_globals.h"
 #include "formats/lif_decoder.h"
 #include "formats/pk_reader.h"
+#include "formats/path_guard.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -57,6 +62,9 @@ static lua_State *g_lua = NULL;
 
 /* Mode strict (--strict) : require() limite a script/, comme le device */
 static int g_strict = 0;
+
+/* --unsafe-libs : developpement seulement, bibliotheques Lua non restreintes */
+static int g_unsafe_libs = 0;
 
 /* Taille max d'un script Lua charge (main.lua ou module) */
 #define MAX_SCRIPT_SIZE (16L * 1024L * 1024L)
@@ -283,25 +291,110 @@ static int lua_panic_msg(lua_State *L)
     return 0;  /* retour = abort() */
 }
 
-/* Retire `debug` des scripts : l'appareil ne l'expose pas (sandbox : ni io, ni
-   os, ni debug, ni package), et debug.sethook() retirait le watchdog, tandis
-   que debug.getupvalue / getregistry rendaient les fonctions d'origine des
-   gardes de coroutines. Le player n'en depend pas : son gestionnaire d'erreur
-   utilise luaL_traceback (C). `require("debug")` passe par package.loaded. */
-static void sandbox_remove_debug(lua_State *L)
+/* `load` des scripts : source texte seulement. Le mode (3e argument) est force a
+   "t", meme quand le script passe "b" ou "bt" : Lua 5.4 n'a pas de verificateur
+   de bytecode, un morceau precompile forge peut corrompre la memoire de
+   l'hote. Un morceau binaire donne la reponse habituelle de load (nil et
+   "attempt to load a binary chunk (mode is 't')"). La fonction d'origine est
+   gardee dans l'upvalue 1 ; l'environnement (4e argument) passe tel quel. */
+static int sandbox_load(lua_State *L)
 {
+    int n = lua_gettop(L);
+    if (n < 3) {
+        lua_settop(L, 3);      /* complete avec nil : chunkname, mode */
+        n = 3;
+    }
+    lua_pushliteral(L, "t");
+    lua_replace(L, 3);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_insert(L, 1);
+    lua_call(L, n, LUA_MULTRET);
+    return lua_gettop(L);
+}
+
+/* Met a nil le champ `name` de la table au sommet de la pile */
+static void sandbox_nil_field(lua_State *L, const char *name)
+{
+    lua_pushnil(L);
+    lua_setfield(L, -2, name);
+}
+
+/* Restreint les bibliotheques standard a ce que l'appareil expose (voir
+   docs/security/security-audit-report.md, section 2 : io, os, debug, package
+   a nil ; section 4.2 : ni dofile, ni loadfile). Le player ne doit pas offrir
+   aux scripts plus que l'appareil : une histoire malveillante ne doit pas
+   pouvoir agir sur le poste (fichiers, processus, code natif).
+
+   - `debug` retire dans TOUS les modes (y compris --unsafe-libs) : debug.sethook()
+     retirait le watchdog, debug.getupvalue / getregistry rendaient les fonctions
+     d'origine de ses gardes. Le player n'en depend pas (luaL_traceback en C).
+   - hors --unsafe-libs : `io`, `os`, `dofile`, `loadfile`, `string.dump` retires ;
+     `load` limite au texte ; `package` reduit a `loaded`, `preload`, `searchers`
+     (le runtime des histoires vide package.loaded[nom] au nettoyage d'un module)
+     sans `loadlib`, `cpath`, `path`, `searchpath` ni chercheur de fichier ou de
+     bibliotheque C : require ne trouve que package.preload et le chercheur de
+     l'hote (set_lua_package_path), texte seulement.
+   Les noms sont retires de _G ET de package.loaded : `require("io")` et
+   `package.loaded.io` passaient sinon par la bibliotheque deja chargee. */
+static void sandbox_restrict_libs(lua_State *L)
+{
+    /* debug : toujours */
     lua_pushnil(L);
     lua_setglobal(L, "debug");
     lua_getglobal(L, "package");
     if (lua_istable(L, -1)) {
         lua_getfield(L, -1, "loaded");
+        if (lua_istable(L, -1)) sandbox_nil_field(L, "debug");
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+
+    if (g_unsafe_libs) return;
+
+    static const char *const gone[] = { "io", "os", "dofile", "loadfile", NULL };
+    for (int k = 0; gone[k]; k++) {
+        lua_pushnil(L);
+        lua_setglobal(L, gone[k]);
+    }
+
+    lua_getglobal(L, "package");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "loaded");
         if (lua_istable(L, -1)) {
-            lua_pushnil(L);
-            lua_setfield(L, -2, "debug");
+            sandbox_nil_field(L, "io");
+            sandbox_nil_field(L, "os");
+        }
+        lua_pop(L, 1);
+        sandbox_nil_field(L, "loadlib");
+        sandbox_nil_field(L, "cpath");
+        sandbox_nil_field(L, "path");
+        sandbox_nil_field(L, "searchpath");
+        /* chercheurs : ne garder que package.preload (position 1) */
+        lua_getfield(L, -1, "searchers");
+        if (lua_istable(L, -1)) {
+            int n = (int)lua_rawlen(L, -1);
+            for (int i = n; i >= 2; i--) {
+                lua_pushnil(L);
+                lua_rawseti(L, -2, i);
+            }
         }
         lua_pop(L, 1);
     }
     lua_pop(L, 1);
+
+    /* string.dump : sans objet une fois load limite au texte, mais l'appareil ne
+       le documente pas (aucun script du depot ne s'en sert) */
+    lua_getglobal(L, "string");
+    if (lua_istable(L, -1)) sandbox_nil_field(L, "dump");
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "load");
+    if (lua_isfunction(L, -1)) {
+        lua_pushcclosure(L, sandbox_load, 1);
+        lua_setglobal(L, "load");
+    } else {
+        lua_pop(L, 1);
+    }
 }
 
 /**
@@ -324,7 +417,7 @@ static int init_lua(void)
 
     /* Bibliotheques standard Lua */
     luaL_openlibs(g_lua);
-    sandbox_remove_debug(g_lua);
+    sandbox_restrict_libs(g_lua);
 
     /* Watchdog anti boucle infinie */
     watchdog_rearm();
@@ -411,11 +504,13 @@ static int custom_lua_searcher(lua_State *L)
     int ndirs = g_strict ? 1 : 2;
 
     /* Pas de sortie du dossier de l'histoire : "..", chemin absolu,
-       lecteur "C:" ou octet nul dans le nom de module sont refuses */
+       lecteur "C:", octet nul, nom de peripherique Windows dans le nom de
+       module sont refuses (dans tous les modes) */
     size_t modlen = 0;
     lua_tolstring(L, 1, &modlen);
     if (modlen != strlen(modname) || modname[0] == '/' || modname[0] == '\\' ||
-        strchr(modname, ':') || strstr(modname, "..")) {
+        strchr(modname, ':') || strstr(modname, "..") ||
+        !path_guard_is_confined(modname)) {
         lua_pushfstring(L, "\n\tmodule '%s' refuse (chemin hors de l'histoire)",
                         modname);
         return 1;
@@ -1191,6 +1286,12 @@ static int load_story(const char *story_dir)
 {
     char path_buf[1024];
 
+    /* Un script d'histoire ne sort pas de son dossier : images et sons refusent
+       absolu, "..", lecteur et noms de peripheriques (comme l'appareil, ou
+       audio.load("../../etc/...") echoue sans fuite) */
+    lua_lv_set_confine_paths(1);
+    sdl_audio_set_confine_paths(1);
+
     /* Images : img/ */
     snprintf(path_buf, sizeof(path_buf), "%s/img", story_dir);
     lua_lv_set_img_base_path(path_buf);
@@ -1380,6 +1481,13 @@ int main(int argc, char *argv[])
             scan_dir = argv[++i];
         } else if (strcmp(argv[i], "--strict") == 0) {
             g_strict = 1;
+        } else if (strcmp(argv[i], "--unsafe-libs") == 0) {
+            g_unsafe_libs = 1;
+            fprintf(stderr,
+                    "ATTENTION : --unsafe-libs : io, os, dofile, loadfile, package.loadlib "
+                    "(code natif), string.dump et le bytecode sont ouverts aux scripts, "
+                    "ce que l'appareil n'expose pas. Developpement seulement : ne jamais "
+                    "lancer une histoire inconnue avec cette option.\n");
         } else if (strcmp(argv[i], "--watchdog") == 0 && i + 1 < argc) {
             long ms = strtol(argv[++i], NULL, 10);
             g_watchdog_ms = ms > 0 ? (uint32_t)ms : 0;
