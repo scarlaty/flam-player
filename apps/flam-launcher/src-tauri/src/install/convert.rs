@@ -25,12 +25,14 @@
 //! - Convertisseur figé (#652) : aucune ligne sur stdout pendant [`IDLE_TIMEOUT`] (ou processus
 //!   qui ne se termine pas dans ce délai après la fin de stdout) → arrêt comme une annulation
 //!   (demande polie, arrêt forcé, temporaires supprimés) et erreur [`STALLED_CODE`]. Ce code ne
-//!   met pas l'archive en cause : une archive téléchargée est gardée.
+//!   met pas l'archive en cause : une archive téléchargée est gardée. L'inactivité est comptée
+//!   par tranches ([`IdleClock`]) pour ne pas compter une mise en veille du PC.
 
 use std::ffi::{OsStr, OsString};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
@@ -50,9 +52,101 @@ const MAX_LINE: u64 = 1024 * 1024;
 /// espacés d'au moins 100 ms ; les plus longs silences d'une conversion vivante sont le
 /// rééchantillonnage d'un seul son par ffmpeg (borné à 120 s par fichier, `FFMPEG_TIMEOUT`),
 /// l'écriture d'une seule entrée et la synchronisation finale du `.plain.pk` (bornées par la
-/// vitesse du disque : 1 Gio à 1 Mo/s tient dans le délai). Vingt minutes laissent une marge de
-/// dix fois le pire silence de ffmpeg ; l'annulation reste possible à tout moment.
+/// vitesse du disque : 1 Gio à 1 Mo/s tient dans le délai), la décompression logicielle (LZMA,
+/// bzip2) d'une grosse entrée de l'archive, plus lente encore si l'archive est sur un partage
+/// réseau, et la mise en veille du PC (non comptée, voir [`IdleClock`]). Vingt minutes laissent
+/// une marge de dix fois le pire silence de ffmpeg ; l'annulation reste possible à tout moment.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// Durée nominale d'une tranche de mesure de l'inactivité ([`IdleClock`]).
+const IDLE_SLICE: Duration = Duration::from_secs(30);
+
+/// Compteur d'inactivité du convertisseur, par tranches (#652). `Instant` (donc les délais de
+/// tokio) avance très probablement pendant la veille ou l'hibernation sous Windows : un délai
+/// d'un seul tenant serait dépassé au réveil d'un portable fermé pendant une conversion, avant
+/// que le convertisseur, suspendu lui aussi, ait pu écrire une ligne. L'attente est donc découpée
+/// en tranches courtes ; une tranche dont la durée mesurée dépasse le double de sa durée nominale
+/// est tenue pour une veille (ou une machine gelée) et remet le compteur à zéro au lieu de
+/// l'avancer. Une horloge qui s'arrête pendant la veille (`CLOCK_MONOTONIC` hors Windows) ne
+/// mesure aucune tranche longue et ne compte pas la veille non plus.
+///
+/// Comportement réel en veille et en hibernation **non vérifié sur machine** ; la logique est
+/// testée avec des durées simulées.
+#[derive(Debug, Clone)]
+struct IdleClock {
+    /// Délai d'inactivité au-delà duquel le convertisseur est figé.
+    limit: Duration,
+    /// Durée nominale d'une tranche.
+    slice: Duration,
+    /// Inactivité comptée depuis la dernière ligne (ou le dernier réveil).
+    quiet: Duration,
+}
+
+/// Résultat d'une attente surveillée ([`watch_idle`]).
+enum Watched<T> {
+    Done(T),
+    Stalled,
+    Cancelled,
+}
+
+impl IdleClock {
+    /// Tranches de [`IDLE_SLICE`], plus courtes si le délai est court (tests).
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            slice: IDLE_SLICE.min(limit / 4).max(Duration::from_millis(1)),
+            quiet: Duration::ZERO,
+        }
+    }
+
+    /// Une ligne est arrivée : l'inactivité repart de zéro.
+    fn activity(&mut self) {
+        self.quiet = Duration::ZERO;
+    }
+
+    /// Une tranche s'est écoulée sans ligne, en `elapsed` mesurés. Rend vrai si le délai
+    /// d'inactivité est atteint. Une tranche plus longue que deux fois la durée nominale (veille,
+    /// machine gelée) remet le compteur à zéro : le convertisseur n'a pas pu avancer pendant ce
+    /// temps.
+    fn quiet_slice(&mut self, elapsed: Duration) -> bool {
+        if elapsed > self.slice * 2 {
+            tracing::info!(
+                tranche_s = elapsed.as_secs(),
+                "conversion : reprise après une pause du système, délai d'inactivité remis à zéro"
+            );
+            self.quiet = Duration::ZERO;
+            return false;
+        }
+        self.quiet += elapsed;
+        self.quiet >= self.limit
+    }
+}
+
+/// Attend `fut` en surveillant l'inactivité par tranches ([`IdleClock`]) et l'annulation.
+async fn watch_idle<F: Future>(
+    fut: F,
+    clock: &mut IdleClock,
+    cancel: &mut watch::Receiver<bool>,
+) -> Watched<F::Output> {
+    tokio::pin!(fut);
+    loop {
+        let started = Instant::now();
+        tokio::select! {
+            r = tokio::time::timeout(clock.slice, &mut fut) => match r {
+                Ok(value) => {
+                    clock.activity();
+                    return Watched::Done(value);
+                }
+                Err(_) => {
+                    if clock.quiet_slice(started.elapsed()) {
+                        return Watched::Stalled;
+                    }
+                }
+            },
+            () = cancelled(cancel) => return Watched::Cancelled,
+        }
+    }
+}
 
 /// Code d'erreur d'un convertisseur arrêté faute d'activité ([`IDLE_TIMEOUT`]). Stable : repris
 /// par l'interface. Absent de la liste des pannes qui mettent l'archive en cause.
@@ -185,8 +279,8 @@ fn fixed_message(code: &str) -> String {
         "missing_asset" => "une image ou un son de l'histoire est absent de l'archive".into(),
         "output_error" => "le fichier converti n'a pas pu être écrit".into(),
         "internal_error" => "erreur interne du convertisseur".into(),
-        STALLED_CODE => "le convertisseur ne répondait plus et a été arrêté ; rien n'a été \
-             supprimé, réessayez"
+        STALLED_CODE => "le convertisseur ne répondait plus et a été arrêté ; l'archive de \
+             l'histoire est conservée, réessayez"
             .into(),
         _ => "le convertisseur a signalé une erreur".into(),
     }
@@ -526,19 +620,23 @@ pub async fn convert(
     let mut done: Option<Converted> = None;
     let mut reported: Option<Reported> = None;
     let mut line = Vec::new();
+    let mut clock = IdleClock::new(req.idle);
     loop {
         line.clear();
-        let mut limited = (&mut reader).take(MAX_LINE);
-        let read = tokio::select! {
-            r = tokio::time::timeout(req.idle, limited.read_until(b'\n', &mut line)) => r,
-            _ = cancelled(cancel) => {
+        let watched = {
+            let mut limited = (&mut reader).take(MAX_LINE);
+            watch_idle(limited.read_until(b'\n', &mut line), &mut clock, cancel).await
+        };
+        let read = match watched {
+            Watched::Done(read) => read,
+            Watched::Cancelled => {
                 stop(&mut child, job.as_ref(), &mut stdin, req).await;
                 stderr_task.abort();
                 return Err(AppError::Cancelled);
             }
-        };
-        let Ok(read) = read else {
-            return Err(stalled(&mut child, job.as_ref(), &mut stdin, req, &stderr_task).await);
+            Watched::Stalled => {
+                return Err(stalled(&mut child, job.as_ref(), &mut stdin, req, &stderr_task).await);
+            }
         };
         match read {
             Ok(0) | Err(_) => break,
@@ -590,17 +688,15 @@ pub async fn convert(
             _ => {}
         }
     }
-    let status = tokio::select! {
-        s = tokio::time::timeout(req.idle, child.wait()) => match s {
-            Ok(s) => s?,
-            Err(_) => {
-                return Err(stalled(&mut child, job.as_ref(), &mut stdin, req, &stderr_task).await);
-            }
-        },
-        _ = cancelled(cancel) => {
+    let status = match watch_idle(child.wait(), &mut clock, cancel).await {
+        Watched::Done(status) => status?,
+        Watched::Cancelled => {
             stop(&mut child, job.as_ref(), &mut stdin, req).await;
             stderr_task.abort();
             return Err(AppError::Cancelled);
+        }
+        Watched::Stalled => {
+            return Err(stalled(&mut child, job.as_ref(), &mut stdin, req, &stderr_task).await);
         }
     };
     // Processus terminé : le tube de stdin n'annule plus rien.
@@ -1032,6 +1128,53 @@ b"
         assert!(took >= grace, "arrêt en {took:?}, avant le délai de grâce");
         assert!(took < Duration::from_secs(15), "arrêt en {took:?}");
         assert!(banc.staging_is_empty(), ".part supprimé par le launcher");
+    }
+
+    /// #652 : l'inactivité se cumule par tranches et repart à chaque ligne ; une tranche anormalement
+    /// longue (veille simulée) remet le compteur à zéro au lieu de déclencher l'arrêt.
+    #[test]
+    fn inactivite_comptee_par_tranches_hors_veille() {
+        let mut clock = IdleClock::new(IDLE_TIMEOUT);
+        assert_eq!(clock.slice, IDLE_SLICE);
+        let slices = (IDLE_TIMEOUT.as_secs() / IDLE_SLICE.as_secs()) as usize;
+        // Vraie inactivité : arrêt à la dernière tranche, pas avant.
+        for _ in 1..slices {
+            assert!(!clock.quiet_slice(IDLE_SLICE));
+        }
+        assert!(clock.quiet_slice(IDLE_SLICE));
+
+        // Une ligne remet à zéro.
+        let mut clock = IdleClock::new(IDLE_TIMEOUT);
+        for _ in 1..slices {
+            assert!(!clock.quiet_slice(IDLE_SLICE));
+        }
+        clock.activity();
+        assert!(!clock.quiet_slice(IDLE_SLICE));
+
+        // Veille d'une heure juste avant le délai : pas d'arrêt, le compteur repart de zéro.
+        let mut clock = IdleClock::new(IDLE_TIMEOUT);
+        for _ in 1..slices {
+            assert!(!clock.quiet_slice(IDLE_SLICE));
+        }
+        assert!(!clock.quiet_slice(Duration::from_secs(3600)));
+        for _ in 1..slices {
+            assert!(!clock.quiet_slice(IDLE_SLICE));
+        }
+        assert!(
+            clock.quiet_slice(IDLE_SLICE),
+            "inactivité réelle après le réveil"
+        );
+
+        // Une tranche un peu en retard (machine chargée) compte normalement.
+        let mut clock = IdleClock::new(IDLE_TIMEOUT);
+        assert!(!clock.quiet_slice(IDLE_SLICE + IDLE_SLICE / 2));
+        assert_eq!(clock.quiet, IDLE_SLICE + IDLE_SLICE / 2);
+
+        // Délai court (tests) : tranches plus courtes.
+        assert_eq!(
+            IdleClock::new(Duration::from_secs(3)).slice,
+            Duration::from_millis(750)
+        );
     }
 
     /// #652 : convertisseur figé (aucune ligne, sourd à l'annulation) : arrêté après le délai
