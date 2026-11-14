@@ -9,15 +9,17 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-/// Durée de vie du scellement pour la fermeture, comptée depuis le moment où il prend effet
-/// (libération de l'opération retenue). La fenêtre se ferme normalement en quelques secondes
-/// après le scellement : interrogation du verrou toutes les 200 ms, puis gestionnaire de
-/// fermeture de l'interface (vidage du brouillon borné à 1 s, verdict borné à 2 s). Passé ce
-/// délai, la fenêtre ne s'est pas fermée (fermeture acceptée mais jamais aboutie, gestionnaire
-/// bloqué, fil d'attente mort) : le scellement est levé à la demande suivante au lieu de refuser
-/// toutes les opérations sur la Flam jusqu'au redémarrage (#652). Le délai ne court pas pendant
-/// l'opération retenue elle-même, si longue soit-elle.
-pub const SEAL_GRACE: Duration = Duration::from_secs(30);
+/// Durée de vie maximale du scellement pour la fermeture, comptée depuis le moment où il prend
+/// effet (libération de l'opération retenue). Filet de sécurité seulement (#652) : quand la
+/// fenêtre ne se ferme pas après une fermeture acceptée, c'est le fil d'attente de
+/// [`super::close`] qui lève la retenue ([`super::close::CLOSE_GRACE`] après la tentative de
+/// fermeture : verrou descellé, retenue oubliée, interface prévenue). Ce délai-ci, plus long,
+/// ne sert que si ce fil a disparu : le scellement est alors levé à la demande suivante, sans
+/// prévenir l'interface, au lieu de refuser toutes les opérations sur la Flam jusqu'au
+/// redémarrage. Plus long que `CLOSE_GRACE` pour que le fil agisse toujours le premier : levé
+/// plus tôt, il laisserait démarrer une écriture dont une nouvelle retenue serait ensuite
+/// annulée par le fil. Le délai ne court pas pendant l'opération retenue elle-même.
+pub const SEAL_GRACE: Duration = Duration::from_secs(120);
 
 /// Opération en cours sur l'appareil.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

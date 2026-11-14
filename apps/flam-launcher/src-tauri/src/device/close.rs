@@ -27,9 +27,12 @@
 //! jamais relâché, la deuxième demande passe toujours.
 //!
 //! Inversement, aucun chemin ne laisse la Flam inutilisable si la fenêtre reste ouverte après une
-//! fermeture acceptée (gestionnaire de l'interface bloqué ou en échec, fil d'attente mort) : le
-//! scellement expire [`super::lock::SEAL_GRACE`] après avoir pris effet, bien au-delà du temps
-//! d'une fermeture normale ; il ne court qu'après la fin de l'écriture retenue (#652).
+//! fermeture acceptée (gestionnaire de l'interface bloqué ou en échec, `destroy()` refusé) : le
+//! fil d'attente, après avoir demandé la fermeture, attend [`CLOSE_GRACE`] (bien au-delà d'une
+//! fermeture normale, quelques secondes) ; si le processus vit encore, il lève la retenue comme
+//! « Ne pas fermer » (verrou descellé, retenue oubliée, [`EVENT_CLOSE_CLEARED`] pour retirer le
+//! bandeau), sauf si l'utilisateur a entre-temps levé ou relancé une retenue (#652). Si ce fil a
+//! disparu, le scellement expire de lui-même [`super::lock::SEAL_GRACE`] après avoir pris effet.
 //!
 //! # Un seul point de décision
 //!
@@ -65,6 +68,11 @@ pub const EVENT_CLOSE_CLEARED: &str = "device://close-cleared";
 pub const DEBOUNCE: Duration = Duration::from_secs(2);
 /// Intervalle d'interrogation du verrou pendant la retenue.
 const POLL: Duration = Duration::from_millis(200);
+/// Attente, après la demande de fermeture du fil d'attente, au-delà de laquelle une fenêtre
+/// encore ouverte est tenue pour une fermeture qui n'aboutira pas (#652) : la retenue est levée.
+/// Une fermeture normale prend quelques secondes (gestionnaire de l'interface : vidage du
+/// brouillon borné à 1 s, verdict borné à 2 s). Plus court que [`super::lock::SEAL_GRACE`].
+pub const CLOSE_GRACE: Duration = Duration::from_secs(30);
 /// Attente maximale du verdict par [`device_close_verdict`] (le verdict est posé avant que
 /// l'interface en entende parler ; cette borne ne sert qu'à une course improbable).
 const VERDICT_WAIT: Duration = Duration::from_secs(2);
@@ -186,6 +194,20 @@ impl CloseGate {
         self.held().map(|held| held.operation)
     }
 
+    /// Lève la retenue de la génération `epoch` si la fermeture demandée pour l'opération `id`
+    /// n'a pas abouti (#652) : rien si la génération a changé (« Ne pas fermer » déjà fait) ou si
+    /// une autre retenue est en cours (nouvelle écriture retenue). Rend vrai si elle a été levée.
+    pub fn cancel_unfinished_close(&self, lock: &DeviceLock, epoch: u64, id: u64) -> bool {
+        let mut held = self.held();
+        if self.epoch() != epoch || held.is_some_and(|h| h.id != id) {
+            return false;
+        }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        lock.unseal();
+        *held = None;
+        true
+    }
+
     /// Lève la retenue (« Ne pas fermer ») : le fil d'attente s'arrête sans fermer, le verrou est
     /// descellé, et une nouvelle demande est de nouveau retenue la première fois. Rend vrai si une
     /// retenue était en cours.
@@ -218,6 +240,22 @@ pub fn wait_until_released(
         }
         sleep(poll);
     }
+}
+
+/// Après la demande de fermeture du fil d'attente : attend `grace` (`sleep` injectable) puis,
+/// le processus vivant encore, lève la retenue si elle n'a pas changé
+/// ([`CloseGate::cancel_unfinished_close`]). Rend vrai si elle a été levée (l'appelant prévient
+/// l'interface).
+pub fn release_unfinished_close(
+    lock: &DeviceLock,
+    gate: &CloseGate,
+    epoch: u64,
+    id: u64,
+    grace: Duration,
+    sleep: impl FnOnce(Duration),
+) -> bool {
+    sleep(grace);
+    gate.cancel_unfinished_close(lock, epoch, id)
 }
 
 /// Charge de [`EVENT_CLOSE_RETAINED`].
@@ -272,6 +310,20 @@ pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) 
         if window.close().is_err() {
             tracing::warn!("fermeture de la fenêtre impossible après l'écriture");
             CLOSE_GATE.cancel(&DEVICE_LOCK);
+            let _ = window.emit(EVENT_CLOSE_CLEARED, ());
+            return;
+        }
+        // Fermeture demandée : si le processus vit encore après `CLOSE_GRACE`, elle n'aboutira
+        // pas (#652) ; la retenue est levée pour rendre la Flam utilisable.
+        if release_unfinished_close(
+            &DEVICE_LOCK,
+            &CLOSE_GATE,
+            epoch,
+            id,
+            CLOSE_GRACE,
+            std::thread::sleep,
+        ) {
+            tracing::warn!("fenêtre toujours ouverte après la fermeture demandée : retenue levée");
             let _ = window.emit(EVENT_CLOSE_CLEARED, ());
         }
     });
