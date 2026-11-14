@@ -26,6 +26,11 @@
 //! verrou et d'un drapeau « déjà retenue » ; si le fil d'attente meurt ou si le verrou n'est
 //! jamais relâché, la deuxième demande passe toujours.
 //!
+//! Inversement, aucun chemin ne laisse la Flam inutilisable si la fenêtre reste ouverte après une
+//! fermeture acceptée (gestionnaire de l'interface bloqué ou en échec, fil d'attente mort) : le
+//! scellement expire [`super::lock::SEAL_GRACE`] après avoir pris effet, bien au-delà du temps
+//! d'une fermeture normale ; il ne court qu'après la fin de l'écriture retenue (#652).
+//!
 //! # Un seul point de décision
 //!
 //! La décision est prise **ici** ([`CloseGate::request`]), jamais ailleurs. Quand l'interface a un
