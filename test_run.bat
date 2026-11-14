@@ -102,9 +102,19 @@ if exist "%BUILD%\flam-test-audio.exe" (
     REM ordre impose : reopen_1 laisse un etat ouvert, reopen_2 le verifie
     set "AUD_ARGS=!AUD_ARGS! "%ROOT%tests\audio\reopen_1_open.lua" "%ROOT%tests\audio\reopen_2_reuse.lua""
     if not defined SDL_AUDIODRIVER set "SDL_AUDIODRIVER=dummy"
+    REM Premier passage : chemin reel (variables d'aide au test videes, sinon il ne serait plus teste)
+    set "FLAM_AUDIO_NO_DEVICE="
+    set "FLAM_AUDIO_QUEUE_FAIL="
     "%BUILD%\flam-test-audio.exe" --timeout 120!AUD_ARGS!
     set "AUDIO_RC=!ERRORLEVEL!"
     echo EXIT_CODE=!AUDIO_RC!
+    REM Meme suite sans peripherique audio (file virtuelle cadencee sur l'horloge murale, #575)
+    set "FLAM_AUDIO_NO_DEVICE=1"
+    "%BUILD%\flam-test-audio.exe" --timeout 120!AUD_ARGS!
+    set "AUDND_RC=!ERRORLEVEL!"
+    set "FLAM_AUDIO_NO_DEVICE="
+    echo EXIT_CODE=!AUDND_RC!
+    if "!AUDIO_RC!"=="0" set "AUDIO_RC=!AUDND_RC!"
 ) else (
     echo [ATTENTION] flam-test-audio.exe introuvable dans "%BUILD%" : etape sautee.
     echo             Construire : cmake --build "%BUILD%" --target flam-test-audio
@@ -176,6 +186,12 @@ if "!HAVE_PY!"=="1" (
     echo EXIT_CODE=!WDG_RC!
     if not "!WDG_RC!"=="0" if not "!WDG_RC!"=="77" set "E2E_RC=!WDG_RC!"
     if "!WDG_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (watchdog : SKIP)"
+    REM Horloge audio sans peripherique : cadencee sur l'horloge murale (#575)
+    "%PY%" "%ROOT%tests\e2e\e2e_audio_clock.py" --build "%BUILD%"
+    set "AUC_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!AUC_RC!
+    if not "!AUC_RC!"=="0" if not "!AUC_RC!"=="77" set "E2E_RC=!AUC_RC!"
+    if "!AUC_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (horloge audio : SKIP)"
 ) else (
     echo [SKIP] python introuvable : definir FLAM_PYTHON
 )

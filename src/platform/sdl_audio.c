@@ -101,12 +101,89 @@ typedef struct {
     /* SDL device */
     SDL_AudioDeviceID dev_id;
 
+    /* File virtuelle, quand il n'y a pas de peripherique (dev_id == 0 : session
+       sans son, VM) ou que SDL_QueueAudio echoue : SDL ne consomme rien, et
+       sans elle l'horloge audio (frames queuees - frames en attente) courrait
+       a la vitesse du decodage, ~10 fois trop vite (#575). Elle se vide au
+       rythme de l'horloge murale tant que la lecture est en cours. */
+    int           queue_failed;      /* SDL_QueueAudio a echoue pour cette piste */
+    uint32_t      vq_bytes;          /* octets en attente dans la file virtuelle */
+    Uint32        vq_last_ms;        /* SDL_GetTicks de la derniere mise a jour */
+    double        vq_credit_frames;  /* fraction de frame deja ecoulee, non consommee */
+
 } audio_ctx_t;
 
 static audio_ctx_t g_audio = {0};
 static char g_sounds_base_path[512] = "";
 
 static void audio_reset_state(void);
+
+/* ================================================================== */
+/* File de sortie : SDL, ou virtuelle cadencee sur l'horloge murale     */
+/* ================================================================== */
+
+static int g_test_queue_fail = 0;  /* FLAM_AUDIO_QUEUE_FAIL=1 */
+
+static int env_is_one(const char *name) {
+    const char *v = SDL_getenv(name);
+    return v && strcmp(v, "1") == 0;
+}
+
+static int audio_queue_is_virtual(void) {
+    return g_audio.dev_id == 0 || g_audio.queue_failed;
+}
+
+/* Fait s'ecouler la file virtuelle selon le temps reel (seulement en lecture) */
+static void audio_vq_sync(void) {
+    Uint32 now = SDL_GetTicks();
+    if (g_audio.state == ASTATE_PLAY && g_audio.vq_bytes > 0) {
+        g_audio.vq_credit_frames +=
+            (double)(Uint32)(now - g_audio.vq_last_ms) * AUDIO_FREQ / 1000.0;
+        uint64_t frames = (uint64_t)g_audio.vq_credit_frames;
+        uint64_t bytes = frames * (uint64_t)FRAME_BYTES;
+        if (bytes >= g_audio.vq_bytes) {
+            g_audio.vq_bytes = 0;
+            g_audio.vq_credit_frames = 0.0;
+        } else {
+            g_audio.vq_bytes -= (uint32_t)bytes;
+            g_audio.vq_credit_frames -= (double)frames;
+        }
+    } else {
+        g_audio.vq_credit_frames = 0.0;
+    }
+    g_audio.vq_last_ms = now;
+}
+
+/* Octets en attente de lecture */
+static uint32_t audio_queued_bytes(void) {
+    if (!audio_queue_is_virtual()) return SDL_GetQueuedAudioSize(g_audio.dev_id);
+    audio_vq_sync();
+    return g_audio.vq_bytes;
+}
+
+static void audio_queue_pcm(const void *buf, uint32_t bytes) {
+    if (!audio_queue_is_virtual()) {
+        if (!g_test_queue_fail && SDL_QueueAudio(g_audio.dev_id, buf, bytes) == 0) return;
+        /* Echec : on bascule sur la file virtuelle pour le reste de la piste,
+           en gardant ce que SDL avait deja en attente */
+        fprintf(stderr, "audio: SDL_QueueAudio a echoue (%s), lecture cadencee "
+                        "sur l'horloge murale\n",
+                g_test_queue_fail ? "FLAM_AUDIO_QUEUE_FAIL" : SDL_GetError());
+        g_audio.queue_failed = 1;
+        g_audio.vq_bytes = SDL_GetQueuedAudioSize(g_audio.dev_id);
+        g_audio.vq_credit_frames = 0.0;
+        g_audio.vq_last_ms = SDL_GetTicks();
+    }
+    audio_vq_sync();
+    g_audio.vq_bytes += bytes;
+}
+
+static void audio_clear_queue(void) {
+    if (g_audio.dev_id) SDL_ClearQueuedAudio(g_audio.dev_id);
+    g_audio.vq_bytes = 0;
+    g_audio.vq_credit_frames = 0.0;
+    g_audio.vq_last_ms = SDL_GetTicks();
+}
 
 /* ================================================================== */
 /* Init / Quit                                                         */
@@ -124,18 +201,32 @@ int sdl_audio_init(void) {
     /* allowed_changes = 0 : SDL garantit le format demande (il convertit
        lui-meme si le materiel differe). La sortie est donc toujours
        AUDIO_FREQ / stereo / S16, cible du SDL_AudioStream. */
+    g_audio.state = ASTATE_STOP;
+    g_audio.callback_ref = LUA_NOREF;
+    g_audio.last_cb_time = -1.0f;
+    g_audio.queue_failed = 0;
+    audio_clear_queue();
+
+    /* Variables de test (#575), valeur exacte "1" seulement :
+       FLAM_AUDIO_NO_DEVICE simule l'absence de peripherique ;
+       FLAM_AUDIO_QUEUE_FAIL fait echouer SDL_QueueAudio */
+    g_test_queue_fail = env_is_one("FLAM_AUDIO_QUEUE_FAIL");
+    if (env_is_one("FLAM_AUDIO_NO_DEVICE")) {
+        fprintf(stderr, "audio: desactive par FLAM_AUDIO_NO_DEVICE, lecture cadencee "
+                        "sur l'horloge murale (sans son)\n");
+        g_audio.dev_id = 0;
+        return 0;
+    }
     g_audio.dev_id = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (g_audio.dev_id == 0) {
+        /* Le player continue : l'audio est alors cadence sur l'horloge murale
+           (file virtuelle), sans son */
         SDL_Log("SDL_OpenAudioDevice failed: %s", SDL_GetError());
         return -1;
     }
 
-    g_audio.state = ASTATE_STOP;
-    g_audio.callback_ref = LUA_NOREF;
-    g_audio.last_cb_time = -1.0f;
-
     /* Demarrer le device (il jouera quand on queue du PCM) */
-    SDL_PauseAudioDevice(g_audio.dev_id, 0);
+    if (g_audio.dev_id) SDL_PauseAudioDevice(g_audio.dev_id, 0);
 
     return 0;
 }
@@ -177,7 +268,7 @@ static void audio_stream_to_queue(void) {
     while (SDL_AudioStreamAvailable(g_audio.stream) > 0) {
         int got = SDL_AudioStreamGet(g_audio.stream, buf, (int)sizeof(buf));
         if (got <= 0) break;
-        SDL_QueueAudio(g_audio.dev_id, buf, (Uint32)got);
+        audio_queue_pcm(buf, (uint32_t)got);
         g_audio.samples_queued += (uint64_t)(got / FRAME_BYTES);
     }
 }
@@ -207,7 +298,8 @@ static int audio_stream_setup(int hz, int ch) {
 /* Libere la piste courante et remet l'etat a zero, sans toucher au
    registre Lua (callback_ref n'est pas modifie). */
 static void audio_reset_state(void) {
-    if (g_audio.dev_id) SDL_ClearQueuedAudio(g_audio.dev_id);
+    audio_clear_queue();
+    g_audio.queue_failed = 0;
     audio_stream_free();
 
     if (g_audio.mp3_data) { free(g_audio.mp3_data); g_audio.mp3_data = NULL; }
@@ -240,7 +332,7 @@ static void audio_unload(lua_State *L) {
 static float audio_current_time(void) {
     /* Temps = frames de sortie jouees / AUDIO_FREQ (le PCM queue est
        deja converti a la frequence du device) */
-    uint32_t queued_bytes = SDL_GetQueuedAudioSize(g_audio.dev_id);
+    uint32_t queued_bytes = audio_queued_bytes();
     uint32_t queued_samples = queued_bytes / (uint32_t)FRAME_BYTES;
     uint64_t played = g_audio.samples_queued > queued_samples
                     ? g_audio.samples_queued - queued_samples : 0;
@@ -292,7 +384,7 @@ void sdl_audio_pump(lua_State *L) {
     if (g_audio.state != ASTATE_PLAY) return;
     if (!g_audio.mp3_data) return;
 
-    uint32_t queued = SDL_GetQueuedAudioSize(g_audio.dev_id);
+    uint32_t queued = audio_queued_bytes();
 
     if (g_audio.eof_draining) {
         /* Tout est decode : "stop" seulement quand SDL a tout consomme */
@@ -475,16 +567,18 @@ static void audio_do_play(void) {
     /* Reprise apres pause : "play" des le prochain tick (retire l'overlay
        pause du runtime sans attendre la seconde suivante) */
     if (g_audio.state == ASTATE_PAUSE) g_audio.last_cb_time = -1.0f;
+    if (audio_queue_is_virtual()) audio_vq_sync();  /* l'ecoulement reprend ici */
     g_audio.state = ASTATE_PLAY;
     g_audio.pending_pause_cb = 0;
-    SDL_PauseAudioDevice(g_audio.dev_id, 0);
+    if (g_audio.dev_id) SDL_PauseAudioDevice(g_audio.dev_id, 0);
 }
 
 static void audio_do_pause(void) {
     if (g_audio.state != ASTATE_PLAY) return;
+    if (audio_queue_is_virtual()) audio_vq_sync();  /* solde l'ecoule avant la pause */
     g_audio.state = ASTATE_PAUSE;
     g_audio.pending_pause_cb = 1;
-    SDL_PauseAudioDevice(g_audio.dev_id, 1);
+    if (g_audio.dev_id) SDL_PauseAudioDevice(g_audio.dev_id, 1);
 }
 
 /* audio.play() */
@@ -512,7 +606,7 @@ static int l_audio_stop(lua_State *L) {
     g_audio.state = ASTATE_STOP;
     g_audio.eof_draining = 0;
     g_audio.pending_pause_cb = 0;
-    SDL_ClearQueuedAudio(g_audio.dev_id);
+    audio_clear_queue();
     if (g_audio.stream) SDL_AudioStreamClear(g_audio.stream);
     /* Rembobiner */
     if (g_audio.mp3_data) {
@@ -590,7 +684,7 @@ static int l_audio_seek(lua_State *L) {
         return 0;
     }
 
-    SDL_ClearQueuedAudio(g_audio.dev_id);
+    audio_clear_queue();
     if (g_audio.stream) SDL_AudioStreamClear(g_audio.stream);
     mp3dec_init(&g_audio.decoder);
     g_audio.samples_queued = start_samples;

@@ -759,7 +759,13 @@ static int ctx_build_entries(lua_State *L)
             int ref = luaL_ref(L, LUA_REGISTRYINDEX);
             data = (ctx_btn_data_t *)malloc(sizeof(ctx_btn_data_t));
             if (data) {
-                data->L = L;
+                /* Fil principal, pas l'etat appelant : set_entries peut etre appele
+                   depuis une coroutine, collectee avant le clic ; et le rappel
+                   differe doit relever du plafond memoire du script (#575) */
+                lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
+                lua_State *M = lua_tothread(L, -1);
+                lua_pop(L, 1);
+                data->L = M ? M : L;
                 data->func_ref = ref;
             } else {
                 luaL_unref(L, LUA_REGISTRYINDEX, ref);

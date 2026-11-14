@@ -250,8 +250,10 @@ static void obj_final_cb(lv_event_t *e) {
         push_reg_table(L, LV_OBJ_GRAVE_KEY, NULL);
         lua_pushvalue(L, -2);
         lua_rawseti(L, -2, (lua_Integer)lua_rawlen(L, -2) + 1);
-        if (g_grave_L != L && lv_async_call(grave_flush_cb, L) == LV_RES_OK)
-            g_grave_L = L;
+        /* Fil principal : le vidage differe ne doit pas viser une coroutine collectee */
+        lua_State *M = main_thread(L);
+        if (g_grave_L != M && lv_async_call(grave_flush_cb, M) == LV_RES_OK)
+            g_grave_L = M;
     } else {
         rec->obj = NULL;
     }

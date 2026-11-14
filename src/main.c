@@ -5,6 +5,7 @@
  * Usage : flam-player <chemin/vers/histoire.plain>
  *         flam-player <script.lua> [--img-dir ...] [--sounds-dir ...] [--save-dir ...]
  * Options : --strict        require() limite a script/ (comme le device)
+ *           --lua-mem <Mo>  plafond memoire de l'etat Lua (defaut 256, 0 = aucun)
  *           --watchdog <ms> delai max d'un script Lua sans rendre la main
  *                           (defaut 10000, 0 = desactive)
  *           --screenshot <chemin> fichier BMP des captures (touche S et
@@ -225,19 +226,105 @@ static lv_obj_t  *g_header_title = NULL;
 
 extern lv_font_t nunito_bold_12;
 
+/* ------------------------------------------------------------------ */
+/* Plafond memoire de l'etat Lua (#575)                                 */
+/* Les fonctions C longues (string.rep geant, table.concat massif...)   */
+/* echappent au hook du watchdog : l'allocateur en borne au moins        */
+/* l'effet. Au-dela, Lua leve "not enough memory" : rattrapable DANS le  */
+/* script (pcall). Hors script, l'hote dispose d'une reserve (voir       */
+/* lua_limited_alloc) : ses lua_push* hors appel protege ne peuvent pas  */
+/* faire paniquer l'etat quand un script a rempli la memoire.            */
+/* ------------------------------------------------------------------ */
+
+#define LUA_MEM_DEFAULT_MB 256u
+#define LUA_MEM_MIN_MB       8u    /* plancher : bibliotheques + bindings tiennent largement */
+#define LUA_MEM_MAX_MB   16384u
+#define LUA_MEM_HOST_RESERVE (4u * 1024u * 1024u)  /* marge de l'hote hors script */
+
+static size_t g_lua_mem_limit = (size_t)LUA_MEM_DEFAULT_MB * 1024u * 1024u;  /* 0 = illimite */
+static size_t g_lua_mem_used  = 0;
+
+/* 1 si l'etat n'execute aucune fonction (Lua ni C) : allocation de l'hote, faite
+   hors script entre deux appels (lua_pushstring, lua_newuserdata...). */
+static int lua_at_host_level(void)
+{
+    lua_Debug ar;
+    return g_lua == NULL || lua_getstack(g_lua, 0, &ar) == 0;
+}
+
+static void *lua_limited_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
+{
+    (void)ud;
+    if (!ptr) osize = 0;  /* osize code le type d'objet quand ptr est NULL */
+    if (nsize == 0) {
+        free(ptr);
+        g_lua_mem_used -= osize;
+        return NULL;
+    }
+    if (g_lua_mem_limit > 0 && nsize > osize) {
+        size_t grow = nsize - osize;
+        if (grow > g_lua_mem_limit || g_lua_mem_used > g_lua_mem_limit - grow) {
+            /* Au-dela du plafond : refus pour un script ; l'hote hors script
+               peut puiser dans sa reserve (petites allocations seulement) */
+            if (!(lua_at_host_level() && grow <= LUA_MEM_HOST_RESERVE &&
+                  g_lua_mem_used <= g_lua_mem_limit + LUA_MEM_HOST_RESERVE - grow))
+                return NULL;
+        }
+    }
+    void *np = realloc(ptr, nsize);
+    if (np) g_lua_mem_used = g_lua_mem_used - osize + nsize;
+    return np;
+}
+
+static int lua_panic_msg(lua_State *L)
+{
+    const char *msg = lua_tostring(L, -1);
+    fprintf(stderr, "PANIC: erreur Lua non protegee : %s\n", msg ? msg : "?");
+    return 0;  /* retour = abort() */
+}
+
+/* Retire `debug` des scripts : l'appareil ne l'expose pas (sandbox : ni io, ni
+   os, ni debug, ni package), et debug.sethook() retirait le watchdog, tandis
+   que debug.getupvalue / getregistry rendaient les fonctions d'origine des
+   gardes de coroutines. Le player n'en depend pas : son gestionnaire d'erreur
+   utilise luaL_traceback (C). `require("debug")` passe par package.loaded. */
+static void sandbox_remove_debug(lua_State *L)
+{
+    lua_pushnil(L);
+    lua_setglobal(L, "debug");
+    lua_getglobal(L, "package");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "loaded");
+        if (lua_istable(L, -1)) {
+            lua_pushnil(L);
+            lua_setfield(L, -2, "debug");
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+}
+
 /**
  * Initialise le runtime Lua et enregistre les bindings.
  */
 static int init_lua(void)
 {
+    /* luaL_newstate conserve la fonction d'avertissement et le panic de la
+       bibliotheque auxiliaire ; le plafond s'installe ensuite, apres avoir releve
+       la memoire deja employee (allocateurs compatibles : realloc / free) */
     g_lua = luaL_newstate();
     if (!g_lua) {
         fprintf(stderr, "Erreur: impossible de creer l'etat Lua\n");
         return -1;
     }
+    g_lua_mem_used = (size_t)lua_gc(g_lua, LUA_GCCOUNT, 0) * 1024u +
+                     (size_t)lua_gc(g_lua, LUA_GCCOUNTB, 0);
+    lua_setallocf(g_lua, lua_limited_alloc, NULL);
+    lua_atpanic(g_lua, lua_panic_msg);
 
     /* Bibliotheques standard Lua */
     luaL_openlibs(g_lua);
+    sandbox_remove_debug(g_lua);
 
     /* Watchdog anti boucle infinie */
     watchdog_rearm();
@@ -1296,6 +1383,22 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[i], "--watchdog") == 0 && i + 1 < argc) {
             long ms = strtol(argv[++i], NULL, 10);
             g_watchdog_ms = ms > 0 ? (uint32_t)ms : 0;
+        } else if (strcmp(argv[i], "--lua-mem") == 0 && i + 1 >= argc) {
+            fprintf(stderr, "Erreur: --lua-mem demande une valeur (0 = aucun plafond, sinon %u a %u Mo)\n",
+                    LUA_MEM_MIN_MB, LUA_MEM_MAX_MB);
+            return 2;
+        } else if (strcmp(argv[i], "--lua-mem") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            char *end = NULL;
+            errno = 0;
+            long mb = strtol(v, &end, 10);
+            if (end == v || *end != '\0' || errno == ERANGE || mb < 0 ||
+                (mb > 0 && (mb < (long)LUA_MEM_MIN_MB || mb > (long)LUA_MEM_MAX_MB))) {
+                fprintf(stderr, "Erreur: --lua-mem %s invalide (0 = aucun plafond, sinon %u a %u Mo)\n",
+                        v, LUA_MEM_MIN_MB, LUA_MEM_MAX_MB);
+                return 2;
+            }
+            g_lua_mem_limit = (size_t)mb * 1024u * 1024u;
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             sdl_driver_set_screenshot_path(argv[++i]);
         } else if (strcmp(argv[i], "--parent-hwnd") == 0 && i + 1 < argc) {

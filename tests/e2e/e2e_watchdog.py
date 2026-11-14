@@ -15,7 +15,23 @@ flam-player est lance sur un script .lua (pilotes SDL dummy, --stdin-control,
      chaque lua_State) : A) coroutine bloquee puis boucle pcall dans l'etat
      principal ; B) gestionnaire d'erreur de xpcall qui est une coroutine en
      boucle pcall ; C) coroutines neuves creees en boucle sous pcall apres le
-     declenchement. Chaque scenario doit etre interrompu et le player quitter.
+     declenchement. Chaque scenario doit etre interrompu et le player quitter ;
+  4. F) `debug` n'est pas expose aux scripts (comme sur l'appareil : sandbox sans
+     io/os/debug/package), ni par `require("debug")` : `debug.sethook()` retirait
+     le watchdog (la boucle `while true do end` qui suit n'etait jamais
+     interrompue) et debug.getupvalue / getregistry rendaient les fonctions
+     d'origine des gardes de coroutines ;
+  5. G) plafond memoire de l'etat Lua (--lua-mem, 256 Mo par defaut) : un
+     string.rep de 32 Mo avec --lua-mem 16, fonction C longue invisible au hook
+     de comptage, leve "not enough memory" au lieu d'allouer ; l'etat reste
+     utilisable ensuite ; H) memoire remplie jusqu'aux derniers octets par le
+     script : le player reste en vie (reserve de l'hote hors script, pas de
+     PANIC) ; I) valeurs de --lua-mem invalides refusees (code 2 et message) ;
+     J) fonction d'avertissement de Lua conservee (warn("@on") + erreur dans un
+     __gc : la sortie "error in __gc" apparait).
+Limites non couvertes (documentees dans docs/player.md) : boucle dans un
+finaliseur __gc (Lua coupe les hooks pendant les finaliseurs) et motif de
+string.find a retour arriere catastrophique (temps passe dans une fonction C).
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
@@ -84,9 +100,64 @@ SCEN_E = _lua("ran = 0",
               "  print('CLOSERS_RAN', ran)",
               "end)",
               "root()")
+# F : debug.sethook() retire le watchdog quand `debug` est expose
+SCEN_F = _lua("io.stderr:write('DEBUG_TYPE ' .. type(debug) .. ' ' .. type(package.loaded.debug) .. '\\n')",
+              "io.stderr:write('REQUIRE_DEBUG ' .. tostring((pcall(require, 'debug'))) .. '\\n')",
+              "if debug then debug.sethook() end",
+              "while true do end")
+# G : fonction C longue, plafonnee par l'allocateur
+SCEN_G = _lua("local ok, e = pcall(string.rep, 'x', 32 * 1024 * 1024)",
+              "io.stderr:write('REP_RESULT ' .. tostring(ok) .. ' ' .. tostring(e):sub(1, 40) .. '\\n')",
+              "local small = string.rep('y', 1000)",
+              "io.stderr:write('AFTER_OK ' .. #small .. '\\n')")
+# H : memoire remplie jusqu'aux derniers octets (chaines de taille decroissante,
+# sans fermeture ni concatenation pendant le remplissage), puis retour a l'hote
+SCEN_H = _lua("fill = {}",
+              "for i = 1, 100000 do fill[i] = true end",
+              "collectgarbage('stop')",
+              "local k = 0",
+              "local rep, pcall = string.rep, pcall",
+              "local function put(v) k = k + 1; fill[k] = v end",
+              "local sz = 1 << 20",
+              "while sz > 200 do",
+              "  local ok, s = pcall(rep, 'x', sz)",
+              "  if ok then put(s) else sz = sz // 2 end",
+              "end",
+              "for len = 200, 41, -1 do",
+              "  while true do",
+              "    local ok, s = pcall(rep, 'x', len)",
+              "    if not ok then break end",
+              "    put(s)",
+              "  end",
+              "end",
+              "for len = 40, 1, -1 do",
+              "  local ok, s = pcall(rep, 'x', len)",
+              "  if ok then put(s) end",
+              "end",
+              "for i = 1, 90000 do",
+              "  local ok, s = pcall(tostring, i)",
+              "  if not ok then break end",
+              "  put(s)",
+              "end",
+              "io.stderr:write('FILLED ', collectgarbage('count'), '\\n')",
+              "local ok1 = pcall(rep, 'x', 1 << 20)",
+              "io.stderr:write('PROBE_1MB ', tostring(ok1), '\\n')")
+# J : warn() et un finaliseur en erreur
+SCEN_J = _lua("warn('@on')",
+              "setmetatable({}, {__gc = function() error('boom_gc') end})",
+              "collectgarbage()",
+              "io.stderr:write('WARN_DONE\\n')")
 LEGIT = ('local ok, err = pcall(error, "attendue")\n'
          'local ok2 = pcall(function() return 1 end)\n'
          'print("LEGIT_DONE", ok, ok2)\n')
+
+
+def s2_dummy(tmp):
+    """Script sans effet pour les tests d'arguments (jamais execute si l'argument est refuse)."""
+    p = os.path.join(tmp, "noop.lua")
+    with open(p, "w", newline="") as f:
+        f.write("print('NOOP')\n")
+    return p
 
 
 def check(cond, what, err=""):
@@ -98,14 +169,14 @@ def check(cond, what, err=""):
     print("[OK] " + what)
 
 
-def run(exe, script, tmp, wait_for):
+def run(exe, script, tmp, wait_for, extra=()):
     """Lance le player sur script, attend une trace, envoie 'quit'.
     Retourne (sortie, code de sortie ou None si le player ne s'est pas arrete)."""
     env = dict(os.environ)
     env.update({"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
                 "SDL_RENDER_DRIVER": "software", "FLAM_SCREENSHOT_AUTO_MS": "0"})
     proc = subprocess.Popen(
-        [exe, "--stdin-control", "--watchdog", "300", "--save-dir", tmp, script],
+        [exe, "--stdin-control", "--watchdog", "300", *extra, "--save-dir", tmp, script],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=env, cwd=os.path.dirname(exe))
     lines = []
@@ -181,6 +252,57 @@ def main():
             check("watchdog" in out and (trace + "\t0") in out,
                   "coroutines %s : aucune coroutine preparee ne s'execute apres le declenchement" % tag, out)
             check(rc == 0, "coroutines %s : le player quitte (code %r, %.1f s)" % (tag, rc, time.monotonic() - t0), out)
+
+        sf = os.path.join(tmp, "nodebug.lua")
+        with open(sf, "w", newline="") as f:
+            f.write(SCEN_F)
+        out, rc = run(exe, sf, tmp, "Erreur Lua")
+        check("DEBUG_TYPE nil nil" in out, "debug absent de _G et de package.loaded", out)
+        check("REQUIRE_DEBUG false" in out, "require('debug') refuse", out)
+        check("Erreur Lua" in out and "watchdog" in out,
+              "debug.sethook() inaccessible : la boucle est interrompue", out)
+        check(rc == 0, "debug : le player quitte (code %r)" % rc, out)
+
+        sg = os.path.join(tmp, "mem.lua")
+        with open(sg, "w", newline="") as f:
+            f.write(SCEN_G)
+        out, rc = run(exe, sg, tmp, "AFTER_OK", ("--lua-mem", "16"))
+        check("REP_RESULT false not enough memory" in out,
+              "string.rep de 32 Mo refuse par --lua-mem 16", out)
+        check("AFTER_OK 1000" in out, "etat Lua utilisable apres le refus", out)
+        check(rc == 0, "memoire : le player quitte (code %r)" % rc, out)
+
+        sh = os.path.join(tmp, "exhaust.lua")
+        with open(sh, "w", newline="") as f:
+            f.write(SCEN_H)
+        out, rc = run(exe, sh, tmp, "PROBE_1MB", ("--lua-mem", "16", "--watchdog", "120000"))
+        check("FILLED 1638" in out, "memoire remplie jusqu'au plafond (16 Mo)", out)
+        check("PROBE_1MB false" in out, "memoire pleine : 1 Mo refuse au script (reserve de l'hote fermee)", out)
+        check("PANIC" not in out, "memoire pleine : pas de PANIC de l'etat Lua", out)
+        check(rc == 0, "memoire pleine : le player reste en vie et quitte (code %r)" % rc, out)
+
+        sj = os.path.join(tmp, "warn.lua")
+        with open(sj, "w", newline="") as f:
+            f.write(SCEN_J)
+        out, rc = run(exe, sj, tmp, "WARN_DONE")
+        check("error in __gc" in out, "warn('@on') : l'erreur du finaliseur est signalee", out)
+        check(rc == 0, "warn : le player quitte (code %r)" % rc, out)
+
+        # I : valeurs de --lua-mem invalides
+        for bad in ("abc", "-5", "1", "7", "99999999999999999999", "20000", "", "8x"):
+            p = subprocess.run([exe, "--lua-mem", bad, s2_dummy(tmp)],
+                               capture_output=True, timeout=20,
+                               env=dict(os.environ, SDL_VIDEODRIVER="dummy",
+                                        SDL_AUDIODRIVER="dummy"))
+            err = p.stderr.decode("utf-8", "replace")
+            check(p.returncode == 2 and "--lua-mem" in err and "invalide" in err,
+                  "--lua-mem %r refuse (code %r)" % (bad, p.returncode), err)
+        # sans valeur, en dernier argument : refuse (et non pris pour le chemin de l'histoire)
+        p = subprocess.run([exe, s2_dummy(tmp), "--lua-mem"], capture_output=True, timeout=20,
+                           env=dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy"))
+        err = p.stderr.decode("utf-8", "replace")
+        check(p.returncode == 2 and "demande une valeur" in err,
+              "--lua-mem sans valeur refuse (code %r)" % p.returncode, err)
 
         s2 = os.path.join(tmp, "legit.lua")
         with open(s2, "w", newline="") as f:

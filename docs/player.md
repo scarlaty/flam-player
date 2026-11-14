@@ -218,8 +218,33 @@ Options :
 | `--scan-dir <dossier>` | Dossier scanné par le navigateur |
 | `--strict` | Plus proche de l'appareil : `require()` limité à `script/`, image `.lif` absente = erreur |
 | `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main, même enveloppé dans `pcall` ou réparti sur des coroutines ; réarmé à chaque tour de la boucle principale, donc les callbacks suivant un callback interrompu dans le même tour échouent aussi (défaut 10000, `0` = désactivé) |
+| `--lua-mem <Mo>` | Plafond mémoire de l'état Lua (défaut 256, `0` = aucun, sinon 8 à 16384 ; une valeur invalide est refusée, code de sortie 2) ; au-delà, Lua lève `not enough memory`, rattrapable seulement dans le script (l'hôte dispose d'une petite réserve hors script) |
 | `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
 | `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
+
+Bac à sable Lua : comme l'appareil (audit de sécurité : `debug` = nil), le player n'expose pas `debug`
+aux scripts (ni `debug.sethook`, qui désarmerait le watchdog, ni `getupvalue`/`getregistry`, qui
+rendraient les fonctions d'origine de ses gardes ; `require("debug")` échoue aussi). `io`, `os` et
+`package` restent disponibles dans l'émulateur, contrairement à l'appareil.
+
+Limites du watchdog, non corrigées (corriger demanderait de modifier Lua lui-même, sous-module) :
+Lua coupe les hooks pendant l'exécution d'un finaliseur, donc une boucle dans un `__gc` n'est jamais
+interrompue ; une fonction C longue (motif de `string.find`/`match`/`gsub` à retour arrière
+catastrophique) n'est pas interrompue non plus. Le plafond `--lua-mem` borne seulement la mémoire
+(`string.rep` ou `table.concat` géants), pas le temps. Si l'appareil refuse `__gc` sur les tables des
+histoires, le player pourrait le refuser de même (non vérifié sur l'appareil).
+
+Sans périphérique audio (session sans son, machine virtuelle) ou si l'envoi du son échoue, la lecture
+est cadencée sur l'horloge murale : sans cela, l'horloge audio, donc les callbacks `play`/`stop` et
+les enchaînements, courait environ dix fois trop vite. `FLAM_AUDIO_NO_DEVICE=1` simule ce cas et
+`FLAM_AUDIO_QUEUE_FAIL=1` fait échouer l'envoi du son : ce sont des aides de test lues par le
+binaire, seule la valeur exacte `1` compte (`0` ou toute autre valeur est sans effet).
+
+Réserve mémoire : au-delà du plafond `--lua-mem`, l'hôte (le player, hors exécution d'un script)
+peut encore allouer jusqu'à 4 Mo pour ses propres appels, afin qu'un script ayant rempli la mémoire
+ne fasse pas paniquer l'état Lua. Le test vérifie que la réserve est refusée au script ; l'autre sens
+(la réserve effectivement accordée à l'hôte) n'est pas testé. Le plancher de `--lua-mem` est de 8 Mo :
+un parcours complet d'une histoire convertie y tient (`tests/e2e/e2e_telmi.py`, cas B8).
 
 Le navigateur détecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et
 les titres, et offre un bouton « Choisir un dossier... » pour changer le répertoire de recherche.
