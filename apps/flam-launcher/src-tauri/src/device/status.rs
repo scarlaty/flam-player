@@ -308,6 +308,12 @@ fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesR
     for id in &folders {
         push(id, Placement::Unlisted, false);
     }
+    // Orphelins masqués : dossier de `str.hidden/` absent des deux index (par exemple après un
+    // échec entre l'écriture de `list.hidden` et le renommage), à voir et à retirer comme ceux de
+    // `str/` (#577). Les dossiers déjà listés ont leur place plus haut.
+    for id in &index::scan_hidden_stories(root) {
+        push(id, Placement::Unlisted, false);
+    }
 
     let truncated = stories.len() > MAX_STORIES;
     stories.truncate(MAX_STORIES);
@@ -967,6 +973,50 @@ mod tests {
         assert!(serde_json::to_string(&unreadable)
             .unwrap()
             .contains("\"fingerprint\":null"));
+    }
+
+    /// #577 : un dossier de `str.hidden/` absent des deux index (refus entre l'écriture de
+    /// `list.hidden` et le renommage) est montré comme orphelin, retirable comme ceux de `str/` ;
+    /// un appareil sain (dossier masqué listé dans `list.hidden`) donne la même liste qu'avant,
+    /// et rien n'est écrit sur la Flam.
+    #[test]
+    fn un_orphelin_masque_est_visible_et_un_appareil_sain_inchange() {
+        let dev = installed_device();
+        // Sain : C est listée dans `list.hidden`, son dossier est dans `str.hidden/`.
+        put(dev.path(), &format!("str.hidden/{C}/info"), "x");
+        let before = fingerprint(dev.path());
+        let titles = HashMap::new();
+        let healthy = read_stories(dev.path(), &titles);
+        let placements: Vec<_> = healthy
+            .stories
+            .iter()
+            .map(|s| (s.uuid.clone(), s.placement))
+            .collect();
+        let expected = [
+            (A, Placement::Visible),
+            (B, Placement::Visible),
+            (C, Placement::Hidden),
+            (D, Placement::Unlisted),
+        ]
+        .map(|(uuid, placement)| (uuid.to_string(), placement));
+        assert_eq!(placements, expected);
+        assert_eq!(fingerprint(dev.path()), before, "lecture seule");
+        // Orphelin masqué : dans `str.hidden/`, dans aucun index.
+        let orphan = "55555555-5555-4555-8555-555555555555";
+        put(dev.path(), &format!("str.hidden/{orphan}/info"), "x");
+        let before_orphan = fingerprint(dev.path());
+        let report = read_stories(dev.path(), &titles);
+        let found = report.stories.iter().find(|s| s.uuid == orphan).unwrap();
+        assert_eq!(found.placement, Placement::Unlisted);
+        // Les autres lignes sont inchangées.
+        let others: Vec<_> = report
+            .stories
+            .iter()
+            .filter(|s| s.uuid != orphan)
+            .map(|s| (s.uuid.clone(), s.placement))
+            .collect();
+        assert_eq!(others, placements);
+        assert_eq!(fingerprint(dev.path()), before_orphan);
     }
 
     /// Deux Flam branchées : la première porte A, la seconde B (`.mdf` différents).

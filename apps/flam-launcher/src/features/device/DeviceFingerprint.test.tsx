@@ -91,6 +91,8 @@ let written: string[];
 let calls: { cmd: string; args: Record<string, unknown> }[];
 /** Relâche les relevés retenus par `swapUnseen` (un relevé en vol est partagé entre les montages). */
 let releaseStatus: () => void;
+/** Refus `device_changed` à rendre aux prochaines lectures de la liste (#577). */
+let listRefusals = 0;
 
 const callsOf = (cmd: string) => calls.filter((c) => c.cmd === cmd);
 
@@ -118,6 +120,7 @@ beforeEach(() => {
   status = detected(FLAM_1);
   statusGate = null;
   releaseStatus = () => undefined;
+  listRefusals = 0;
   plugged = FLAM_1;
   onDevice = [deviceStory(C, "Déjà là"), deviceStory(D, "Le loup")];
   written = [];
@@ -140,6 +143,10 @@ beforeEach(() => {
             left_alone: 0,
           };
         case "device_list_stories":
+          if (listRefusals > 0) {
+            listRefusals -= 1;
+            throw { kind: "device_changed", message: REFUSAL };
+          }
           return report(onDevice);
         case "device_send_story":
           guard(args);
@@ -495,4 +502,43 @@ it("dialogue des clés carrier ouvert, autre Flam vue sous la même lettre : le 
   );
   await waitFor(() => expect(written).toEqual([`envoi ${A}`]));
   expect(callsOf("device_send_story")[0]?.args.expected).toEqual({ fingerprint: FLAM_2 });
+});
+
+it("la liste est demandée pour la Flam affichée : racine et empreinte (#577)", async () => {
+  render(<Harness />);
+  await ready();
+  expect(callsOf("device_list_stories").map((c) => c.args)).toContainEqual({
+    root: "E:\\",
+    expected: { fingerprint: FLAM_1 },
+  });
+  // Une autre Flam affichée : la liste suivante porte son empreinte, pas celle de la première.
+  plugged = FLAM_2;
+  status = detected(FLAM_2);
+  await waitFor(() =>
+    expect(callsOf("device_list_stories").at(-1)?.args).toEqual({
+      root: "E:\\",
+      expected: { fingerprint: FLAM_2 },
+    }),
+  );
+});
+
+it("refus device_changed de la liste : l'état est relu, aucune erreur alarmante, la liste revient (#577)", async () => {
+  listRefusals = 1;
+  render(<Harness />);
+  const polls = callsOf("device_status").length;
+  await waitFor(() => expect(callsOf("device_list_stories").length).toBeGreaterThan(0));
+  await settle();
+  // Le refus n'est jamais montré comme une erreur de lecture ; l'état est relu.
+  expect(screen.queryByText(REFUSAL)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(callsOf("device_status").length).toBeGreaterThan(polls);
+  // Même clé (lecture passagère) : la liste est redemandée un instant plus tard et s'affiche.
+  expect(
+    await screen.findByRole(
+      "heading",
+      { name: "Histoires sur la Flam (2)" },
+      { timeout: 4000 },
+    ),
+  ).toBeInTheDocument();
+  expect(callsOf("device_list_stories").length).toBeGreaterThanOrEqual(2);
 });

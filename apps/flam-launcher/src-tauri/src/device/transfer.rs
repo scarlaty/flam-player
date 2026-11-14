@@ -310,6 +310,11 @@ pub enum TransferError {
     /// la Flam d'origine (la reprise y remettrait l'ancienne version).
     #[error("la Flam a été débranchée, remplacée ou momentanément illisible juste après la mise à jour : elle est peut-être faite ; rebranchez la Flam d'origine pour vérifier")]
     DeviceChangedAfterUpdate,
+    /// `.mdf` différent ou absent au moment de vider la corbeille pour faire de la place (#577) :
+    /// la corbeille n'est pas vidée. Rien n'a été copié ; une reprise a pu écrire juste avant, sur
+    /// la Flam d'origine.
+    #[error("la Flam branchée n'est plus celle vérifiée avant la préparation (fichier .mdf différent ou absent) : l'histoire n'a pas été envoyée et la corbeille de la Flam n'a pas été vidée ; rebranchez la Flam choisie puis réessayez")]
+    DeviceChangedBeforeTrash,
     #[error("transfert annulé : la Flam est inchangée")]
     Cancelled,
     #[error("vérification échouée ({0}) : la copie relue sur la Flam diffère de l'original ; rien n'a été installé")]
@@ -378,6 +383,7 @@ impl From<TransferError> for AppError {
             | TransferError::DeviceChangedDuringSend
             | TransferError::DeviceChangedBeforeIndex
             | TransferError::DeviceChangedAfterUpdate
+            | TransferError::DeviceChangedBeforeTrash
             | TransferError::Refused(WriteRefused::DeviceChanged) => {
                 AppError::DeviceChanged(err.to_string())
             }
@@ -821,14 +827,21 @@ pub(crate) fn send_with(
     let (files, total) = plan(prepared)?;
     let needed = needed_space(&files);
     let mut free = fs.free_space(root)?;
-    if free < needed {
-        // La corbeille d'un retrait précédent (`.flam-trash/`, vidée seulement à l'opération
-        // suivante) occupe peut-être la place manquante (#577). Vidée seulement ici, faute de
-        // place : entrées reconnues (`<uuid>-<32 hexadécimaux>`) d'un retrait terminé, après le
-        // contrôle de l'appareil (garde, `.mdf` relu) et sous le verrou. Un échec n'empêche rien :
-        // l'espace est relu et décide.
-        if !matches!(same_device(fs, permit, root), Ok(true)) {
-            return Err(TransferError::DeviceChanged);
+    // La corbeille d'un retrait précédent (`.flam-trash/`, vidée au prochain retrait seulement)
+    // occupe peut-être la place manquante (#577). Vidée seulement ici, faute de place et si elle
+    // contient une entrée reconnue (`<uuid>-<32 hexadécimaux>`, d'un retrait terminé) ; sinon
+    // refus d'espace tout de suite, sans relire `.mdf`. Avant de supprimer : `.mdf` relu (différent
+    // ou absent : `DeviceChangedBeforeTrash` ; illisible après les nouveaux essais : erreur
+    // d'entrée/sortie, pas un changement de Flam), sous le verrou. Un échec du vidage n'empêche
+    // rien : l'espace est relu et décide.
+    if free < needed && super::remove::has_purgeable_trash(root) {
+        match same_device(fs, permit, root) {
+            Ok(true) => {}
+            Ok(false) | Err(TransferError::DeviceNotFound) => {
+                tracing::warn!("Flam débranchée ou remplacée avant le vidage de la corbeille");
+                return Err(TransferError::DeviceChangedBeforeTrash);
+            }
+            Err(err) => return Err(err),
         }
         match super::remove::empty_trash(root) {
             Ok(0) => {}
@@ -1541,6 +1554,32 @@ pub(crate) fn detected_roots_now() -> Option<Vec<PathBuf>> {
     cfg!(windows).then(|| super::detect::Environment::current().roots)
 }
 
+/// Durée de validité de la liste des lecteurs de [`detected_roots_for_read`].
+const READ_ROOTS_REUSE: Duration = Duration::from_secs(2);
+
+/// Dernière énumération des lecteurs faite pour une lecture.
+static READ_ROOTS: Mutex<Option<(Instant, Vec<PathBuf>)>> = Mutex::new(None);
+
+/// Comme [`detected_roots_now`], pour les commandes de lecture appelées en rafale (une vignette
+/// par histoire, #577) : la liste est réutilisée 2 s tant qu'elle contient `root` ; une racine
+/// absente de la liste réutilisée la fait énumérer à neuf (Flam branchée depuis moins de 2 s) :
+/// un refus n'est donc jamais fondé sur une liste périmée. Les écritures énumèrent toujours à
+/// neuf ([`detected_roots_now`]).
+pub(crate) fn detected_roots_for_read(root: &Path) -> Option<Vec<PathBuf>> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let mut memo = READ_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, roots)) = memo.as_ref() {
+        if at.elapsed() < READ_ROOTS_REUSE && ensure_root_among(root, roots).is_ok() {
+            return Some(roots.clone());
+        }
+    }
+    let roots = super::detect::Environment::current().roots;
+    *memo = Some((Instant::now(), roots.clone()));
+    Some(roots)
+}
+
 /// Contrôle de la racine reçue de l'interface par une commande qui ne passe pas par la garde
 /// d'écriture (éjection, mode carrier, détails des histoires, #577) : un lecteur détecté de
 /// `detected`, comme pour les écritures ; `None` : pas de contrôle (voir
@@ -1753,8 +1792,9 @@ pub async fn device_carrier_preview(
         SettingsStore::new(&config.dir).load()?.carrier_consent
     };
     blocking(move || -> AppResult<EnteredPreview> {
+        // Lecture seule : ne retient pas la fermeture de la fenêtre (#577).
         let _guard = DEVICE_LOCK
-            .try_begin(Operation::Transfer)
+            .try_begin(Operation::Read)
             .map_err(TransferError::from)?;
         let root = Path::new(&root);
         ensure_detected_root(root)?;

@@ -22,7 +22,7 @@
 //! | Coupure ou échec après…              | État laissé                               | Reprise                    |
 //! |--------------------------------------|-------------------------------------------|----------------------------|
 //! | la validation                        | rien de modifié                           | aucune                     |
-//! | (refus) `.mdf` changé avant l'écriture de l'index (#577) | rien de modifié sur la Flam branchée (ni index ni cache) ; ancien ordre sur la Flam d'origine | aucune : l'ordre se redemande à la Flam d'origine |
+//! | (refus) `.mdf` changé avant l'écriture de l'index (#577) | rien de modifié sur la Flam branchée, hors la reprise d'une écriture d'index interrompue faite après la garde ; ancien ordre sur la Flam d'origine | aucune : l'ordre se redemande à la Flam d'origine |
 //! | `list.new` (complet ou partiel)      | ancien `list`, `list.new` sans `list.bak` | `list.new` supprimé : ancien ordre |
 //! | `list.bak` (complet ou partiel)      | ancien `list`, `list.new`, `list.bak`     | ancien ordre gardé |
 //! | le renommage, cible perdue           | `list` absent, `list.new`, `list.bak`     | `list.new` promu : nouvel ordre |

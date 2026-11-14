@@ -19,6 +19,10 @@ pub enum Operation {
     Reorder,
     /// Éjection du volume (#232).
     Eject,
+    /// Lecture seule de la Flam ou travail sur le PC : aperçu des clés du mode carrier, « Retirer
+    /// du PC » (#577). Tient le verrou (aucune écriture en parallèle) mais n'écrit rien sur
+    /// l'appareil : ne retient pas la fermeture de la fenêtre.
+    Read,
 }
 
 impl Operation {
@@ -26,7 +30,7 @@ impl Operation {
     /// laisserait un transfert ou un retrait inachevé, voir [`super::close`]). L'éjection n'écrit
     /// rien : elle est brève et la couper ne perd rien.
     pub fn writes(self) -> bool {
-        !matches!(self, Operation::Eject)
+        !matches!(self, Operation::Eject | Operation::Read)
     }
 
     /// Nom stable transmis à l'interface (événement et commande de [`super::close`]).
@@ -36,6 +40,7 @@ impl Operation {
             Operation::Transfer => "transfer",
             Operation::Reorder => "reorder",
             Operation::Eject => "eject",
+            Operation::Read => "read",
         }
     }
 
@@ -46,6 +51,7 @@ impl Operation {
             Operation::Transfer => "un transfert",
             Operation::Reorder => "un réordonnancement",
             Operation::Eject => "une éjection",
+            Operation::Read => "une lecture",
         }
     }
 }

@@ -120,6 +120,20 @@ export const fr = {
     ack: "J'ai compris",
     ackFailed: "Impossible d'enregistrer l'acquittement.",
   },
+  closeRetained: {
+    title: "Écriture sur la Flam en cours",
+    body: "La fenêtre se fermera à la fin. Fermez à nouveau pour interrompre maintenant.",
+    // Ce que fait la reprise de la Flam au prochain branchement, selon l'opération coupée.
+    resume: {
+      transfer:
+        "La copie en cours sera nettoyée au prochain branchement de la Flam et l'histoire ne sera pas installée.",
+      remove:
+        "Le retrait sera repris au prochain branchement : une histoire à moitié retirée apparaît comme non listée et se retire de nouveau.",
+      reorder:
+        "La liste de la Flam gardera l'ancien ou le nouvel ordre, réparée au prochain branchement.",
+    },
+    keep: "Ne pas fermer",
+  },
   sourcesScreen: {
     intro:
       "Les sources fournissent les histoires affichées dans la bibliothèque. Faites glisser une ligne ou utilisez les boutons Monter et Descendre pour changer l'ordre.",

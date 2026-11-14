@@ -26,7 +26,8 @@
 //! copie aucune donnée : après une coupure (au pire une incohérence FAT que `chkdsk` répare,
 //! sans effet sur les index), le dossier est soit
 //! encore entier dans `str/` (orphelin signalé par [`find_orphans`], jamais supprimé sans
-//! confirmation), soit dans la corbeille, vidée par [`purge_trash`] à la prochaine opération.
+//! confirmation), soit dans la corbeille, vidée par [`purge_trash`] au début du prochain retrait sur cette Flam, ou par un envoi qui manque de place
+//! (#577) ; jusque-là elle reste, cachée, et occupe sa place.
 //!
 //! | Coupure ou échec après…        | État laissé                                    | Reprise                                      |
 //! |--------------------------------|------------------------------------------------|----------------------------------------------|
@@ -34,12 +35,12 @@
 //! | une étape de l'index           | voir `index` : ancien ou nouvel index          | `index::recover`                             |
 //! | l'index de `list` (UUID aussi dans `list.hidden`) | UUID encore dans `list.hidden`, dossier intact | nouveau retrait                  |
 //! | l'index réécrit (ou renommage refusé malgré les nouveaux essais) | dossier entier dans `str/`, absent de l'index | orphelin signalé, retrait sur confirmation |
-//! | le renommage en corbeille      | dossier dans `.flam-trash/`                     | [`purge_trash`] au début de chaque opération |
+//! | le renommage en corbeille      | dossier dans `.flam-trash/`                     | [`purge_trash`] au début du prochain retrait, ou envoi sans place |
 //! | une suppression partielle      | restes dans `.flam-trash/`                      | [`purge_trash`]                              |
-//! | (refus) `.mdf` changé avant la corbeille ou le premier index | rien de modifié (hors vidage de la corbeille d'un retrait précédent) | aucune |
+//! | (refus) `.mdf` changé avant la corbeille ou le premier index | rien de modifié, hors le vidage de la corbeille d'un retrait précédent et la reprise d'une écriture d'index interrompue, faits juste après la garde | aucune |
 //! | (refus) `.mdf` changé avant l'index de `list.hidden` (UUID dans les deux index) | UUID retiré de `list`, encore dans `list.hidden`, dossiers intacts | nouveau retrait de l'histoire encore listée |
 //! | (refus) `.mdf` changé après les index, avant un renommage | UUID absent des index ; dossiers non déplacés entiers dans `str/` ou `str.hidden/` (orphelins), les déjà déplacés dans la corbeille | orphelin signalé, retrait sur confirmation ; [`purge_trash`] vide la corbeille |
-//! | (signalé) `.mdf` changé avant une suppression de la corbeille | histoire retirée, dossier dans `.flam-trash/` | [`purge_trash`] à la prochaine opération ; `device_changed` dans le rapport, retrait présenté comme réussi |
+//! | (signalé) `.mdf` changé avant une suppression de la corbeille | histoire retirée, dossier dans `.flam-trash/` | [`purge_trash`] au prochain retrait, ou envoi sans place ; `device_changed` dans le rapport, retrait présenté comme réussi |
 //!
 //! Une histoire encore listée n'est jamais supprimée (aucun dossier n'est touché avant la
 //! relecture des index) ; une histoire sortie de l'index n'y revient jamais, même à moitié : les
@@ -86,11 +87,12 @@ pub struct RemoveReport {
     pub folders_removed: usize,
     /// La corbeille n'a pas pu être vidée tout de suite (fichier verrouillé, ou Flam changée
     /// avant la suppression, voir `device_changed`) : l'histoire est retirée, l'espace sera
-    /// libéré à la prochaine opération.
+    /// libéré au prochain retrait sur cette Flam, ou par un envoi qui manque de place.
     pub cleanup_pending: bool,
     /// La Flam a été débranchée, remplacée ou momentanément illisible entre le renommage en
     /// corbeille et sa suppression (#577) : l'histoire est retirée de la Flam d'origine, la
-    /// suppression de la corbeille est laissée à la prochaine opération sur cette Flam. Rien
+    /// suppression de la corbeille est laissée au prochain retrait sur cette Flam (ou à un envoi qui
+    /// manque de place). Rien
     /// n'a été écrit sur l'autre.
     pub device_changed: bool,
 }
@@ -342,6 +344,20 @@ pub(crate) fn empty_trash(root: &Path) -> io::Result<usize> {
     purge_trash(root, &RealTrashFs)
 }
 
+/// Vrai si la corbeille de `root` contient au moins une entrée que [`purge_trash`] supprimerait
+/// (lecture seule). Une corbeille absente, qui n'est pas un vrai dossier ou illisible : faux.
+pub(crate) fn has_purgeable_trash(root: &Path) -> bool {
+    let trash = root.join(TRASH_DIR);
+    if !is_real_dir(&trash).unwrap_or(false) {
+        return false;
+    }
+    fs::read_dir(&trash).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| entry.file_name().to_str().is_some_and(is_trash_name))
+    })
+}
+
 /// Dossiers d'histoire (nom au format UUID) présents dans `str/` ou `str.hidden/` mais
 /// absents des deux index. Signalés à l'utilisateur, jamais supprimés sans confirmation.
 /// Refuse si `list` est absent : toutes les histoires paraîtraient orphelines. Peut lancer
@@ -529,13 +545,13 @@ fn remove_with(
     }
 
     // 4. Suppression. Un échec n'annule rien : l'histoire est retirée, la corbeille sera
-    // vidée à la prochaine opération.
+    // vidée au prochain retrait (ou par un envoi qui manque de place).
     let mut cleanup_pending = false;
     let mut device_changed = false;
     for target in &moved {
         if !still_on() {
             // L'histoire est déjà retirée de la Flam d'origine : pas un échec. La corbeille y
-            // sera vidée par la prochaine opération ; rien n'est supprimé sur la Flam branchée.
+            // sera vidée par le prochain retrait ; rien n'est supprimé sur la Flam branchée.
             tracing::warn!("Flam débranchée ou remplacée avant la suppression : corbeille laissée");
             device_changed = true;
             cleanup_pending = true;
@@ -550,7 +566,7 @@ fn remove_with(
         if still_on() {
             let _ = fs::remove_dir(&trash);
         } else {
-            // Dossier de la corbeille, vide, retiré par la prochaine opération.
+            // Dossier de la corbeille, vide, retiré par le prochain retrait.
             device_changed = true;
             cleanup_pending = true;
         }

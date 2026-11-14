@@ -756,7 +756,7 @@ fn flam_echangee_avant_l_ecriture_de_l_ordre_rien_n_est_ecrit() {
     let refusals: [Vec<Result<Vec<u8>, io::ErrorKind>>; 3] = [
         // Autre Flam sous la même lettre.
         vec![Ok(mdf_v2_known())],
-        // Illisible après tous les essais (verrou persistant : 1 essai + 4 nouveaux).
+        // Illisible après tous les essais (verrou persistant : 1 essai + 7 nouveaux).
         vec![Err(io::ErrorKind::PermissionDenied); 16],
         // Débranchée : erreur d'entrée/sortie non passagère.
         vec![Err(io::ErrorKind::NotFound)],

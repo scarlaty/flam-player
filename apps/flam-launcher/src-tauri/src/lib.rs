@@ -226,6 +226,8 @@ pub fn run() {
             device::carrier::device_carrier_accept,
             device::carrier::device_carrier_forget,
             device::close::device_write_in_progress,
+            device::close::device_close_verdict,
+            device::close::device_cancel_close,
             device::transfer::device_carrier_preview,
             device::diagnostic::device_diagnostic,
             device::remove::device_remove_story,

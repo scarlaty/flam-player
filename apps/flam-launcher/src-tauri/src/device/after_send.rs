@@ -480,7 +480,7 @@ pub async fn library_remove_sent(
     blocking(move || {
         // Pas pendant un envoi (de cette histoire ou d'une autre) : le verrou de la Flam est tenu.
         let _device = DEVICE_LOCK
-            .try_begin(Operation::Transfer)
+            .try_begin(Operation::Read)
             .map_err(TransferError::from)?;
         remove_sent(
             &SENT,

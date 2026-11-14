@@ -381,9 +381,12 @@ un autre `key` confirme la clé et l'IV sans rien conclure sur le `key`.
 **Racine reçue du front et lectures** (#577) : toute commande qui reçoit une racine accepte
 seulement un lecteur détecté (amovible, ou FAT fixe) : les écritures (garde), mais aussi
 l'éjection, l'état du mode carrier, les titres et les vignettes de « Ma Flam ». `device_list_stories`
-reçoit aussi la racine et la Flam attendue (`root`, `expected` : empreinte de `device_status`) : avec
-deux Flam branchées, la liste est celle de la racine affichée, jamais celle de la première ; une
-autre Flam à sa place est refusée (`device_changed`) ; sans `root`, première Flam, comme avant.
+reçoit aussi la racine et la Flam attendue (`root`, `expected` : empreinte de `device_status`), que
+l'interface transmet : avec deux Flam branchées, la liste est celle de la racine affichée, jamais
+celle de la première ; une autre Flam à sa place est refusée (`device_changed`, l'interface relit
+alors l'état sans afficher d'erreur) ; sans `root`, première Flam, comme avant. Les dossiers de
+`str.hidden/` absents des deux index sont montrés comme orphelins (placement non listé), à retirer
+comme ceux de `str/`.
 Argument `expected` : absent et `null` sont indiscernables côté IPC et valent « aucune
 comparaison » ; seul un objet `{ fingerprint }` désigne une Flam (`{ fingerprint: null }` : affichée
 sans empreinte, toujours refusée).
@@ -411,8 +414,11 @@ appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écri
    marge de 32 Mio. Espace insuffisant : la corbeille d'un retrait précédent (`.flam-trash/`,
    § 8.2) est d'abord vidée (#577), puis l'espace relu ; elle n'est vidée que dans ce cas (durée
    d'un envoi normal inchangée). Garde-fous : seules les entrées nommées
-   `<uuid>-<32 hexadécimaux>` sont supprimées, `.mdf` est relu juste avant (autre Flam, absent ou
-   illisible : refus `device_changed`, rien n'est supprimé), le verrou de l'appareil est tenu.
+   `<uuid>-<32 hexadécimaux>` sont supprimées, `.mdf` est relu juste avant (autre Flam ou absent :
+   refus `device_changed` au message exact, rien n'est supprimé ; illisible après les nouveaux essais :
+   erreur d'entrée/sortie, pas un changement de Flam), le verrou de l'appareil est tenu. La corbeille
+   est regardée d'abord (lecture seule) : sans entrée reconnue, refus d'espace tout de suite, sans
+   relire `.mdf`.
    Si l'espace manque encore, refus `NotEnoughSpace` : la seule écriture faite est ce vidage, qui
    ne touche ni histoire, ni index, ni cache.
 2. **Copie** dans `.flam-transfer/<uuid>.in/` à la racine de l'appareil (hors de `str/`, § 4),
@@ -523,22 +529,23 @@ Ordre inverse de l'installation : index d'abord, dossier ensuite (`remove_story`
    renommage réussi.
 6. **Suppression** des dossiers de la corbeille, avec les mêmes nouveaux essais (comme le vidage
    de la corbeille au début de chaque retrait) ; un échec persistant (fichier verrouillé) n'annule
-   rien et la corbeille sera vidée à la prochaine opération. Seules les entrées nommées
+   rien et la corbeille sera vidée au prochain retrait, ou par un envoi qui manque de place (§ 8.1) ;
+   jusque-là elle reste sur la Flam (dossier caché, place occupée). Seules les entrées nommées
    `<uuid>-<32 hexadécimaux>` sont supprimées, jamais les autres, et une corbeille qui n'est pas un
    vrai dossier est laissée telle quelle.
 
 Les sauvegardes de `usr/0/` de cet UUID (`.prog`, `.save`, dossier) ne sont **jamais** touchées.
 Après une coupure : soit le dossier est entier dans `str/` et hors index (orphelin, retrait
-possible sur confirmation), soit il est dans `.flam-trash/` (vidée au retrait suivant).
+possible sur confirmation), soit il est dans `.flam-trash/` (vidée au retrait suivant, ou par un envoi qui manque de place).
 
 Refus parce que la Flam a changé (#577), état laissé **sur la Flam d'origine** et reprise :
 
 | Refus avant…                                    | État laissé                                                                 | Reprise                                                   |
 | ----------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
-| la corbeille ou le premier index                | rien de modifié (hors vidage de la corbeille d'un retrait précédent)        | aucune                                                    |
+| la corbeille ou le premier index                | rien de modifié, hors vidage de la corbeille d'un retrait précédent et reprise d'une écriture d'index interrompue (faits après la garde) | aucune                                                    |
 | l'index de `list.hidden` (UUID dans les deux)   | UUID retiré de `list`, encore dans `list.hidden` ; dossiers intacts         | nouveau retrait de l'histoire encore listée               |
-| un renommage vers la corbeille                  | UUID absent des index ; dossiers non déplacés entiers (orphelins), les autres dans `.flam-trash/` | orphelin signalé, retrait sur confirmation ; corbeille vidée à l'opération suivante |
-| une suppression de la corbeille                 | histoire retirée ; dossier dans `.flam-trash/`                              | corbeille vidée à l'opération suivante ; rapport `device_changed`, retrait présenté comme réussi |
+| un renommage vers la corbeille                  | UUID absent des index ; dossiers non déplacés entiers (orphelins), les autres dans `.flam-trash/` | orphelin signalé, retrait sur confirmation ; corbeille vidée au prochain retrait, ou envoi sans place |
+| une suppression de la corbeille                 | histoire retirée ; dossier dans `.flam-trash/`                              | corbeille vidée au prochain retrait, ou envoi sans place ; rapport `device_changed`, retrait présenté comme réussi |
 
 Une histoire encore listée n'est jamais supprimée (aucun dossier n'est touché avant la relecture des
 index sur la bonne Flam) ; une histoire sortie de l'index n'y revient jamais, même à moitié. La
@@ -590,13 +597,36 @@ plugin d'instance unique.
 
 **Fermeture de la fenêtre** (#577, `device::close`) : fermer le launcher pendant un envoi, un
 retrait, un changement d'ordre ou une reprise couperait l'opération en plein milieu (tableaux de
-reprise ci-dessus). La première demande de fermeture pendant une écriture est donc **retenue** :
-l'événement `device://close-retained` (`{ operation, grace_seconds }`) prévient l'interface, un fil
-attend la fin de l'écriture puis referme la fenêtre. Une deuxième demande pendant l'attente
-(l'utilisateur insiste) est acceptée tout de suite ; l'attente est bornée à 120 s, passé ce délai
-la fenêtre se ferme quand même. La sortie n'est jamais bloquée indéfiniment, et l'éjection (brève,
-sans écriture) ne retient rien. La commande `device_write_in_progress` rend l'opération en cours
-(`transfer`, `remove`, `reorder`) ou `null`.
+reprise ci-dessus). La première demande de fermeture pendant une telle écriture est donc
+**retenue** : l'événement `device://close-retained` (`{ operation }`) fait afficher un bandeau non
+modal (« Écriture sur la Flam en cours. La fenêtre se fermera à la fin… »), et un fil referme la
+fenêtre **de lui-même quand l'écriture est terminée** (c'est ce que l'utilisateur a demandé).
+**Aucun délai** : un envoi peut durer plus de vingt minutes, rien ne le coupe sans geste explicite.
+Une deuxième demande pendant l'écriture ferme tout de suite (choix de couper : la reprise au
+prochain branchement termine ou défait ce qui était en cours). Le bouton « Ne pas fermer »
+(`device_cancel_close`) lève la retenue : la fenêtre ne se fermera pas à la fin de l'écriture
+(événement `device://close-cleared`, le bandeau disparaît ; il disparaît aussi à la fin de
+l'écriture). Aucun chemin n'empêche de fermer : la décision ne dépend que du verrou et d'un
+drapeau « déjà retenue », la deuxième demande passe toujours (même si le fil d'attente meurt ou si
+le verrou n'est jamais relâché). L'aperçu des clés du mode carrier et « Retirer du PC » (lectures,
+`Operation::Read`) et l'éjection ne retiennent rien.
+
+Un seul point de décision, côté Rust (`CloseGate::request`). Quand l'interface a un gestionnaire
+de fermeture (l'éditeur de pack vide son brouillon), Tauri empêche lui-même la fermeture et le
+gestionnaire de `@tauri-apps/api` détruit la fenêtre sauf s'il appelle `preventDefault()` : le
+gestionnaire JavaScript appelle donc toujours `preventDefault()`, fait son travail, demande le
+verdict mémorisé (`device_close_verdict`, `allow` ou `retain`) et ne détruit la fenêtre que si
+c'est `allow` ; sans verdict ou si la commande échoue hors application, il ferme comme avant.
+
+Texte du bandeau selon l'opération, d'après ce que fait la reprise : envoi (la copie temporaire est
+supprimée au prochain branchement ou envoi, l'histoire n'est pas installée ; installée mais hors
+liste, un nouvel envoi l'y ajoute), retrait (l'histoire peut rester à moitié retirée : orphelin à
+retirer de nouveau), changement d'ordre (la liste reste l'ancien ou le nouvel ordre, réparée au
+branchement).
+
+Arrêt de Windows ou fermeture de session : **non vérifié**. Windows termine les processus qui ne
+répondent pas assez vite ; la retenue ne peut pas l'empêcher et il n'est pas établi que Tauri
+transmette cette demande comme une fermeture de fenêtre.
 
 ### 8.6 Ordre des histoires ([ordre], #233, implémenté)
 
@@ -627,7 +657,7 @@ modifiés ; `list.hidden`, `str/`, `str.hidden/`, `usr/0/` et les réglages ne l
 | Coupure ou échec après…                 | État laissé                               | Reprise (`recover`)                |
 | --------------------------------------- | ----------------------------------------- | ---------------------------------- |
 | la validation                           | rien de modifié                           | aucune                             |
-| (refus) `.mdf` changé avant l'écriture  | rien de modifié (ni index ni cache)       | aucune                             |
+| (refus) `.mdf` changé avant l'écriture  | rien de modifié, hors la reprise d'une écriture d'index interrompue faite après la garde | aucune |
 | `list.new` (complet ou partiel)         | ancien `list`, `list.new` sans `list.bak` | `list.new` supprimé : ancien ordre |
 | `list.bak` (complet ou partiel)         | ancien `list`, `list.new`, `list.bak`     | ancien ordre gardé                 |
 | le renommage, cible perdue              | `list` absent, `list.new`, `list.bak`     | `list.new` promu : nouvel ordre    |

@@ -403,7 +403,7 @@ pub async fn device_story_titles(
         let stop = || device_busy() || GENERATION.load(Ordering::SeqCst) != generation;
         titles_for(
             Path::new(&root),
-            super::transfer::detected_roots_now().as_deref(),
+            super::transfer::detected_roots_for_read(Path::new(&root)).as_deref(),
             &uuids,
             consent.as_ref(),
             &CarrierStore::app(),
@@ -428,7 +428,7 @@ pub async fn device_story_thumbnail(
     blocking(move || {
         thumbnail_for(
             Path::new(&root),
-            super::transfer::detected_roots_now().as_deref(),
+            super::transfer::detected_roots_for_read(Path::new(&root)).as_deref(),
             &uuid,
             &cache_dir,
             device_busy(),

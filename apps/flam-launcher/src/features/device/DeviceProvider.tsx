@@ -46,6 +46,8 @@ import { statusFetchCount, useDeviceStatus } from "./useDeviceStatus";
 const text = t.deviceTransfer;
 
 /** Intervalle des tentatives d'annulation tant que le transfert n'a pas pris le drapeau. */
+/** Nouvelle demande de la liste après un refus `device_changed` de la lecture (#577). */
+const LIST_RETRY_MS = 500;
 const CANCEL_RETRY_MS = 200;
 const CANCEL_RETRIES = 15;
 
@@ -261,7 +263,10 @@ export function DeviceProvider({
     if (!recovered) return;
     let active = true;
     const gen = reload;
-    listDeviceStories()
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    // Liste de la Flam affichée seulement (racine et empreinte, #577) : avec deux Flam, jamais
+    // celle de la première.
+    listDeviceStories(root ?? undefined, expectedOfKey(deviceKey))
       .then((report) => {
         if (!active) return;
         setSettledReload(gen);
@@ -276,13 +281,25 @@ export function DeviceProvider({
       })
       .catch((caught) => {
         if (!active) return;
+        const error = toAppError(caught);
+        if (error.kind === "device_changed") {
+          // Une autre Flam a pris la place depuis le dernier relevé : pas une erreur à afficher,
+          // l'état est relu (la clé changera et la liste sera relue) ; si elle ne change pas
+          // (lecture passagère de `.mdf`), la liste est redemandée un instant plus tard.
+          retry();
+          retryTimer = setTimeout(bumpReload, LIST_RETRY_MS);
+          return;
+        }
         setSettledReload(gen);
-        setStories({ phase: "error", error: toAppError(caught) });
+        setStories({ phase: "error", error });
       });
     return () => {
       active = false;
+      clearTimeout(retryTimer);
     };
-  }, [recovered, deviceKey, reload]);
+    // `root` suit `deviceKey` (même relevé) ; `retry` est stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recovered, deviceKey, reload, bumpReload]);
 
   const reloadStories = useCallback(
     (options?: { quiet?: boolean }) => {

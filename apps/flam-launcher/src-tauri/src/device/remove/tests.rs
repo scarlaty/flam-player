@@ -1029,6 +1029,8 @@ fn flam_echangee_a_chaque_ecriture_du_retrait_rien_n_est_touche() {
                 break;
             }
             swap_at += 1;
+            // Borne : un retrait n'a que quelques écritures, la boucle ne peut pas tourner sans fin.
+            assert!(swap_at <= 16, "{name} : le retrait ne se termine jamais");
         }
     }
 }

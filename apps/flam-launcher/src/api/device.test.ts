@@ -1,7 +1,10 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, expect, it } from "vitest";
 import {
+  cancelClose,
   cancelDeviceStoryDetails,
+  getCloseVerdict,
+  getWriteInProgress,
   getDeviceStatus,
   getDeviceStoryThumbnail,
   getDeviceStoryTitles,
@@ -48,5 +51,37 @@ it("transmet la racine et les UUID aux commandes de titres et de vignettes", asy
     'device_story_titles:{"root":"E:\\\\","uuids":["a"]}',
     'device_story_thumbnail:{"root":"E:\\\\","uuid":"a"}',
     "device_story_details_cancel:{}",
+  ]);
+});
+
+it("transmet la racine et la Flam attendue à device_list_stories, rien sans racine (#577)", async () => {
+  const calls: unknown[] = [];
+  mockIPC((cmd, args) => {
+    calls.push([cmd, args]);
+    return null;
+  });
+  await listDeviceStories("E:\\", { fingerprint: "ab" });
+  await listDeviceStories();
+  expect(calls).toEqual([
+    ["device_list_stories", { root: "E:\\", expected: { fingerprint: "ab" } }],
+    ["device_list_stories", {}],
+  ]);
+});
+
+it("appelle les commandes de fermeture retenue (#577)", async () => {
+  const calls: string[] = [];
+  mockIPC((cmd) => {
+    calls.push(cmd);
+    if (cmd === "device_close_verdict") return "retain";
+    if (cmd === "device_write_in_progress") return "transfer";
+    return true;
+  });
+  expect(await getCloseVerdict()).toBe("retain");
+  expect(await getWriteInProgress()).toBe("transfer");
+  expect(await cancelClose()).toBe(true);
+  expect(calls).toEqual([
+    "device_close_verdict",
+    "device_write_in_progress",
+    "device_cancel_close",
   ]);
 });

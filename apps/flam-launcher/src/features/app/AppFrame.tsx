@@ -6,6 +6,7 @@ import { t } from "../../i18n";
 import type { Route } from "../../router";
 import { applyTheme } from "../../theme/theme";
 import { CompatNotice } from "../compat/CompatNotice";
+import { CloseRetainedBanner } from "../device/CloseRetainedBanner";
 import { DeviceScreen } from "../device/DeviceScreen";
 import { TransferPanel } from "../device/TransferPanel";
 import { DeviceLibrarySend } from "../stories/DeviceLibrarySend";
@@ -88,6 +89,7 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
       }
     >
       <RecoveryBanners />
+      <CloseRetainedBanner />
       {route === "sources" && <SourcesScreen />}
       {route === "settings" && <SettingsScreen />}
       {route === "podcasts" && <PodcastsScreen />}
