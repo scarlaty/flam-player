@@ -1,6 +1,7 @@
 name: release-launcher
 
-# Publication d'une PRÉ-VERSION du launcher (#319, épopée #316).
+# Publication d'une version du launcher (#319, épopée #316) : pré-version si la version porte un
+# suffixe (`0.1.0-beta.1`), version normale sinon (`0.1.0`).
 #
 # Déclencheurs :
 #   - push d'une étiquette `launcher-v<version>` (ex. launcher-v0.1.0-beta.1) : publie ;
@@ -10,9 +11,9 @@ name: release-launcher
 #     (build complet avec la version de l'étiquette d'exemple forcée), jamais de publication.
 #
 # Les releases `v0.x` du dépôt concernent le player : ce workflow n'y touche pas (il ne crée que des
-# releases `launcher-v*`, toujours en pré-version, jamais « Latest »).
+# releases `launcher-v*`, jamais « Latest » ; en pré-version si la version porte un suffixe).
 #
-# Procédure complète : apps/flam-launcher/README.md, section « Publier une pré-version ».
+# Procédure complète : apps/flam-launcher/README.md, section « Publier une version ».
 # Les étapes de build reprennent celles de launcher.yml (même cache ffmpeg, mêmes actions épinglées) ;
 # les tests (lint, Vitest, cargo test, e2e, mise à jour N-1) ne sont pas rejoués : l'étiquette doit
 # être posée sur un commit de main dont la CI launcher est verte, ce que `verify` contrôle (#322) :
@@ -399,7 +400,7 @@ jobs:
           cat SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
-      - name: Créer la pré-version
+      - name: Créer la release
         run: |
           set -euo pipefail
           notes="apps/flam-launcher/release-notes/$VERSION.md"
@@ -407,10 +408,13 @@ jobs:
           # L'étiquette n'a pas été déplacée depuis le contrôle : elle désigne encore le commit construit.
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)"
           if [ "$tag_sha" != "$SHA" ]; then echo "::error::l'étiquette $TAG désigne $tag_sha, le build porte sur $SHA"; exit 1; fi
+          # Suffixe de pré-version (`-beta.1`) : pré-version GitHub ; sinon version normale.
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --prerelease \
+            --prerelease="$prerelease" \
             --latest=false \
             --title "Flam Launcher $VERSION" \
             --notes-file "$notes" \
