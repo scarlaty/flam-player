@@ -647,6 +647,11 @@ impl<R: Read> ExtFile<'_, R> {
             }
             let want = (CODEC_PIECE as u64).min(total - data.len() as u64);
             // Lu directement dans `data` (même `take(want).read_to_end` que `read_up_to`).
+            // Place réservée pour le morceau et un octet de plus : `read_to_end` constate la fin
+            // sans agrandir un tampon plein (un morceau d'exactement `CODEC_PIECE` octets
+            // doublait la capacité). `want` est borné par `CODEC_PIECE` : au plus 1 Mio + 1
+            // réservé par tour, quelle que soit la taille annoncée par l'archive.
+            data.reserve(want as usize + 1);
             let before = data.len();
             (&mut *self.reader)
                 .take(want)
@@ -1149,6 +1154,46 @@ mod tests {
         assert!(!zr
             .read_chunks("absent", 5000, &|| false, &mut |_| Ok::<(), ()>(()))
             .unwrap());
+    }
+
+    /// #652 : `read2` réserve la place d'un morceau avant de le lire. Un morceau d'exactement
+    /// `CODEC_PIECE` octets ne double plus le tampon, et une taille annoncée démesurée ne fait
+    /// pas réserver plus d'un morceau et un octet.
+    #[test]
+    fn read2_reserve_bornee() {
+        fn ext(
+            reader: &mut IoCursor<Vec<u8>>,
+            compress_left: u64,
+        ) -> ExtFile<'_, IoCursor<Vec<u8>>> {
+            ExtFile {
+                reader,
+                deflate: false,
+                compress_left,
+                left: compress_left,
+                decompressor: Decompress::new(false),
+                tail: Vec::new(),
+                codec: None,
+            }
+        }
+        // Morceau d'exactement `CODEC_PIECE` octets.
+        let mut full = IoCursor::new(vec![7u8; CODEC_PIECE]);
+        let mut e = ext(&mut full, CODEC_PIECE as u64);
+        let data = e.read2::<()>(CODEC_PIECE, &|| false).unwrap();
+        assert_eq!(data.len(), CODEC_PIECE);
+        assert!(data.capacity() <= CODEC_PIECE + 1, "{}", data.capacity());
+        assert_eq!(e.compress_left, 0);
+        // Taille annoncée hostile, dix octets réels : un seul tour, réserve bornée.
+        let mut short = IoCursor::new(vec![7u8; 10]);
+        let mut e = ext(&mut short, u64::MAX);
+        let data = e.read2::<()>(usize::MAX, &|| false).unwrap();
+        assert_eq!(data.len(), 10);
+        assert!(data.capacity() <= CODEC_PIECE + 1, "{}", data.capacity());
+        // Petite lecture : réserve à la mesure de la demande, pas d'un morceau entier.
+        let mut small = IoCursor::new(vec![7u8; 100]);
+        let mut e = ext(&mut small, 100);
+        let data = e.read2::<()>(1, &|| false).unwrap();
+        assert_eq!(data.len(), 100);
+        assert!(data.capacity() <= 101, "{}", data.capacity());
     }
 
     /// bzip2, LZMA, Zstandard (#458) : même contenu en tours de `MIN_READ_SIZE` octets
