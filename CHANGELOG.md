@@ -7,6 +7,129 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+## [0.1.0] - 2026-11-14
+
+Première version qui n'est plus une pré-version. Changements depuis `launcher-v0.1.0-beta.6`. Ces
+nouveautés ont été vérifiées par des tests automatiques, pas encore essayées sur une Flam réelle.
+
+### Ajouté
+
+- **« Télécharger et envoyer »** (ou « Installer et envoyer » pour un dossier local) : depuis une
+  source d'histoires, un seul bouton installe l'histoire puis l'envoie sur la Flam branchée. Si le
+  launcher n'a pas pu surveiller la Flam pendant toute l'installation, l'histoire est marquée
+  « Installée, envoi à confirmer » et l'envoi se fait d'un clic.
+- **Contrôle de la Flam branchée** : le launcher reconnaît la Flam affichée au moment du clic, puis
+  la recontrôle avant d'écrire, avant de valider l'envoi et pendant un retrait ou un changement
+  d'ordre. Si une autre Flam a été branchée entre-temps, l'opération s'arrête et les envois en
+  attente sont annulés.
+
+### Modifié
+
+- **Fermeture pendant un envoi** : fermer la fenêtre ne coupe plus l'écriture. La fermeture attend
+  la fin de l'opération en cours (bandeau avec « Ne pas fermer ») ; une seconde demande interrompt
+  l'opération tout de suite. L'arrêt de Windows n'est pas retenu.
+- **Place manquante sur la Flam** : les histoires retirées par le launcher et encore gardées de
+  côté sur la Flam sont supprimées avant de refuser un envoi faute de place.
+- **Cache** : le dossier de travail des envois est compté et vidé avec le cache.
+- **Installation** : annulation plus rapide pendant la lecture et le décodage d'une archive.
+- **Lecture sur le PC** : le script d'une histoire n'a plus accès aux fonctions qui permettaient de
+  lire ou d'écrire des fichiers, de lancer un programme ou de charger du code natif, comme sur la
+  Flam ; les images et les sons ne peuvent être pris que dans le dossier de l'histoire. Un script
+  qui tourne en boucle est interrompu dans davantage de cas et la mémoire d'une histoire est
+  plafonnée. Cette isolation réduit les risques, elle ne les supprime pas.
+
+### Corrigé
+
+- « Vider le cache » ne fige plus l'application : si un téléchargement ou une conversion occupe le
+  cache, le vidage est refusé après quelques secondes, avec un message.
+- Réglages illisibles au démarrage : le launcher ne touche plus aux dossiers de cache (un autre
+  dossier de cache choisi auparavant n'est plus vidé par « Vider le cache »).
+- Une histoire en cours de suppression ne peut plus être envoyée en même temps ; la fenêtre de
+  confirmation peut être refermée pendant la suppression, qui continue.
+- Une archive téléchargée n'est plus supprimée quand Windows refuse de la lire (antivirus, fichier
+  verrouillé, support retiré).
+- Podcasts : le téléchargement des vignettes ne bloque plus les autres opérations sur le cache.
+
+## [0.1.0-beta.6] - 2026-11-13
+
+Changements depuis `launcher-v0.1.0-beta.5`.
+
+### Modifié
+
+- **Histoires STUdio** : le tirage au hasard entre plusieurs options (option « aléatoire » de
+  l'éditeur STUdio) est accepté à l'installation.
+
+### Corrigé
+
+- **La Flam redémarrait dans un long menu** (nombreux choix avec images) : le menu gardait en
+  mémoire toutes les images déjà affichées ; il ne garde plus que celles qui sont à l'écran.
+  Vérifié sur une Flam en firmware 1.x avec des menus de 18 et de 30 choix. Les histoires déjà
+  envoyées gardent l'ancien menu : il faut les réinstaller puis les renvoyer (pour un pack de
+  podcasts : recréer le pack).
+- **« Éjecter la Flam » était refusé juste après un envoi** quand un autre programme occupait
+  encore la Flam : le launcher demande désormais le retrait à Windows, sans jamais forcer, et
+  n'annonce « Vous pouvez débrancher » que lorsque la Flam a réellement disparu.
+
+## [0.1.0-beta.5] - 2026-11-13
+
+Changements depuis `launcher-v0.1.0-beta.4`.
+
+### Ajouté
+
+- **« Retirer du PC »** : après un envoi réussi, un bouton retire l'histoire de « Mes histoires » ;
+  elle reste sur la Flam. Le launcher revérifie d'abord qu'elle est bien sur la Flam branchée. Un
+  réglage « Retirer de Mes histoires après l'envoi sur la Flam » (désactivé par défaut) le fait
+  automatiquement, seulement si l'écriture a pu être confirmée sur la Flam.
+
+### Modifié
+
+- **Histoires STUdio** : une histoire dont un choix est marqué « aléatoire » s'installe quand ce
+  choix n'a qu'une seule option ; un tirage entre plusieurs options reste refusé.
+- **« Vider le cache »** : seuls les dossiers créés par le launcher sont comptés, nettoyés et
+  vidés ; un dossier qu'il ne reconnaît pas est laissé tel quel.
+- **Podcasts** : conversions audio bornées, fichiers WAV à l'en-tête inexact acceptés, nettoyage
+  des vignettes et des MP3 limité aux dossiers créés par le launcher.
+- **Interface** : navigation au clavier dans les boîtes de dialogue, listes relues après un vidage
+  du cache.
+
+### Corrigé
+
+- **Installation** : une erreur de lecture ou d'écriture du système (disque, antivirus) ne fait
+  plus retélécharger l'histoire ; après un arrêt du launcher, la file d'installation reprend sans
+  lancer deux fois la même tâche ; une image non reconnue dans une histoire Telmi ne fait plus
+  échouer la conversion.
+- **Ma Flam** : si la Flam est débranchée ou remplacée pendant le choix d'une histoire officielle
+  (mode carrier), la demande est abandonnée au lieu de bloquer les fiches d'histoire.
+- **Lecture sur le PC** : un dossier `.plain` fourni par l'auteur d'une histoire n'est plus écrasé
+  par l'archive `.pk` voisine.
+
+## [0.1.0-beta.4] - 2026-11-07
+
+Changements depuis `launcher-v0.1.0-beta.3`.
+
+### Ajouté
+
+- **Histoires STUdio (Flam en firmware 2.x seulement)** : une histoire créée avec l'éditeur STUdio
+  (archive `.zip` contenant `story.json`) est reconnue dans un dossier source (badge « Format
+  STUdio »), s'installe dans « Mes histoires » et s'envoie sur une Flam 2.x. Images et sons sont
+  convertis automatiquement. Sur une Flam en firmware 1.x, l'envoi est grisé et expliqué ; la
+  lecture sur le PC n'est pas disponible ; si la même histoire est déjà installée au format Telmi,
+  le launcher demande confirmation avant de la remplacer.
+
+### Modifié
+
+- **Scan d'un dossier** : au lieu de « pas une histoire Telmi ? », le launcher explique ce qu'il a
+  trouvé (histoire STUdio, histoire Flam dans un zip, pack Lunii du commerce, archive inconnue avec
+  les premiers noms de fichiers, noms de fichiers Telmi en majuscules à renommer).
+- **Ma Flam** : les histoires au format Lunii présentes sur la Flam sont reconnues et affichées
+  avec leur titre.
+
+### Corrigé
+
+- **Ma Flam** : les titres ne clignotent plus quand on actualise la liste.
+- **Fiabilité** : une annulation est prise en compte immédiatement, même quand une étape attendait
+  son tour ; les fichiers temporaires laissés par un arrêt brutal sont nettoyés au démarrage.
+
 ## [0.1.0-beta.3] - 2026-10-25
 
 Changements depuis `launcher-v0.1.0-beta.2`.
@@ -103,6 +226,10 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   programme intégré. Python 3 reste utile uniquement aux outils de campagne et de parité du
   dépôt (`tools/telmi2flam/`, sans Pillow), pas aux utilisateurs.
 
-[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.3...HEAD
+[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0...HEAD
+[0.1.0]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.6...launcher-v0.1.0
+[0.1.0-beta.6]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.5...launcher-v0.1.0-beta.6
+[0.1.0-beta.5]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.4...launcher-v0.1.0-beta.5
+[0.1.0-beta.4]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.3...launcher-v0.1.0-beta.4
 [0.1.0-beta.3]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.2...launcher-v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.1...launcher-v0.1.0-beta.2
