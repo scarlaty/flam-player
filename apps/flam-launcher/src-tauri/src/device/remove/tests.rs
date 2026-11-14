@@ -1,6 +1,8 @@
 //! Tests sur faux appareil : retrait, refus, coupure simulée après chaque étape puis reprise.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use super::*;
 use crate::device::guard::tests::{mdf_v1_real, test_ctx};
@@ -118,6 +120,7 @@ fn retire_une_histoire_visible() {
             index_updated: true,
             folders_removed: 1,
             cleanup_pending: false,
+            device_changed: false,
         }
     );
     assert_eq!(device.index(IndexKind::Visible), [A, C]);
@@ -852,4 +855,283 @@ fn retrait_2x_sans_confirmation() {
     fs::write(device.root().join(MDF_FILE), mdf_v2_known()).unwrap();
     remove_story(device.root(), &DeviceLock::new(), B, true, &test_ctx()).unwrap();
     assert_eq!(device.index(IndexKind::Visible), [A, C]);
+}
+
+/// Opérations réelles dont la relecture de `.mdf` rend celui d'une autre Flam à partir de la
+/// `swap_at`-ième (#577) ; l'arborescence est photographiée à cet instant : tout ce qui change
+/// ensuite aurait été écrit, renommé ou supprimé sur l'autre Flam.
+struct SwapAt {
+    root: PathBuf,
+    swap_at: usize,
+    reads: Cell<usize>,
+    swapped: std::cell::RefCell<Option<BTreeMap<PathBuf, Option<Vec<u8>>>>>,
+}
+
+impl SwapAt {
+    fn new(root: &Path, swap_at: usize) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            swap_at,
+            reads: Cell::new(0),
+            swapped: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Arborescence au moment du changement de Flam (`None` : il n'a pas eu lieu).
+    fn at_swap(&self) -> Option<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+        self.swapped.borrow().clone()
+    }
+}
+
+impl TrashFs for SwapAt {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealTrashFs.rename(from, to)
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_file(path)
+    }
+    fn sleep(&self, _delay: Duration) {}
+    fn read_mdf_once(&self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        let n = self.reads.get();
+        self.reads.set(n + 1);
+        if n < self.swap_at {
+            return read_mdf(root);
+        }
+        let mut swapped = self.swapped.borrow_mut();
+        if swapped.is_none() {
+            *swapped = Some(crate::device::guard::tests::snapshot(&self.root));
+        }
+        Ok(zeroize::Zeroizing::new(
+            crate::device::guard::tests::mdf_v2_known(),
+        ))
+    }
+}
+
+/// Préparation d'une configuration de retrait éprouvée.
+type Setup = fn(&Device);
+
+/// Configurations : (nom, UUID retiré, préparation de la Flam).
+fn setups() -> Vec<(&'static str, &'static str, Setup)> {
+    vec![
+        ("visible", B, |_| {}),
+        ("masquée", H, |_| {}),
+        ("dans les deux index et les deux dossiers", B, |device| {
+            device.put_index("list.hidden", &[H, B]);
+            device.story(HIDDEN_STORIES_DIR, B);
+        }),
+        ("orpheline", B, |device| {
+            device.put_index("list", &[A, C]);
+        }),
+    ]
+}
+
+/// #577 : la Flam est échangée juste avant chacune des écritures du retrait (corbeille, chaque
+/// index, relecture, chaque renommage, chaque suppression). À chaque point : l'arborescence de la
+/// Flam branchée est strictement celle du moment de l'échange (rien d'écrit, de renommé ni de
+/// supprimé après), aucune histoire encore listée n'a perdu son dossier, les index restent
+/// valides, et la reprise (nouveau retrait) termine le travail sans perte.
+#[test]
+fn flam_echangee_a_chaque_ecriture_du_retrait_rien_n_est_touche() {
+    use crate::device::guard::tests::snapshot;
+    for (name, uuid, setup) in setups() {
+        let story = StoryId::parse(uuid).unwrap();
+        let mut swap_at = 0;
+        loop {
+            let device = Device::new();
+            setup(&device);
+            let ops = SwapAt::new(device.root(), swap_at);
+            let lock = DeviceLock::new();
+            let result = remove_with(
+                device.root(),
+                &lock,
+                uuid,
+                true,
+                &test_ctx(),
+                &ops,
+                &mut |_| Ok(()),
+            );
+            assert_eq!(lock.current(), None);
+            let finished = match &result {
+                Ok(report) if !report.device_changed => {
+                    assert!(ops.at_swap().is_none(), "{name}, essai {swap_at}");
+                    true
+                }
+                Ok(report) => {
+                    // Histoire déjà retirée, seule la suppression de la corbeille est laissée.
+                    assert!(report.cleanup_pending, "{name}, essai {swap_at}");
+                    false
+                }
+                Err(err) => {
+                    assert!(
+                        matches!(err, RemoveError::DeviceChangedDuring),
+                        "{name}, essai {swap_at} : {err}"
+                    );
+                    let app: AppError = RemoveError::DeviceChangedDuring.into();
+                    assert_eq!(app.kind(), "device_changed");
+                    false
+                }
+            };
+            if !finished {
+                // Rien n'a bougé après l'échange de Flam.
+                assert_eq!(
+                    Some(snapshot(device.root())),
+                    ops.at_swap(),
+                    "{name}, essai {swap_at}"
+                );
+            }
+            // Aucune histoire encore listée ne perd son dossier ; index valides (`index()`).
+            let visible = device.index(IndexKind::Visible);
+            let hidden = device.index(IndexKind::Hidden);
+            for listed in &visible {
+                assert!(
+                    device.has_story(STORIES_DIR, listed),
+                    "{name}, essai {swap_at} : {listed} listée sans dossier"
+                );
+            }
+            for listed in &hidden {
+                assert!(
+                    device.has_story(HIDDEN_STORIES_DIR, listed),
+                    "{name}, essai {swap_at} : {listed} masquée sans dossier"
+                );
+            }
+            device.assert_others_intact(uuid);
+
+            // Reprise : reconnexion de la Flam d'origine, puis nouveau retrait.
+            if !finished {
+                for kind in IndexKind::ALL {
+                    recover(device.root(), kind).unwrap();
+                }
+                let present = visible.iter().chain(&hidden).any(|e| e == uuid)
+                    || story_dirs(device.root(), &story)
+                        .iter()
+                        .any(|(dir, _)| dir.exists());
+                let again = remove(&device, uuid);
+                if present {
+                    again.unwrap();
+                } else {
+                    assert!(matches!(again.unwrap_err(), RemoveError::NotFound(_)));
+                }
+                for (dir, _) in story_dirs(device.root(), &story) {
+                    assert!(!dir.exists(), "{name}, essai {swap_at}");
+                }
+                assert!(!device.index(IndexKind::Visible).iter().any(|e| e == uuid));
+                assert!(!device.index(IndexKind::Hidden).iter().any(|e| e == uuid));
+                // La corbeille est vidée par l'opération suivante.
+                purge_trash(device.root(), &RealTrashFs).unwrap();
+                assert_eq!(device.trash_entries(), 0, "{name}, essai {swap_at}");
+                device.assert_others_intact(uuid);
+            }
+            if finished {
+                assert!(swap_at >= 4, "{name} : seulement {swap_at} relectures");
+                break;
+            }
+            swap_at += 1;
+            // Borne : un retrait n'a que quelques écritures, la boucle ne peut pas tourner sans fin.
+            assert!(swap_at <= 16, "{name} : le retrait ne se termine jamais");
+        }
+    }
+}
+
+/// Retrait normal : `.mdf` est relu une fois avant chaque écriture, sans attente ni faux refus
+/// (durée inchangée à quelques lectures de 126 octets près).
+#[test]
+fn un_retrait_normal_relit_mdf_sans_faux_refus() {
+    let device = Device::new();
+    let ops = SwapAt::new(device.root(), usize::MAX);
+    let report = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &ops,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert!(!report.device_changed);
+    assert!(!report.cleanup_pending);
+    // Corbeille, index, relecture, renommage, suppression, retrait du dossier de la corbeille.
+    assert_eq!(ops.reads.get(), 6);
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+}
+
+/// Verrou passager sur `.mdf` (antivirus) pendant le retrait : réessayé, pas de faux refus.
+#[test]
+fn verrou_passager_sur_mdf_pendant_le_retrait_reessaye() {
+    struct LockedMdf {
+        locked: Cell<usize>,
+        sleeps: Cell<usize>,
+    }
+    impl TrashFs for LockedMdf {
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            RealTrashFs.rename(from, to)
+        }
+        fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+            RealTrashFs.remove_dir_all(path)
+        }
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            RealTrashFs.remove_file(path)
+        }
+        fn sleep(&self, _delay: Duration) {
+            self.sleeps.set(self.sleeps.get() + 1);
+        }
+        fn read_mdf_once(&self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+            if self.locked.get() > 0 {
+                self.locked.set(self.locked.get() - 1);
+                return Err(TransferError::Io(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "verrou passager (test)",
+                )));
+            }
+            read_mdf(root)
+        }
+    }
+    let device = Device::new();
+    let ops = LockedMdf {
+        locked: Cell::new(3),
+        sleeps: Cell::new(0),
+    };
+    let report = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &ops,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert!(!report.device_changed);
+    assert_eq!(ops.sleeps.get(), 3);
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+}
+
+/// Une suppression de la corbeille retardée par un échange de Flam n'est pas un échec : le
+/// rapport le dit, et l'histoire n'est plus listée.
+#[test]
+fn echange_avant_la_suppression_rapporte_un_retrait_reussi() {
+    let device = Device::new();
+    // Relectures : corbeille 0, index 1, relecture 2, renommage 3 ; la suppression est la 5e.
+    let ops = SwapAt::new(device.root(), 4);
+    let report = remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        &ops,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert!(report.device_changed);
+    assert!(report.cleanup_pending);
+    assert_eq!(report.folders_removed, 1);
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+    assert_eq!(device.trash_entries(), 1);
+    // La prochaine opération sur la Flam d'origine vide la corbeille.
+    remove(&device, C).unwrap();
+    assert_eq!(device.trash_entries(), 0);
 }

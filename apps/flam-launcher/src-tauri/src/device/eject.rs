@@ -32,7 +32,7 @@
 //! l'appareil ([`DeviceLock`]) : un transfert ou un retrait ne doit jamais être coupé.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -79,6 +79,9 @@ pub enum EjectError {
     Busy(#[from] Busy),
     #[error("ce dossier n'est pas une Flam (fichier .mdf absent)")]
     NotADevice,
+    /// Racine reçue de l'interface qui n'est pas un lecteur détecté (#577).
+    #[error("emplacement refusé : ce n'est pas un lecteur amovible ou FAT détecté")]
+    InvalidRoot,
 }
 
 impl From<EjectError> for AppError {
@@ -297,13 +300,33 @@ pub use other::Unsupported as CurrentSystem;
 #[cfg(windows)]
 pub use sys::WindowsEject as CurrentSystem;
 
+/// [`eject`] pour une racine reçue de l'interface (#577) : refusée sans rien toucher si ce n'est
+/// pas un lecteur de `detected` (amovible ou FAT détecté, comme pour les écritures ; `None` :
+/// pas de contrôle, hors Windows).
+pub fn eject_checked(
+    root: &Path,
+    detected: Option<&[PathBuf]>,
+    lock: &DeviceLock,
+    system: &dyn EjectSystem,
+) -> Result<EjectOutcome, EjectError> {
+    super::transfer::check_front_root(root, detected).map_err(|_| EjectError::InvalidRoot)?;
+    eject(root, lock, system)
+}
+
 /// Éjecte la Flam montée en `root` (`E:\`). Rend l'éjection réussie ou le repli à afficher ;
-/// erreur si une opération est en cours sur l'appareil.
+/// erreur si une opération est en cours sur l'appareil ou si `root` n'est pas un lecteur détecté.
 #[tauri::command]
 pub async fn device_eject(root: String) -> AppResult<EjectOutcome> {
-    blocking(move || eject(Path::new(&root), &DEVICE_LOCK, &CurrentSystem))
-        .await?
-        .map_err(AppError::from)
+    blocking(move || {
+        eject_checked(
+            Path::new(&root),
+            super::transfer::detected_roots_now().as_deref(),
+            &DEVICE_LOCK,
+            &CurrentSystem,
+        )
+    })
+    .await?
+    .map_err(AppError::from)
 }
 
 /// Lettre de lecteur d'une racine de volume (`E:\`, `E:/` ou `E:`), en majuscule.

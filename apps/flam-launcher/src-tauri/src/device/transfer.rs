@@ -25,7 +25,10 @@
 //!    ([`DeviceLock`](super::lock::DeviceLock)), reprise d'un transfert interrompu ([`recover`]) et des index
 //!    ([`index::recover`]), index lisibles, histoire ni masquée ni déjà présente (sauf mise à
 //!    jour demandée), espace libre suffisant (taille arrondie aux clusters, plus
-//!    [`SPACE_MARGIN`]).
+//!    [`SPACE_MARGIN`]). Espace insuffisant : la corbeille d'un retrait précédent
+//!    (`.flam-trash/`, [`super::remove::TRASH_DIR`]) est d'abord vidée (entrées reconnues
+//!    seulement, `.mdf` relu juste avant, #577), puis l'espace relu ; seul ce vidage est écrit
+//!    avant un refus `NotEnoughSpace`, il ne touche à aucune histoire ni à l'index.
 //! 2. Copie dans `.flam-transfer/<uuid>.in/` à la racine de l'appareil, fichier par fichier,
 //!    chacun synchronisé sur le disque (`sync_all`). Empreinte SHA-256 calculée à la lecture de
 //!    la source.
@@ -74,7 +77,8 @@
 //!   soit en place ; jusque-là elle est soit dans `str/<uuid>/`, soit dans
 //!   `.flam-transfer/<uuid>.old/` d'où [`recover`] la remet en place.
 //! - Annulation, échec ou espace insuffisant avant l'étape 5 : index et `str/` inchangés, le
-//!   dossier temporaire est supprimé. Une vérification d'espace qui échoue n'écrit rien.
+//!   dossier temporaire est supprimé. Une vérification d'espace qui échoue n'écrit rien, hors le
+//!   vidage de la corbeille d'un retrait précédent (étape 1).
 //! - Seuls `str/<uuid>/` de cet UUID, `.flam-transfer/`, `list` (via `index`) et
 //!   `library.cache` sont modifiés ; jamais `usr/0/` (sauvegardes) ni les réglages.
 //!
@@ -87,6 +91,7 @@
 //! | (refus) Flam différente de celle affichée à la demande (empreinte, #609) | rien de modifié, reprise et dossier de travail compris | aucune |
 //! | (refus) `.mdf` changé depuis la garde, à l'entrée de l'envoi | rien de modifié, reprise comprise | aucune             |
 //! | les vérifications              | rien de modifié                               | aucune                                    |
+//! | (refus) espace insuffisant     | corbeille d'un retrait précédent vidée (restes d'une histoire déjà retirée) ; index, `str/` intacts | aucune |
 //! | une copie partielle            | `<uuid>.in/` incomplet ; index, `str/` intacts | `<uuid>.in/` supprimé                     |
 //! | la vérification                | `<uuid>.in/` complet mais non promu            | `<uuid>.in/` supprimé (copie à refaire)   |
 //! | (refus) `.mdf` changé avant la promotion | `<uuid>.in/` complet, non promu, laissé tel quel | `<uuid>.in/` supprimé              |
@@ -267,6 +272,11 @@ pub enum TransferError {
     NotEnoughSpace { needed: u64, free: u64 },
     #[error("l'histoire {id} est déjà sur la Flam{}", hidden_note(.hidden))]
     AlreadyInstalled { id: StoryId, hidden: bool },
+    /// Un dossier `str.hidden/<uuid>/` existe mais l'UUID n'est dans aucun index (orphelin masqué,
+    /// par exemple après un échec entre l'écriture de `list.hidden` et le renommage) : refusé comme
+    /// une histoire masquée, avec la marche à suivre. Le remplacement n'est pas géré ici.
+    #[error("un dossier masqué de l'histoire {id} est présent sur la Flam mais figure dans aucun index : retirez d'abord cette histoire non listée depuis « Ma Flam », puis renvoyez-la ; rien n'a été écrit")]
+    HiddenOrphan { id: StoryId },
     /// « Remplacer » visait une autre histoire de la Flam que celle préparée (`uuid.bin`).
     #[error(
         "l'histoire préparée ({id}) n'est pas celle à remplacer sur la Flam : rien n'a été écrit"
@@ -305,6 +315,11 @@ pub enum TransferError {
     /// la Flam d'origine (la reprise y remettrait l'ancienne version).
     #[error("la Flam a été débranchée, remplacée ou momentanément illisible juste après la mise à jour : elle est peut-être faite ; rebranchez la Flam d'origine pour vérifier")]
     DeviceChangedAfterUpdate,
+    /// `.mdf` différent ou absent au moment de vider la corbeille pour faire de la place (#577) :
+    /// la corbeille n'est pas vidée. Rien n'a été copié ; une reprise a pu écrire juste avant, sur
+    /// la Flam d'origine.
+    #[error("la Flam branchée n'est plus celle vérifiée avant la préparation (fichier .mdf différent ou absent) : l'histoire n'a pas été envoyée et la corbeille de la Flam n'a pas été vidée ; rebranchez la Flam choisie puis réessayez")]
+    DeviceChangedBeforeTrash,
     #[error("transfert annulé : la Flam est inchangée")]
     Cancelled,
     #[error("vérification échouée ({0}) : la copie relue sur la Flam diffère de l'original ; rien n'a été installé")]
@@ -373,6 +388,7 @@ impl From<TransferError> for AppError {
             | TransferError::DeviceChangedDuringSend
             | TransferError::DeviceChangedBeforeIndex
             | TransferError::DeviceChangedAfterUpdate
+            | TransferError::DeviceChangedBeforeTrash
             | TransferError::Refused(WriteRefused::DeviceChanged) => {
                 AppError::DeviceChanged(err.to_string())
             }
@@ -381,6 +397,7 @@ impl From<TransferError> for AppError {
             | TransferError::InvalidRoot
             | TransferError::NotEnoughSpace { .. }
             | TransferError::AlreadyInstalled { .. }
+            | TransferError::HiddenOrphan { .. }
             | TransferError::ReplaceMismatch { .. }
             | TransferError::UnsupportedFirmware(_)
             | TransferError::KeyUnavailable(_)
@@ -804,8 +821,17 @@ pub(crate) fn send_with(
     if !matches!(hidden.state, IndexState::Valid | IndexState::Absent) {
         return Err(TransferError::IndexNeedsUser);
     }
-    if hidden.entries.contains(&id) || root.join(HIDDEN_STORIES_DIR).join(id.as_str()).exists() {
+    if hidden.entries.contains(&id) {
         return Err(TransferError::AlreadyInstalled { id, hidden: true });
+    }
+    // Dossier masqué hors des deux index : toujours refusé, mais avec un message qui dit quoi faire
+    // (l'orphelin est visible dans « Ma Flam » et s'y retire).
+    if root.join(HIDDEN_STORIES_DIR).join(id.as_str()).exists() {
+        return Err(if list.entries.contains(&id) {
+            TransferError::AlreadyInstalled { id, hidden: true }
+        } else {
+            TransferError::HiddenOrphan { id }
+        });
     }
     let target = root.join(STORIES_DIR).join(id.as_str());
     let listed = list.entries.contains(&id);
@@ -815,7 +841,38 @@ pub(crate) fn send_with(
     }
     let (files, total) = plan(prepared)?;
     let needed = needed_space(&files);
-    let free = fs.free_space(root)?;
+    let mut free = fs.free_space(root)?;
+    // La corbeille d'un retrait précédent (`.flam-trash/`, vidée au prochain retrait seulement)
+    // occupe peut-être la place manquante (#577). Vidée seulement ici, faute de place et si elle
+    // contient une entrée reconnue (`<uuid>-<32 hexadécimaux>`, d'un retrait terminé) ; sinon
+    // refus d'espace tout de suite, sans relire `.mdf`. Avant de supprimer : `.mdf` relu (différent
+    // ou absent : `DeviceChangedBeforeTrash` ; illisible après les nouveaux essais : erreur
+    // d'entrée/sortie, pas un changement de Flam), sous le verrou. Un échec du vidage n'empêche
+    // rien : l'espace est relu et décide.
+    if free < needed && super::remove::has_purgeable_trash(root) {
+        match same_device(fs, permit, root) {
+            Ok(true) => {}
+            Ok(false) | Err(TransferError::DeviceNotFound) => {
+                tracing::warn!("Flam débranchée ou remplacée avant le vidage de la corbeille");
+                return Err(TransferError::DeviceChangedBeforeTrash);
+            }
+            Err(err) => return Err(err),
+        }
+        match super::remove::empty_trash(root) {
+            Ok(0) => {}
+            Ok(removed) => {
+                tracing::info!(
+                    entrees = removed,
+                    "corbeille de la Flam vidée pour libérer de la place"
+                );
+                free = fs.free_space(root)?;
+            }
+            Err(err) => {
+                tracing::warn!("corbeille de la Flam non vidée : {err}");
+                free = fs.free_space(root)?;
+            }
+        }
+    }
     if free < needed {
         return Err(TransferError::NotEnoughSpace { needed, free });
     }
@@ -1503,14 +1560,52 @@ fn carrier_outcome(
 /// doit pas pouvoir faire écrire dans un dossier quelconque qui contiendrait un `.mdf`.
 /// Hors Windows, aucune détection n'existe : pas de contrôle.
 pub(crate) fn ensure_detected_root(root: &Path) -> Result<(), TransferError> {
-    #[cfg(windows)]
-    {
-        ensure_root_among(root, &super::detect::Environment::current().roots)
+    check_front_root(root, detected_roots_now().as_deref())
+}
+
+/// Racines des lecteurs détectés à l'instant (`None` : pas de contrôle, hors Windows aucune
+/// détection n'existe).
+pub(crate) fn detected_roots_now() -> Option<Vec<PathBuf>> {
+    cfg!(windows).then(|| super::detect::Environment::current().roots)
+}
+
+/// Durée de validité de la liste des lecteurs de [`detected_roots_for_read`].
+const READ_ROOTS_REUSE: Duration = Duration::from_secs(2);
+
+/// Dernière énumération des lecteurs faite pour une lecture.
+static READ_ROOTS: Mutex<Option<(Instant, Vec<PathBuf>)>> = Mutex::new(None);
+
+/// Comme [`detected_roots_now`], pour les commandes de lecture appelées en rafale (une vignette
+/// par histoire, #577) : la liste est réutilisée 2 s tant qu'elle contient `root` ; une racine
+/// absente de la liste réutilisée la fait énumérer à neuf (Flam branchée depuis moins de 2 s) :
+/// un refus n'est donc jamais fondé sur une liste périmée. Les écritures énumèrent toujours à
+/// neuf ([`detected_roots_now`]).
+pub(crate) fn detected_roots_for_read(root: &Path) -> Option<Vec<PathBuf>> {
+    if !cfg!(windows) {
+        return None;
     }
-    #[cfg(not(windows))]
-    {
-        let _ = root;
-        Ok(())
+    let mut memo = READ_ROOTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, roots)) = memo.as_ref() {
+        if at.elapsed() < READ_ROOTS_REUSE && ensure_root_among(root, roots).is_ok() {
+            return Some(roots.clone());
+        }
+    }
+    let roots = super::detect::Environment::current().roots;
+    *memo = Some((Instant::now(), roots.clone()));
+    Some(roots)
+}
+
+/// Contrôle de la racine reçue de l'interface par une commande qui ne passe pas par la garde
+/// d'écriture (éjection, mode carrier, détails des histoires, #577) : un lecteur détecté de
+/// `detected`, comme pour les écritures ; `None` : pas de contrôle (voir
+/// [`detected_roots_now`]).
+pub(crate) fn check_front_root(
+    root: &Path,
+    detected: Option<&[PathBuf]>,
+) -> Result<(), TransferError> {
+    match detected {
+        Some(roots) => ensure_root_among(root, roots),
+        None => Ok(()),
     }
 }
 
@@ -1712,8 +1807,9 @@ pub async fn device_carrier_preview(
         SettingsStore::new(&config.dir).load()?.carrier_consent
     };
     blocking(move || -> AppResult<EnteredPreview> {
+        // Lecture seule : ne retient pas la fermeture de la fenêtre (#577).
         let _guard = DEVICE_LOCK
-            .try_begin(Operation::Transfer)
+            .try_begin(Operation::Read)
             .map_err(TransferError::from)?;
         let root = Path::new(&root);
         ensure_detected_root(root)?;

@@ -22,10 +22,17 @@
 //! | Coupure ou échec après…              | État laissé                               | Reprise                    |
 //! |--------------------------------------|-------------------------------------------|----------------------------|
 //! | la validation                        | rien de modifié                           | aucune                     |
+//! | (refus) `.mdf` changé avant l'écriture de l'index (#577) | rien de modifié sur la Flam branchée, hors la reprise d'une écriture d'index interrompue faite après la garde ; ancien ordre sur la Flam d'origine | aucune : l'ordre se redemande à la Flam d'origine |
 //! | `list.new` (complet ou partiel)      | ancien `list`, `list.new` sans `list.bak` | `list.new` supprimé : ancien ordre |
 //! | `list.bak` (complet ou partiel)      | ancien `list`, `list.new`, `list.bak`     | ancien ordre gardé |
 //! | le renommage, cible perdue           | `list` absent, `list.new`, `list.bak`     | `list.new` promu : nouvel ordre |
 //! | le remplacement, la relecture, le cache | nouveau `list`, `list.bak`             | nouvel ordre, cache supprimé |
+//!
+//! `.mdf` est relu (même mécanisme et mêmes nouveaux essais que l'envoi,
+//! [`super::guard::WritePermit::still_on`]) **juste avant l'écriture de l'index**, seule écriture irréversible :
+//! un échange de Flam depuis la garde ne fait écrire l'ordre que sur la Flam d'origine. Fenêtre
+//! résiduelle : un échange pendant l'écriture elle-même (quelques millisecondes) n'est pas vu,
+//! comme pour l'envoi.
 //!
 //! L'index est donc toujours l'ancien ou le nouvel ordre complet, jamais vide ni tronqué. La
 //! reprise des index ([`recover`]) est lancée au début de chaque opération et au branchement
@@ -47,6 +54,7 @@ use super::index::{
     StoryId, WriteOutcome,
 };
 use super::lock::{Busy, DeviceLock, Operation, DEVICE_LOCK};
+use super::transfer::{read_mdf, TransferError};
 use crate::catalog::blocking;
 use crate::{AppError, AppResult};
 
@@ -83,6 +91,10 @@ pub enum ReorderError {
         short(.0)
     )]
     Missing(StoryId),
+    /// `.mdf` relu juste avant l'écriture de l'index différent de celui de la garde, absent ou
+    /// illisible (#577) : rien n'a été écrit sur la Flam branchée.
+    #[error("la Flam a été débranchée, remplacée ou momentanément illisible pendant le changement d'ordre : rien n'a été écrit ; rebranchez la Flam d'origine puis recommencez")]
+    DeviceChangedDuring,
     #[error(transparent)]
     Busy(#[from] Busy),
     /// Refus de la garde commune des écritures ([`super::guard`]) : rien n'a été écrit.
@@ -106,9 +118,8 @@ impl From<ReorderError> for AppError {
         match err {
             ReorderError::Index(_) => AppError::Io(io::Error::other(err.to_string())),
             // Flam différente de celle dont l'ordre était affiché (#609) : rien n'a été écrit.
-            ReorderError::Refused(WriteRefused::DeviceChanged) => {
-                AppError::DeviceChanged(err.to_string())
-            }
+            ReorderError::Refused(WriteRefused::DeviceChanged)
+            | ReorderError::DeviceChangedDuring => AppError::DeviceChanged(err.to_string()),
             _ => AppError::Validation(err.to_string()),
         }
     }
@@ -116,6 +127,26 @@ impl From<ReorderError> for AppError {
 
 /// Écriture de `list`, injectable pour les tests de coupure.
 type WriteList<'a> = dyn FnMut(&Path, &[StoryId]) -> Result<WriteOutcome, IndexError> + 'a;
+
+/// Lecture de `.mdf` pour la relecture d'avant écriture, injectable pour les tests (#577).
+trait MdfSource {
+    /// Une tentative de lecture.
+    fn read_once(&mut self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError>;
+    /// Attente entre deux essais.
+    fn sleep(&mut self, delay: std::time::Duration);
+}
+
+/// Lecture réelle.
+struct RealMdf;
+
+impl MdfSource for RealMdf {
+    fn read_once(&mut self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        read_mdf(root)
+    }
+    fn sleep(&mut self, delay: std::time::Duration) {
+        std::thread::sleep(delay);
+    }
+}
 
 /// Racine d'un appareil : chemin absolu, `.mdf` présent (fichier, pas un lien).
 fn check_device(root: &Path) -> Result<(), ReorderError> {
@@ -190,11 +221,23 @@ fn reorder_with(
     ctx: &WriteContext<'_>,
     write: &mut WriteList<'_>,
 ) -> Result<ReorderReport, ReorderError> {
+    reorder_checked(root, lock, order, ctx, write, &mut RealMdf)
+}
+
+/// Corps de [`reorder_with`] ; `mdf` : lecture de `.mdf` d'avant écriture (injectable).
+fn reorder_checked(
+    root: &Path,
+    lock: &DeviceLock,
+    order: &[String],
+    ctx: &WriteContext<'_>,
+    write: &mut WriteList<'_>,
+    mdf: &mut dyn MdfSource,
+) -> Result<ReorderReport, ReorderError> {
     let order = parse_order(order)?;
     check_device(root)?;
     let _guard = lock.try_begin(Operation::Reorder)?;
     // Garde commune, sous le verrou et avant toute écriture (reprise d'index comprise).
-    check_write(root, ctx, WriteKind::Other)?;
+    let permit = check_write(root, ctx, WriteKind::Other)?;
 
     // Reprise d'une écriture d'index interrompue, puis lecture des deux index.
     for kind in IndexKind::ALL {
@@ -219,6 +262,17 @@ fn reorder_with(
             cache_removed: false,
             count,
         });
+    }
+    // Dernière relecture de `.mdf`, juste avant la seule écriture irréversible (#577).
+    let mdf = std::cell::RefCell::new(mdf);
+    if !permit.still_on(
+        || mdf.borrow_mut().read_once(root),
+        |delay| mdf.borrow_mut().sleep(delay),
+    ) {
+        tracing::warn!(
+            "Flam débranchée ou remplacée avant l'écriture de l'ordre : rien n'est écrit"
+        );
+        return Err(ReorderError::DeviceChangedDuring);
     }
     let (changed, cache_removed) = match write(root, &order) {
         Ok(WriteOutcome::Written) => (true, true),

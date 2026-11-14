@@ -303,6 +303,18 @@ pub(crate) fn fat_upper(name: &str) -> String {
         .collect()
 }
 
+/// Nom de composant acceptable sur la Flam (FAT) : non vide, sans caractère de contrôle ni
+/// interdit, sans point ni espace final, pas un nom réservé de Windows. Contrôle commun du nom
+/// d'entrée de l'archive ([`safe_relative`]) et du nom final sur la Flam ([`plan_entry`], #577).
+fn is_valid_component(part: &str) -> bool {
+    let forbidden = |c: char| c.is_control() || "<>:\"|?*\\".contains(c);
+    !(part.is_empty()
+        || part.chars().any(forbidden)
+        || part.ends_with('.')
+        || part.ends_with(' ')
+        || is_reserved_windows_name(part))
+}
+
 /// Chemin relatif sûr (composants séparés par `/`) d'une entrée, ou erreur.
 fn safe_relative(raw_name: &str, enclosed: Option<PathBuf>) -> Result<String, PrepareError> {
     let bad = || invalid(format!("nom d'entrée refusé : {raw_name:?}"));
@@ -313,13 +325,7 @@ fn safe_relative(raw_name: &str, enclosed: Option<PathBuf>) -> Result<String, Pr
             return Err(bad());
         };
         let part = part.to_str().ok_or_else(bad)?;
-        let forbidden = |c: char| c.is_control() || "<>:\"|?*\\".contains(c);
-        if part.is_empty()
-            || part.chars().any(forbidden)
-            || part.ends_with('.')
-            || part.ends_with(' ')
-            || is_reserved_windows_name(part)
-        {
+        if !is_valid_component(part) {
             return Err(bad());
         }
         parts.push(part.to_string());
@@ -354,7 +360,13 @@ fn plan_entry(relative: &str) -> Result<Option<(String, Action)>, PrepareError> 
     } else {
         (relative.to_string(), Action::Copy)
     };
-    if target.is_empty() || target.ends_with('/') || target.eq_ignore_ascii_case(KEY_FILE) {
+    // Nom final recontrôlé composant par composant (#577) : retirer `.plain` ou passer de `.lua` à
+    // `.lsf` peut laisser un nom invalide sur la Flam (`img/a..plain` donne `img/a.`, `a .plain`
+    // donne `a `, `.plain` donne un nom vide).
+    if target.is_empty()
+        || !target.split('/').all(is_valid_component)
+        || target.eq_ignore_ascii_case(KEY_FILE)
+    {
         return Err(invalid(format!("nom d'entrée refusé : {relative:?}")));
     }
     Ok(Some((target, action)))
@@ -951,6 +963,34 @@ mod tests {
         let mut entries = base_entries();
         entries.push(("script/nodes.lua.plain", b"return 3".to_vec()));
         expect_invalid(&entries, "donnent");
+    }
+
+    /// #577 : le nom final est recontrôlé après le retrait de `.plain` ou le passage de `.lua` à
+    /// `.lsf` : `img/a..plain` donnerait `img/a.` (point final, invalide sur FAT), `a .plain`
+    /// `a ` (espace final).
+    #[test]
+    fn nom_final_recontrole_apres_retrait_de_plain() {
+        for bad in [
+            "img/a..plain",
+            "img/a .plain",
+            "img/ .plain",
+            "a..plain",
+            "img/A..PLAIN",
+        ] {
+            assert!(plan_entry(bad).is_err(), "{bad}");
+            let mut entries = base_entries();
+            entries.push((bad, b"x".to_vec()));
+            expect_invalid(&entries, "refusé");
+        }
+        // Noms voisins valides : inchangés.
+        for (entry, target) in [
+            ("img/a.b.plain", "img/a.b"),
+            ("img/a b.plain", "img/a b"),
+            ("img/.hidden.plain", "img/.hidden"),
+            ("img/a..lua", "img/a..lsf"),
+        ] {
+            assert_eq!(plan_entry(entry).unwrap().unwrap().0, target, "{entry}");
+        }
     }
 
     #[test]

@@ -659,3 +659,36 @@ fn aucune_cle_dans_les_reponses_ni_le_debug() {
         assert!(!debug.contains(&hex));
     }
 }
+
+/// #577 : titres et vignettes refusent une racine qui n'est pas un lecteur détecté, sans rien
+/// lire (même une racine qui porte un `.mdf` et des histoires) ; un lecteur détecté, ou aucun
+/// contrôle (hors Windows), passe.
+#[test]
+fn titres_et_vignettes_refusent_une_racine_non_detectee() {
+    let dev = device_v2();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = fake_store(&tmp.path().join("cles"));
+    let cache = tempfile::tempdir().unwrap();
+    let uuids = vec![A.to_string()];
+    let elsewhere = vec![tmp.path().join("autre")];
+    let listed = vec![dev.path().to_path_buf()];
+    let before = fingerprint(dev.path());
+
+    let err = titles_for(dev.path(), Some(&elsewhere), &uuids, None, &store, &never).unwrap_err();
+    assert!(matches!(err, crate::AppError::Validation(_)), "{err}");
+    let err = thumbnail_for(dev.path(), Some(&elsewhere), A, cache.path(), false).unwrap_err();
+    assert!(matches!(err, crate::AppError::Validation(_)), "{err}");
+    // Même occupée, une racine refusée l'est d'abord.
+    assert!(thumbnail_for(dev.path(), Some(&elsewhere), A, cache.path(), true).is_err());
+    // Aucune racine détectée du tout : refusée.
+    assert!(titles_for(dev.path(), Some(&[]), &uuids, None, &store, &never).is_err());
+    assert_eq!(fingerprint(dev.path()), before);
+    assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+
+    let titles = titles_for(dev.path(), Some(&listed), &uuids, None, &store, &never).unwrap();
+    assert!(!titles.interrupted);
+    let titles = titles_for(dev.path(), None, &uuids, None, &store, &never).unwrap();
+    assert!(!titles.interrupted);
+    let thumb = thumbnail_for(dev.path(), Some(&listed), A, cache.path(), true).unwrap();
+    assert!(thumb.busy);
+}

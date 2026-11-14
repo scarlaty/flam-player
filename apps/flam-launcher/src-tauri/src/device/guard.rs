@@ -91,6 +91,7 @@ use super::crypto::{
 };
 use super::detect::MDF_FILE;
 use super::transfer::{ensure_root_among, firmware_field, keys_from_mdf, read_mdf, TransferError};
+use crate::storage::retry_transient;
 
 /// En-tête de `.mdf` mesuré (Flam 1.15.14), pour la disposition « standard ».
 pub const KNOWN_HEADER: [u8; 2] = [0x01, 0x00];
@@ -405,7 +406,10 @@ pub enum ExpectedDevice {
 }
 
 impl ExpectedDevice {
-    /// Paramètre `expected` d'une commande : absent, aucune comparaison.
+    /// Paramètre `expected` d'une commande : absent, aucune comparaison. `null` et champ absent
+    /// sont indiscernables côté IPC (`Option` de Tauri : les deux donnent `None`) et valent tous
+    /// deux « aucune comparaison » ; seul `{ fingerprint: null }` désigne une Flam sans
+    /// empreinte. Comportement figé par un test (#577).
     pub fn from_ipc(seen: Option<SeenDevice>) -> Self {
         match seen {
             None => Self::Unchecked,
@@ -418,9 +422,16 @@ impl ExpectedDevice {
 
     /// Vrai si `permit` peut servir à cette demande.
     fn allows(&self, permit: &WritePermit) -> bool {
+        self.accepts(Some(&permit.fingerprint()))
+    }
+
+    /// Vrai si la Flam d'empreinte `seen` (`None` : `.mdf` non lu, donc sans empreinte) est celle
+    /// attendue : toujours sans indication, jamais pour une Flam affichée sans empreinte. Sert
+    /// aussi aux lectures de l'appareil ([`super::status::list_stories_of`], #577).
+    pub fn accepts(&self, seen: Option<&DeviceFingerprint>) -> bool {
         match self {
             Self::Unchecked => true,
-            Self::Fingerprint(expected) => permit.fingerprint().as_str() == expected,
+            Self::Fingerprint(expected) => seen.is_some_and(|s| s.as_str() == expected),
             Self::Unidentified => false,
         }
     }
@@ -595,6 +606,26 @@ impl WritePermit {
     /// plusieurs appareils réels.
     pub fn same_mdf(&self, mdf: &[u8]) -> bool {
         <[u8; 32]>::from(Sha256::digest(mdf)) == self.mdf_digest
+    }
+
+    /// Vrai si le `.mdf` relu par `read_once` est celui que ce permis a contrôlé (#577) : relecture
+    /// avant une écriture irréversible d'un retrait ou d'un changement d'ordre, comme celle de
+    /// l'envoi. Un verrou passager (antivirus, indexeur) est réessayé ([`retry_transient`],
+    /// environ 1 s, `sleep` entre deux essais) ; un `.mdf` différent, absent ou encore illisible
+    /// après ces essais donne faux : l'écriture ne doit pas avoir lieu.
+    pub(crate) fn still_on(
+        &self,
+        mut read_once: impl FnMut() -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError>,
+        sleep: impl FnMut(Duration),
+    ) -> bool {
+        let read = retry_transient(
+            || match read_once() {
+                Err(TransferError::Io(err)) => Err(err),
+                other => Ok(other),
+            },
+            sleep,
+        );
+        matches!(read, Ok(Ok(mdf)) if self.same_mdf(&mdf))
     }
 
     /// Empreinte de la Flam du permis ([`device_fingerprint`] du `.mdf` contrôlé), calculée à

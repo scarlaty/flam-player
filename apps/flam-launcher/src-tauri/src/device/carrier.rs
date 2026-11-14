@@ -1075,6 +1075,18 @@ pub fn carrier_state(
     })
 }
 
+/// [`carrier_state`] pour une racine reçue de l'interface (#577) : refusée si ce n'est pas un
+/// lecteur de `detected` (`None` : pas de contrôle, hors Windows), comme pour l'envoi.
+pub fn carrier_state_checked(
+    root: &Path,
+    detected: Option<&[PathBuf]>,
+    consent: Option<CarrierConsent>,
+    store: &CarrierStore,
+) -> Result<CarrierState, TransferError> {
+    super::transfer::check_front_root(root, detected)?;
+    carrier_state(root, consent, store)
+}
+
 /// État du mode carrier pour la Flam de `root` (voir [`carrier_state`]).
 #[tauri::command]
 pub async fn device_carrier_state(
@@ -1083,8 +1095,9 @@ pub async fn device_carrier_state(
 ) -> AppResult<CarrierState> {
     let consent = stored_consent(&config)?;
     blocking(move || -> AppResult<CarrierState> {
-        Ok(carrier_state(
+        Ok(carrier_state_checked(
             Path::new(&root),
+            super::transfer::detected_roots_now().as_deref(),
             consent,
             &CarrierStore::app(),
         )?)

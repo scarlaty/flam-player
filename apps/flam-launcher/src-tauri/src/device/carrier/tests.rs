@@ -995,3 +995,29 @@ fn previsualisation_d_un_bt_saisi() {
     assert_no_leak(&logs, "journaux");
     assert_eq!(tree(&root), before, "lecture seule");
 }
+
+/// #577 : l'état du mode carrier n'est donné que pour un lecteur détecté : une racine
+/// quelconque portant un `.mdf` est refusée sans rien lire, comme pour l'envoi.
+#[test]
+fn etat_refuse_une_racine_non_detectee() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("flam");
+    official_story(&root, "str", OFFICIAL, true);
+    let mut mdf = vec![0u8; 2];
+    let mut text = b"main: 1.15.14-test\ncomm: x".to_vec();
+    text.resize(48, 0);
+    mdf.extend(text);
+    mdf.resize(126, 0);
+    write(&root.join(".mdf"), &mdf);
+    let store = fake_store(&tmp.path().join("cles"));
+    let elsewhere = [tmp.path().join("autre")];
+
+    let err = carrier_state_checked(&root, Some(&elsewhere), Some(consent()), &store).unwrap_err();
+    assert!(matches!(err, TransferError::InvalidRoot), "{err}");
+    assert!(carrier_state_checked(&root, Some(&[]), None, &store).is_err());
+
+    let listed = [root.clone()];
+    let state = carrier_state_checked(&root, Some(&listed), Some(consent()), &store).unwrap();
+    assert!(state.carrier_needed);
+    assert!(carrier_state_checked(&root, None, None, &store).is_ok());
+}

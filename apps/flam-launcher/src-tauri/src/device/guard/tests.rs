@@ -844,3 +844,91 @@ fn une_empreinte_attendue_differente_est_refusee_avant_tout() {
         WriteRefused::UnsupportedFirmware { .. }
     ));
 }
+
+/// #577 : comportement figé de l'argument `expected` côté IPC. Tauri donne `None` pour un
+/// argument absent comme pour `null` : les deux valent « aucune comparaison » (aucun appel ne le
+/// fait, `device_status` rend toujours un objet). Seul un objet désigne une Flam : `{}` et
+/// `{ fingerprint: null }` (affichée sans empreinte) sont refusés, `{ fingerprint: "…" }` est
+/// comparé.
+#[test]
+fn expected_null_vaut_aucune_comparaison_un_objet_designe_une_flam() {
+    let parse = |json: &str| -> ExpectedDevice {
+        let seen: Option<SeenDevice> = serde_json::from_str(json).unwrap();
+        ExpectedDevice::from_ipc(seen)
+    };
+    assert!(parse("null") == ExpectedDevice::Unchecked);
+    assert!(parse("{}") == ExpectedDevice::Unidentified);
+    assert!(parse(r#"{"fingerprint":null}"#) == ExpectedDevice::Unidentified);
+    assert!(parse(r#"{"fingerprint":"ab"}"#) == ExpectedDevice::Fingerprint("ab".into()));
+
+    // Effet sur une écriture : `null` n'empêche rien, l'objet sans empreinte refuse.
+    let dev = device(&mdf_v2_known());
+    check_write(
+        dev.path(),
+        &test_ctx().expecting(parse("null")),
+        WriteKind::Other,
+    )
+    .unwrap();
+    assert_eq!(
+        refused(
+            dev.path(),
+            &test_ctx().expecting(parse(r#"{"fingerprint":null}"#)),
+            WriteKind::Other
+        ),
+        WriteRefused::DeviceChanged
+    );
+}
+
+/// `accepts` : sans indication tout passe ; sinon seule l'empreinte attendue, jamais l'absence
+/// d'empreinte.
+#[test]
+fn accepts_compare_l_empreinte_vue() {
+    let print = device_fingerprint(&mdf_v2_known());
+    let other = device_fingerprint(&mdf_other_device());
+    let own = ExpectedDevice::Fingerprint(print.as_str().to_string());
+    assert!(ExpectedDevice::Unchecked.accepts(None));
+    assert!(ExpectedDevice::Unchecked.accepts(Some(&print)));
+    assert!(own.accepts(Some(&print)));
+    assert!(!own.accepts(Some(&other)));
+    assert!(!own.accepts(None));
+    assert!(!ExpectedDevice::Unidentified.accepts(Some(&print)));
+    assert!(!ExpectedDevice::Unidentified.accepts(None));
+}
+
+/// `still_on` : même `.mdf` accepté ; différent, absent ou illisible refusé ; un verrou passager
+/// est réessayé, un verrou persistant refuse.
+#[test]
+fn still_on_relit_mdf_avec_nouveaux_essais() {
+    use std::cell::Cell;
+    let permit = WritePermit::for_tests(FirmwareFamily::V2, &mdf_v2_known());
+    let same = || Ok(zeroize::Zeroizing::new(mdf_v2_known()));
+    assert!(permit.still_on(same, |_| {}));
+    let other = || Ok(zeroize::Zeroizing::new(mdf_other_device()));
+    assert!(!permit.still_on(other, |_| {}));
+    let gone = || Err(TransferError::DeviceNotFound);
+    assert!(!permit.still_on(gone, |_| {}));
+    let locked = || {
+        Err(TransferError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "verrou (test)",
+        )))
+    };
+    let sleeps = Cell::new(0);
+    assert!(!permit.still_on(locked, |_| sleeps.set(sleeps.get() + 1)));
+    assert_eq!(sleeps.get(), 7, "tous les nouveaux essais sont faits");
+    // Verrou passager : deux refus puis le bon fichier.
+    let tries = Cell::new(0);
+    let flaky = || {
+        tries.set(tries.get() + 1);
+        if tries.get() <= 2 {
+            Err(TransferError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "verrou (test)",
+            )))
+        } else {
+            Ok(zeroize::Zeroizing::new(mdf_v2_known()))
+        }
+    };
+    assert!(permit.still_on(flaky, |_| {}));
+    assert_eq!(tries.get(), 3);
+}

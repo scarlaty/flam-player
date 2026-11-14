@@ -233,9 +233,41 @@ pub fn list_stories(
     env: &Environment,
     titles: &HashMap<String, LibraryMatch>,
 ) -> Option<StoriesReport> {
+    list_stories_of(env, titles, None).ok().flatten()
+}
+
+/// La Flam détectée à la racine demandée n'est pas celle que l'interface affichait (#577).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrongDevice;
+
+/// Comme [`list_stories`], pour une Flam précise : `selection` porte la racine (`root`, celle
+/// que l'interface affiche) et la Flam attendue (`expected`, empreinte de `device_status`,
+/// comparée à celle du `.mdf` lu par la détection). Avec deux Flam branchées, la liste est celle
+/// de la racine demandée et jamais celle de « la première » (#577). `None` : aucune Flam à cette
+/// racine (débranchée) ; `Err(WrongDevice)` : une autre Flam a pris la place. Sans `selection`,
+/// première Flam détectée, comme avant.
+pub fn list_stories_of(
+    env: &Environment,
+    titles: &HashMap<String, LibraryMatch>,
+    selection: Option<(&Path, &guard::ExpectedDevice)>,
+) -> Result<Option<StoriesReport>, WrongDevice> {
     let report = detect::detect(env);
-    let device = report.devices.first()?;
-    Some(read_stories(&device.root, titles))
+    let device = match selection {
+        None => report.devices.first(),
+        Some((root, _)) => report.devices.iter().find(|device| {
+            super::transfer::ensure_root_among(root, std::slice::from_ref(&device.root)).is_ok()
+        }),
+    };
+    let Some(device) = device else {
+        return Ok(None);
+    };
+    if let Some((_, expected)) = selection {
+        let seen = device.mdf_bytes.as_deref().map(guard::device_fingerprint);
+        if !expected.accepts(seen.as_ref()) {
+            return Err(WrongDevice);
+        }
+    }
+    Ok(Some(read_stories(&device.root, titles)))
 }
 
 fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesReport {
@@ -274,6 +306,12 @@ fn read_stories(root: &Path, titles: &HashMap<String, LibraryMatch>) -> StoriesR
         push(id, Placement::Hidden, false);
     }
     for id in &folders {
+        push(id, Placement::Unlisted, false);
+    }
+    // Orphelins masqués : dossier de `str.hidden/` absent des deux index (par exemple après un
+    // échec entre l'écriture de `list.hidden` et le renommage), à voir et à retirer comme ceux de
+    // `str/` (#577). Les dossiers déjà listés ont leur place plus haut.
+    for id in &index::scan_hidden_stories(root) {
         push(id, Placement::Unlisted, false);
     }
 
@@ -407,10 +445,18 @@ fn library_titles(
 }
 
 /// Histoires installées sur la Flam (`None` : aucune Flam détectée).
+///
+/// `root` et `expected` (`{ fingerprint }` de `device_status`, #577) : Flam dont l'interface
+/// affiche la liste. Avec deux Flam branchées, la liste est celle de cette racine, jamais celle
+/// de « la première » ; une autre Flam à sa place : refus `device_changed`. Absents : première
+/// Flam détectée, comme avant (l'interface doit les transmettre pour que la liste affichée soit
+/// toujours celle de la Flam affichée).
 #[tauri::command]
 pub async fn device_list_stories(
     service: State<'_, InstallService>,
     config: State<'_, ConfigState>,
+    root: Option<String>,
+    expected: Option<guard::SeenDevice>,
 ) -> AppResult<Option<StoriesReport>> {
     // Une bibliothèque illisible ne doit pas empêcher d'afficher l'appareil : les titres
     // manquent simplement.
@@ -430,9 +476,16 @@ pub async fn device_list_stories(
             .map_err(|err| tracing::warn!("dossier de cache illisible pour « Ma Flam » : {err}"))
             .ok();
         let titles = library_titles(cache_root.as_deref(), entries);
-        list_stories(&Environment::current(), &titles)
+        let expected = guard::ExpectedDevice::from_ipc(expected);
+        let selection = root.as_deref().map(|root| (Path::new(root), &expected));
+        list_stories_of(&Environment::current(), &titles, selection).map_err(|WrongDevice| {
+            crate::AppError::DeviceChanged(
+                "la Flam branchée n'est plus celle affichée (fichier .mdf différent) : actualisez l'écran"
+                    .to_string(),
+            )
+        })
     })
-    .await
+    .await?
 }
 
 #[cfg(test)]
@@ -920,5 +973,137 @@ mod tests {
         assert!(serde_json::to_string(&unreadable)
             .unwrap()
             .contains("\"fingerprint\":null"));
+    }
+
+    /// #577 : un dossier de `str.hidden/` absent des deux index (refus entre l'écriture de
+    /// `list.hidden` et le renommage) est montré comme orphelin, retirable comme ceux de `str/` ;
+    /// un appareil sain (dossier masqué listé dans `list.hidden`) donne la même liste qu'avant,
+    /// et rien n'est écrit sur la Flam.
+    #[test]
+    fn un_orphelin_masque_est_visible_et_un_appareil_sain_inchange() {
+        let dev = installed_device();
+        // Sain : C est listée dans `list.hidden`, son dossier est dans `str.hidden/`.
+        put(dev.path(), &format!("str.hidden/{C}/info"), "x");
+        let before = fingerprint(dev.path());
+        let titles = HashMap::new();
+        let healthy = read_stories(dev.path(), &titles);
+        let placements: Vec<_> = healthy
+            .stories
+            .iter()
+            .map(|s| (s.uuid.clone(), s.placement))
+            .collect();
+        let expected = [
+            (A, Placement::Visible),
+            (B, Placement::Visible),
+            (C, Placement::Hidden),
+            (D, Placement::Unlisted),
+        ]
+        .map(|(uuid, placement)| (uuid.to_string(), placement));
+        assert_eq!(placements, expected);
+        assert_eq!(fingerprint(dev.path()), before, "lecture seule");
+        // Orphelin masqué : dans `str.hidden/`, dans aucun index.
+        let orphan = "55555555-5555-4555-8555-555555555555";
+        put(dev.path(), &format!("str.hidden/{orphan}/info"), "x");
+        let before_orphan = fingerprint(dev.path());
+        let report = read_stories(dev.path(), &titles);
+        let found = report.stories.iter().find(|s| s.uuid == orphan).unwrap();
+        assert_eq!(found.placement, Placement::Unlisted);
+        // Les autres lignes sont inchangées.
+        let others: Vec<_> = report
+            .stories
+            .iter()
+            .filter(|s| s.uuid != orphan)
+            .map(|s| (s.uuid.clone(), s.placement))
+            .collect();
+        assert_eq!(others, placements);
+        assert_eq!(fingerprint(dev.path()), before_orphan);
+    }
+
+    /// Deux Flam branchées : la première porte A, la seconde B (`.mdf` différents).
+    fn two_devices() -> (tempfile::TempDir, tempfile::TempDir) {
+        let first = fake_device();
+        put(first.path(), "etc/library/list", &format!("{A}\n"));
+        put(first.path(), &format!("str/{A}/info"), "x");
+        let second = fake_device();
+        let mut mdf = fs::read(second.path().join(detect::MDF_FILE)).unwrap();
+        mdf[10] ^= 0xFF;
+        fs::write(second.path().join(detect::MDF_FILE), mdf).unwrap();
+        put(second.path(), "etc/library/list", &format!("{B}\n"));
+        put(second.path(), &format!("str/{B}/info"), "x");
+        (first, second)
+    }
+
+    fn visible(report: &StoriesReport) -> Vec<&str> {
+        report
+            .stories
+            .iter()
+            .filter(|s| s.placement == Placement::Visible)
+            .map(|s| s.uuid.as_str())
+            .collect()
+    }
+
+    /// #577 : avec deux Flam, la liste est celle de la racine demandée, pas celle de la première
+    /// détectée ; sans racine, comme avant (première Flam).
+    #[test]
+    fn avec_deux_flam_la_liste_est_celle_de_la_racine_demandee() {
+        let (first, second) = two_devices();
+        let both = env(vec![
+            first.path().to_path_buf(),
+            second.path().to_path_buf(),
+        ]);
+        let none = guard::ExpectedDevice::Unchecked;
+        let titles = HashMap::new();
+        let of = |root: &Path| {
+            list_stories_of(&both, &titles, Some((root, &none)))
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(visible(&of(first.path())), [A]);
+        assert_eq!(visible(&of(second.path())), [B]);
+        let default = list_stories_of(&both, &titles, None).unwrap().unwrap();
+        assert_eq!(visible(&default), [A], "sans racine : la première");
+        assert_eq!(visible(&list_stories(&both, &titles).unwrap()), [A]);
+        // Racine sans Flam : aucune liste, et jamais celle d'une autre.
+        let nowhere = tempfile::tempdir().unwrap();
+        assert_eq!(
+            list_stories_of(&both, &titles, Some((nowhere.path(), &none))),
+            Ok(None)
+        );
+    }
+
+    /// #577 : la Flam attendue (empreinte de `device_status`) est comparée à celle de la racine ;
+    /// une autre Flam à sa place, ou affichée sans empreinte : refus, rien n'est lu.
+    #[test]
+    fn la_liste_refuse_une_autre_flam_que_celle_attendue() {
+        let (first, second) = two_devices();
+        let both = env(vec![
+            first.path().to_path_buf(),
+            second.path().to_path_buf(),
+        ]);
+        let titles = HashMap::new();
+        let print = |dev: &tempfile::TempDir| {
+            let mdf = fs::read(dev.path().join(detect::MDF_FILE)).unwrap();
+            guard::device_fingerprint(&mdf).as_str().to_string()
+        };
+        let expected_second = guard::ExpectedDevice::Fingerprint(print(&second));
+        // La racine de la première avec l'empreinte de la seconde : refus.
+        assert_eq!(
+            list_stories_of(&both, &titles, Some((first.path(), &expected_second))),
+            Err(WrongDevice)
+        );
+        // Flam affichée sans empreinte : refus aussi.
+        assert_eq!(
+            list_stories_of(
+                &both,
+                &titles,
+                Some((first.path(), &guard::ExpectedDevice::Unidentified))
+            ),
+            Err(WrongDevice)
+        );
+        // La bonne empreinte avec la bonne racine : la liste.
+        let report = list_stories_of(&both, &titles, Some((second.path(), &expected_second)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(visible(&report), [B]);
     }
 }

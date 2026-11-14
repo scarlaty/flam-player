@@ -200,10 +200,18 @@ export function getDeviceDiagnostic(): Promise<string> {
 
 /**
  * `device_list_stories` : histoires de la Flam (`null` : aucune Flam détectée). Lecture seule,
- * sans reprise d'index.
+ * sans reprise d'index. `root` et `expected` (#577) : Flam dont la liste est affichée ; avec deux
+ * Flam branchées, la liste est celle de cette racine, jamais celle de la première, et une autre
+ * Flam à sa place est refusée (`device_changed`). Sans eux, première Flam détectée.
  */
-export function listDeviceStories(): Promise<DeviceStories | null> {
-  return invokeCommand<DeviceStories | null>("device_list_stories");
+export function listDeviceStories(
+  root?: string,
+  expected?: ExpectedDevice,
+): Promise<DeviceStories | null> {
+  return invokeCommand<DeviceStories | null>(
+    "device_list_stories",
+    root === undefined ? undefined : { root, expected },
+  );
 }
 
 /** Format d'une histoire de la Flam (miroir de `StoryFormat`). */
@@ -435,6 +443,9 @@ export interface RemoveReport {
   index_updated: boolean;
   folders_removed: number;
   cleanup_pending: boolean;
+  /** Flam changée entre la corbeille et sa suppression (#577) : histoire retirée de la Flam
+   * d'origine, corbeille laissée à la prochaine opération. Le retrait reste réussi. */
+  device_changed: boolean;
 }
 
 /** Résultat d'un réordonnancement (miroir de `ReorderReport` dans `device/reorder.rs`). */
@@ -603,4 +614,50 @@ export function onTransferProgress(
   handler: (event: TransferProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<TransferProgress>(TRANSFER_PROGRESS_EVENT, (e) => handler(e.payload));
+}
+
+/** Écriture en cours sur la Flam dont la fermeture est retenue (miroir de `Operation::key`). */
+export type WriteOperation = "transfer" | "remove" | "reorder";
+
+/** Événement émis quand la fermeture de la fenêtre est retenue (#577), charge `{ operation }`. */
+export const CLOSE_RETAINED_EVENT = "device://close-retained";
+/** Événement émis quand la retenue prend fin sans fermeture (écriture finie, « Ne pas fermer »). */
+export const CLOSE_CLEARED_EVENT = "device://close-cleared";
+
+/** Charge de {@link CLOSE_RETAINED_EVENT}. */
+export interface CloseRetained {
+  operation: WriteOperation;
+}
+
+/**
+ * `device_close_retained` : opération dont la fermeture de la fenêtre est retenue (`null` :
+ * aucune). Interrogée au montage du bandeau pour l'afficher si l'événement a été manqué.
+ */
+export function getCloseRetained(): Promise<WriteOperation | null> {
+  return invokeCommand<WriteOperation | null>("device_close_retained");
+}
+
+/**
+ * `device_close_verdict` : verdict du backend pour la dernière demande de fermeture. `allow` :
+ * fermer ; `retain` : une écriture est en cours, le backend referme la fenêtre à sa fin.
+ */
+export function getCloseVerdict(): Promise<"allow" | "retain"> {
+  return invokeCommand<"allow" | "retain">("device_close_verdict");
+}
+
+/** `device_cancel_close` : « Ne pas fermer », lève la retenue. Vrai si elle était en cours. */
+export function cancelClose(): Promise<boolean> {
+  return invokeCommand<boolean>("device_cancel_close");
+}
+
+/** Écoute {@link CLOSE_RETAINED_EVENT}. Renvoie la fonction de désabonnement. */
+export function onCloseRetained(
+  handler: (event: CloseRetained) => void,
+): Promise<UnlistenFn> {
+  return listen<CloseRetained>(CLOSE_RETAINED_EVENT, (e) => handler(e.payload));
+}
+
+/** Écoute {@link CLOSE_CLEARED_EVENT}. Renvoie la fonction de désabonnement. */
+export function onCloseCleared(handler: () => void): Promise<UnlistenFn> {
+  return listen(CLOSE_CLEARED_EVENT, () => handler());
 }

@@ -400,6 +400,23 @@ pub fn scan_stories(root: &Path) -> io::Result<Vec<StoryId>> {
     Ok(ids)
 }
 
+/// Dossiers d'histoires présents dans `str.hidden/` (nom au format UUID), triés ; absent : rien.
+/// Sert à afficher les orphelins masqués (dossier hors des deux index, #577) ; ne sert jamais à
+/// reconstruire un index. Autre erreur de lecture : rien (l'affichage n'en dépend pas).
+pub fn scan_hidden_stories(root: &Path) -> Vec<StoryId> {
+    let Ok(entries) = fs::read_dir(root.join(super::remove::HIDDEN_STORIES_DIR)) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<StoryId> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|entry| entry.file_name().to_str().and_then(StoryId::parse))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Nombre de copies d'un index abîmé gardées : `list.corrupt`, `list.corrupt.2`, … Au-delà, la
 /// nouvelle copie n'est pas écrite (les plus anciennes sont les plus proches de l'original).
 pub(crate) const CORRUPT_COPIES: usize = 3;
