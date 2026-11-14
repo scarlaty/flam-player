@@ -274,7 +274,12 @@ pub enum TransferError {
     AlreadyInstalled { id: StoryId, hidden: bool },
     /// Un dossier `str.hidden/<uuid>/` existe mais l'UUID n'est dans aucun index (orphelin masqué,
     /// par exemple après un échec entre l'écriture de `list.hidden` et le renommage) : refusé comme
-    /// une histoire masquée, avec la marche à suivre. Le remplacement n'est pas géré ici.
+    /// une histoire masquée, avec la marche à suivre. Le remplacement n'est pas géré ici, par choix
+    /// (#652) : un orphelin n'est jamais supprimé sans confirmation de l'utilisateur
+    /// (`remove`, « orphelin signalé, retrait sur confirmation »), son contenu n'est pas forcément
+    /// celui de l'archive envoyée (masquage du firmware non spécifié, `str.hidden/` supposé), et
+    /// le retrait depuis « Ma Flam » passe par la corbeille et la reprise de `remove`, qu'un
+    /// envoi ne devrait pas dupliquer.
     #[error("un dossier masqué de l'histoire {id} est présent sur la Flam mais figure dans aucun index : retirez d'abord cette histoire non listée depuis « Ma Flam », puis renvoyez-la ; rien n'a été écrit")]
     HiddenOrphan { id: StoryId },
     /// « Remplacer » visait une autre histoire de la Flam que celle préparée (`uuid.bin`).
