@@ -157,6 +157,8 @@ export function SettingsScreen() {
     if (!view || pathsSavingRef.current || Object.values(errors).some(Boolean)) return;
     pathsSavingRef.current = true;
     setSaveError(null);
+    // Dossier de cache avant l'enregistrement (configuré et effectif), pour savoir s'il change.
+    const before = saver.current();
     try {
       // Seuls les chemins sont envoyés : le reste vient de l'état confirmé, pas de l'affichage
       // (un thème ou une voix en cours d'enregistrement n'est ni écrasé ni anticipé).
@@ -169,8 +171,15 @@ export function SettingsScreen() {
       );
       applyView(next);
       void refreshUsage();
-      // Le dossier de cache a pu changer : la bibliothèque affichée n'est plus la bonne (#570).
-      void refreshInstalled();
+      // Le dossier de cache a changé : la bibliothèque affichée n'est plus la bonne (#570). Les
+      // autres enregistrements (chemin du player seul) ne la relisent pas (#652).
+      if (
+        !before ||
+        before.settings.cache_dir !== next.settings.cache_dir ||
+        before.resolved.cache_dir !== next.resolved.cache_dir
+      ) {
+        void refreshInstalled();
+      }
       toast.show({ message: t.settingsScreen.saved, tone: "success" });
     } catch (caught) {
       setSaveError(toAppError(caught));

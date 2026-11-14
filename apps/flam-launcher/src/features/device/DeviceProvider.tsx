@@ -387,11 +387,12 @@ export function DeviceProvider({
     [updateQueue],
   );
 
-  // Flam changée, débranchée ou rebranchée : « Retirer du PC » n'est plus proposé (le backend
-  // revérifierait de toute façon que l'histoire est sur la même Flam).
+  // Autre Flam branchée : « Retirer du PC » n'est plus proposé. Une absence passagère (détection
+  // manquée, puis la même Flam revient) ne le retire pas : le backend revérifie de toute façon
+  // que l'histoire est sur la même Flam, et sans Flam le clic est refusé (#652).
   const pcCopyKey = useRef(deviceKey);
   useEffect(() => {
-    if (pcCopyKey.current === deviceKey) return;
+    if (deviceKey === null || pcCopyKey.current === deviceKey) return;
     pcCopyKey.current = deviceKey;
     clearPcCopy(() => true);
   }, [deviceKey, clearPcCopy]);

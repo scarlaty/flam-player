@@ -115,8 +115,18 @@ export const fr = {
   },
   recovery: {
     title: (file: string) => `Le fichier ${file} était illisible`,
-    body: (backup: string) =>
-      `Il a été remplacé par les valeurs par défaut. L'ancien contenu est conservé dans « ${backup} », à côté du fichier, dans le dossier de configuration.`,
+    /**
+     * `file` : fichier restauré. `settings.json` porte les réglages, dont le dossier de cache
+     * (revenu à l'emplacement par défaut) ; `sources.json` porte les sources.
+     */
+    body: (file: string, backup: string) =>
+      `${
+        file === "settings.json"
+          ? "Les réglages, dont le dossier de cache, sont revenus aux valeurs par défaut : le cache est de nouveau à l'emplacement par défaut. "
+          : file === "sources.json"
+            ? "Les sources sont revenues aux valeurs par défaut. "
+            : "Il a été remplacé par les valeurs par défaut. "
+      }L'ancien fichier est conservé sous le nom « ${backup} », à côté du fichier, dans le dossier de configuration.`,
     ack: "J'ai compris",
     ackFailed: "Impossible d'enregistrer l'acquittement.",
   },
@@ -547,15 +557,15 @@ export const fr = {
        */
       confirmDescription: (dirs: readonly string[], path: string, size: string) =>
         dirs.length === 0
-          ? `Aucun dossier créé par Flam Launcher n'est à vider dans « ${path} ». Rien ne sera supprimé.`
+          ? `Aucun dossier créé par Flam Launcher n'est à vider dans « ${path} ». Rien ne sera vidé.`
           : `${
               dirs.includes("library")
-                ? "Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. "
+                ? "Le dossier des histoires installées sera vidé : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. "
                 : ""
             }Seuls les dossiers créés par Flam Launcher (${dirs.join(", ")}) seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
       /** Relevé du cache illisible à l'ouverture de la confirmation : le pire est annoncé (#591). */
       confirmDescriptionUnknown: (path: string) =>
-        `Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché.`,
+        `Le dossier des histoires installées sera vidé : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché.`,
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",

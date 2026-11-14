@@ -342,6 +342,26 @@ it("autre Flam branchée : « Retirer du PC » n'est plus proposé", async () =>
   expect(count("library_remove_sent")).toBe(0);
 });
 
+it("détection manquée un instant puis la même Flam : « Retirer du PC » reste proposé (#652)", async () => {
+  outcomes.set(A, { ok: { status: "kept" } });
+  renderPanel();
+  await send("Capi");
+  await screen.findByRole("button", { name: PC });
+  const same = status;
+  status = { detected: false, hint: null, device_count: 0, device: null };
+  await waitFor(() => expect(count("device_status")).toBeGreaterThan(2));
+  const seen = count("device_status");
+  await waitFor(() => expect(count("device_status")).toBeGreaterThan(seen));
+  // Le bouton reste (clic refusé sans Flam), puis la même Flam revient.
+  expect(screen.getByRole("button", { name: PC })).toBeInTheDocument();
+  status = same;
+  const back = count("device_status");
+  await waitFor(() => expect(count("device_status")).toBeGreaterThan(back + 1));
+  expect(screen.getByRole("button", { name: PC })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: PC }));
+  expect(await screen.findByText(REMOVED)).toBeVisible();
+});
+
 it("refus passager (lecture, installation, Flam occupée) : bouton reproposé avec le message", async () => {
   outcomes.set(A, { ok: { status: "kept" } });
   renderPanel();
