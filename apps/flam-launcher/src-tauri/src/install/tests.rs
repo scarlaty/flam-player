@@ -410,6 +410,8 @@ async fn archive_mise_en_cause_par_la_conversion_supprimee() {
         ("err:unsupported_format:7", false),
         ("err:output_error:6", false),
         ("err:internal_error:6", false),
+        // Convertisseur figé arrêté (#652) : l'archive n'est pas en cause.
+        ("err:converter_stalled:6", false),
         ("crash", false),
     ] {
         let ctx = Ctx::new(Some(py.clone()));

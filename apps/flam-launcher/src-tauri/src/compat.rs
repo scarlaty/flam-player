@@ -41,7 +41,7 @@ use serde_json::Value;
 use tauri::State;
 
 use crate::catalog::blocking;
-use crate::install::convert::Converted;
+use crate::install::convert::{self, Converted};
 use crate::settings::{Environment, SettingsStore};
 use crate::storage::{self, ConfigState};
 use crate::story::{validate_story_id, StoryEntry};
@@ -335,7 +335,9 @@ fn load_results(cache_root: &Path) -> (BTreeMap<String, LocalResult>, bool) {
 }
 
 /// Résultat à enregistrer pour une conversion terminée. `None` pour ce qui n'est pas un
-/// résultat du convertisseur (annulation, erreur d'entrée/sortie, convertisseur introuvable).
+/// résultat du convertisseur (annulation, erreur d'entrée/sortie, convertisseur introuvable,
+/// convertisseur figé arrêté par le launcher, [`convert::STALLED_CODE`], #652 : ni l'histoire
+/// ni l'archive ne sont en cause, l'histoire ne doit pas paraître incompatible sur ce PC).
 pub fn outcome_of(
     entry: &StoryEntry,
     converter: &str,
@@ -360,6 +362,7 @@ pub fn outcome_of(
             warnings: converted.warnings,
             ..base
         }),
+        Err(AppError::Conversion { code, .. }) if code == convert::STALLED_CODE => None,
         Err(AppError::Conversion { code, message }) => Some(LocalResult {
             ok: false,
             code: clean_text(code, 64),
@@ -790,6 +793,23 @@ mod tests {
             1,
         );
         assert!(!results_path(dir.path()).exists());
+    }
+
+    /// #652 : un convertisseur figé, arrêté par le launcher, n'est pas un résultat de
+    /// conversion : rien n'est enregistré, et un succès antérieur n'est pas remplacé (l'histoire
+    /// ne devient pas « incompatible » sur ce PC).
+    #[test]
+    fn convertisseur_fige_non_enregistre() {
+        let entry = entry("a", Some(1));
+        assert!(outcome_of(&entry, "x", &failed(convert::STALLED_CODE), 1).is_none());
+        let dir = tempfile::tempdir().unwrap();
+        record_conversion(dir.path(), &entry, "x", &failed(convert::STALLED_CODE), 1);
+        assert!(!results_path(dir.path()).exists());
+        record_conversion(dir.path(), &entry, "x", &converted(0), 2);
+        record_conversion(dir.path(), &entry, "x", &failed(convert::STALLED_CODE), 3);
+        let (stories, _) = load_results(dir.path());
+        assert!(stories["a"].ok, "succès antérieur gardé");
+        assert_eq!(stories["a"].at, 2);
     }
 
     #[test]

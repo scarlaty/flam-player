@@ -289,3 +289,126 @@ fn les_cles_d_operation_sont_stables() {
     assert!(!Operation::Read.writes() && !Operation::Eject.writes());
     assert!(!Operation::Closing.writes());
 }
+
+/// #652 : fermeture acceptée après l'écriture, mais la fenêtre reste ouverte. Après
+/// `CLOSE_GRACE`, la retenue est levée : verrou descellé, retenue oubliée (une écriture suivante
+/// est de nouveau retenue à la première demande), nouvelle génération.
+#[test]
+fn fermeture_acceptee_sans_suite_la_retenue_est_levee() {
+    let t0 = Instant::now();
+    let gate = CloseGate::new();
+    let lock = DeviceLock::new();
+    let guard = lock.try_begin(Operation::Transfer).unwrap();
+    let id = id_of(&lock);
+    assert_eq!(
+        gate.decide(&lock, t0),
+        CloseDecision::Retain(Operation::Transfer)
+    );
+    let epoch = gate.epoch();
+    drop(guard);
+    assert!(lock.is_sealed());
+    // Demande de fermeture du fil : plus d'écriture, acceptée ; la fenêtre ne se ferme pas.
+    assert_eq!(gate.decide(&lock, at(t0, 1)), CloseDecision::Allow);
+    let slept = Cell::new(None);
+    assert!(release_unfinished_close(
+        &lock,
+        &gate,
+        epoch,
+        id,
+        CLOSE_GRACE,
+        |d| slept.set(Some(d))
+    ));
+    assert_eq!(slept.get(), Some(CLOSE_GRACE));
+    assert!(!lock.is_sealed());
+    assert_ne!(gate.epoch(), epoch);
+    assert_eq!(gate.retained(), None);
+    let _again = lock.try_begin(Operation::Remove).unwrap();
+    assert_eq!(
+        gate.decide(&lock, at(t0, 100)),
+        CloseDecision::Retain(Operation::Remove),
+        "une écriture suivante est de nouveau retenue"
+    );
+}
+
+/// #652 : retenue restée en mémoire (insistance de l'utilisateur, fermeture sans suite) : elle est
+/// oubliée aussi, sinon une fermeture pendant une écriture suivante passerait tout de suite.
+#[test]
+fn retenue_oubliee_meme_si_la_fermeture_insistante_n_aboutit_pas() {
+    let t0 = Instant::now();
+    let gate = CloseGate::new();
+    let lock = DeviceLock::new();
+    let guard = lock.try_begin(Operation::Transfer).unwrap();
+    let id = id_of(&lock);
+    gate.decide(&lock, t0);
+    let epoch = gate.epoch();
+    assert_eq!(gate.decide(&lock, at(t0, 5)), CloseDecision::Allow);
+    drop(guard);
+    assert!(release_unfinished_close(
+        &lock,
+        &gate,
+        epoch,
+        id,
+        CLOSE_GRACE,
+        |_| {}
+    ));
+    assert_eq!(gate.retained(), None);
+    let _next = lock.try_begin(Operation::Transfer).unwrap();
+    assert_eq!(
+        gate.decide(&lock, at(t0, 200)),
+        CloseDecision::Retain(Operation::Transfer)
+    );
+}
+
+/// #652 : « Ne pas fermer » pendant l'attente, ou nouvelle retenue d'une autre écriture : le fil
+/// ne touche à rien.
+#[test]
+fn la_levee_tardive_respecte_ne_pas_fermer_et_une_nouvelle_retenue() {
+    let t0 = Instant::now();
+    let gate = CloseGate::new();
+    let lock = DeviceLock::new();
+    let guard = lock.try_begin(Operation::Transfer).unwrap();
+    let id = id_of(&lock);
+    gate.decide(&lock, t0);
+    let epoch = gate.epoch();
+    drop(guard);
+    assert!(!release_unfinished_close(
+        &lock,
+        &gate,
+        epoch,
+        id,
+        CLOSE_GRACE,
+        |_| {
+            gate.cancel(&lock);
+        }
+    ));
+
+    // Nouvelle retenue d'une autre écriture (même génération) : laissée intacte.
+    let gate = CloseGate::new();
+    let lock = DeviceLock::new();
+    let first = lock.try_begin(Operation::Transfer).unwrap();
+    let old = id_of(&lock);
+    gate.decide(&lock, t0);
+    let epoch = gate.epoch();
+    drop(first);
+    assert_eq!(gate.decide(&lock, at(t0, 1)), CloseDecision::Allow);
+    lock.unseal();
+    let _second = lock.try_begin(Operation::Remove).unwrap();
+    assert_eq!(
+        gate.decide(&lock, at(t0, 2)),
+        CloseDecision::Retain(Operation::Remove)
+    );
+    assert!(!release_unfinished_close(
+        &lock,
+        &gate,
+        epoch,
+        old,
+        CLOSE_GRACE,
+        |_| {}
+    ));
+    assert_eq!(gate.retained(), Some(Operation::Remove));
+}
+
+#[test]
+fn le_fil_agit_avant_l_expiration_du_scellement() {
+    assert!(CLOSE_GRACE < crate::device::lock::SEAL_GRACE);
+}

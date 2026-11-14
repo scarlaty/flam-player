@@ -330,6 +330,15 @@ fn check_exe(label: &str, raw: &str) -> Result<(), (&'static str, String)> {
 /// Vérifie un dossier de cache : absolu, pas un fichier, ni racine de disque ni dossier protégé.
 /// L'application ne supprime jamais que les sous-dossiers qu'elle a elle-même créés dans ce
 /// dossier ; ces garde-fous évitent de la pointer sur un dossier contenant autre chose.
+///
+/// Chemins réseau (UNC `\\serveur\partage\…`, lecteur réseau) **acceptés** à dessein, à la
+/// différence du chemin du player ([`is_network_path`], exécutable lancé) (#578, #652) : un cache
+/// existant sur un lecteur réseau ou un partage NAS est un usage légitime, que le refus cacherait
+/// sans rien protéger. Aucun exécutable n'est lancé depuis le cache : les scripts des histoires
+/// converties y sont lus par le player sous son bac à sable, comme d'un cache local. La racine
+/// d'un partage (`\\serveur\partage`) est refusée comme celle d'un disque. Limites connues : un
+/// partage hors ligne ralentit le démarrage et les listes ; le vrai remède contre un chemin
+/// imposé par l'IPC est un sélecteur de dossier ouvert côté Rust, hors de ce contrôle.
 fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str, String)> {
     let path = Path::new(raw);
     let invalid = |reason: &str| {
@@ -338,16 +347,32 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
             format!("dossier de cache : « {raw} » {reason}"),
         ))
     };
-    if !path.is_absolute() || path.is_file() {
-        return invalid("doit être un chemin de dossier absolu");
+    if let Some(reason) = cache_dir_shape_issue(path, protected) {
+        return invalid(reason);
     }
-    if path.parent().is_none() {
-        return invalid("ne peut pas être la racine d'un disque");
-    }
-    if protected.iter().any(|dir| same_path(dir, path)) {
-        return invalid("ne peut pas être le dossier utilisateur ou le dossier Windows");
+    if path.is_file() {
+        return invalid(NOT_ABSOLUTE_DIR);
     }
     Ok(())
+}
+
+/// Motif de refus d'un dossier de cache qui n'est pas un chemin de dossier absolu.
+const NOT_ABSOLUTE_DIR: &str = "doit être un chemin de dossier absolu";
+
+/// Contrôle de forme du dossier de cache, sans accès au disque (partie pure de
+/// [`check_cache_dir`]) : chemin absolu, pas une racine (de disque ou de partage
+/// `\\serveur\partage`, sans parent), pas un dossier protégé. Rend le motif du refus.
+fn cache_dir_shape_issue(path: &Path, protected: &[PathBuf]) -> Option<&'static str> {
+    if !path.is_absolute() {
+        return Some(NOT_ABSOLUTE_DIR);
+    }
+    if path.parent().is_none() {
+        return Some("ne peut pas être la racine d'un disque");
+    }
+    if protected.iter().any(|dir| same_path(dir, path)) {
+        return Some("ne peut pas être le dossier utilisateur ou le dossier Windows");
+    }
+    None
 }
 
 /// Refuse un **nouveau** dossier de cache qui contient déjà, sous un nom de
@@ -1446,6 +1471,37 @@ mod tests {
             assert_eq!(kind, ISSUE_INVALID_PATH, "{bad}");
         }
         assert!(!is_network_path(Path::new("C:\\Windows\\notepad.exe")));
+    }
+
+    /// #652 : contrôle de forme du dossier de cache (celui de `check_cache_dir`, sans accès
+    /// réseau) : la racine d'un partage est refusée comme celle d'un disque, un sous-dossier de
+    /// partage est accepté (chemins réseau acceptés à dessein, voir la doc).
+    #[cfg(windows)]
+    #[test]
+    fn racine_de_partage_refusee_sous_dossier_accepte() {
+        for root in [
+            "\\\\serveur\\partage",
+            "\\\\serveur\\partage\\",
+            "\\\\?\\UNC\\serveur\\partage",
+            "C:\\",
+        ] {
+            assert_eq!(
+                cache_dir_shape_issue(Path::new(root), &[]),
+                Some("ne peut pas être la racine d'un disque"),
+                "{root}"
+            );
+        }
+        for ok in [
+            "\\\\serveur\\partage\\flam",
+            "\\\\?\\UNC\\serveur\\partage\\flam",
+            "C:\\flam",
+        ] {
+            assert_eq!(cache_dir_shape_issue(Path::new(ok), &[]), None, "{ok}");
+        }
+        assert_eq!(
+            cache_dir_shape_issue(Path::new("flam"), &[]),
+            Some(NOT_ABSOLUTE_DIR)
+        );
     }
 
     #[test]

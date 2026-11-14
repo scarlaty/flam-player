@@ -228,6 +228,10 @@ pub(crate) fn validate_name(raw: &str) -> AppResult<String> {
     Ok(name.to_string())
 }
 
+/// Dossier d'une source locale : absolu et existant. Les chemins réseau (UNC, lecteur réseau) sont
+/// acceptés à dessein (#578, #652) : des histoires rangées sur un partage NAS sont un usage
+/// légitime, et le launcher ne fait que lire ce dossier (une archive d'une source locale n'est
+/// jamais supprimée, note de conception de #578).
 fn validate_folder(raw: &str) -> AppResult<String> {
     let raw = raw.trim();
     if raw.is_empty() {

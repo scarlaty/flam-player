@@ -7,6 +7,19 @@
 //! l'application utilise l'instance globale [`DEVICE_LOCK`].
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
+
+/// Durée de vie maximale du scellement pour la fermeture, comptée depuis le moment où il prend
+/// effet (libération de l'opération retenue). Filet de sécurité seulement (#652) : quand la
+/// fenêtre ne se ferme pas après une fermeture acceptée, c'est le fil d'attente de
+/// [`super::close`] qui lève la retenue ([`super::close::CLOSE_GRACE`] après la tentative de
+/// fermeture : verrou descellé, retenue oubliée, interface prévenue). Ce délai-ci, plus long,
+/// ne sert que si ce fil a disparu : le scellement est alors levé à la demande suivante, sans
+/// prévenir l'interface, au lieu de refuser toutes les opérations sur la Flam jusqu'au
+/// redémarrage. Plus long que `CLOSE_GRACE` pour que le fil agisse toujours le premier : levé
+/// plus tôt, il laisserait démarrer une écriture dont une nouvelle retenue serait ensuite
+/// annulée par le fil. Le délai ne court pas pendant l'opération retenue elle-même.
+pub const SEAL_GRACE: Duration = Duration::from_secs(120);
 
 /// Opération en cours sur l'appareil.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,8 +90,9 @@ struct State {
     next_id: u64,
     /// À la libération de l'opération de ce numéro, le verrou est scellé.
     seal_on: Option<u64>,
-    /// Aucune opération ne démarre plus ([`Operation::Closing`]).
-    sealed: bool,
+    /// Aucune opération ne démarre plus ([`Operation::Closing`]) depuis cet instant, pendant
+    /// [`SEAL_GRACE`] au plus.
+    sealed: Option<Instant>,
 }
 
 /// Verrou non bloquant des opérations sur l'appareil.
@@ -97,7 +111,7 @@ impl DeviceLock {
                 current: None,
                 next_id: 0,
                 seal_on: None,
-                sealed: false,
+                sealed: None,
             }),
         }
     }
@@ -108,14 +122,27 @@ impl DeviceLock {
     }
 
     /// Prend le verrou pour `op`, ou refuse si une opération est déjà en cours ou si le verrou est
-    /// scellé pour la fermeture.
+    /// scellé pour la fermeture (scellement de moins de [`SEAL_GRACE`]).
     pub fn try_begin(&self, op: Operation) -> Result<OpGuard<'_>, Busy> {
+        self.try_begin_at(op, Instant::now())
+    }
+
+    /// [`Self::try_begin`] à l'instant `now` (injectable pour les tests). Un scellement plus vieux
+    /// que [`SEAL_GRACE`] est levé : la fermeture qu'il protégeait n'a pas eu lieu.
+    pub fn try_begin_at(&self, op: Operation, now: Instant) -> Result<OpGuard<'_>, Busy> {
         let mut state = self.state();
         if let Some((running, _)) = state.current {
             return Err(Busy(running));
         }
-        if state.sealed {
-            return Err(Busy(Operation::Closing));
+        if let Some(since) = state.sealed {
+            if now.saturating_duration_since(since) < SEAL_GRACE {
+                return Err(Busy(Operation::Closing));
+            }
+            tracing::warn!(
+                "scellement de fermeture levé : la fenêtre ne s'est pas fermée après {} s",
+                SEAL_GRACE.as_secs()
+            );
+            state.sealed = None;
         }
         let id = state.next_id;
         state.next_id += 1;
@@ -135,13 +162,14 @@ impl DeviceLock {
 
     /// Fait sceller le verrou à la libération de l'opération `id` : aucune autre opération ne peut
     /// démarrer entre cette libération et la fermeture, qui a lieu à un moment déterministe.
-    /// Scellé aussitôt si `id` n'est plus en cours.
+    /// Scellé aussitôt si `id` n'est plus en cours. Le scellement dure [`SEAL_GRACE`] au plus à
+    /// partir du moment où il prend effet.
     pub fn seal_after(&self, id: u64) {
         let mut state = self.state();
         if state.current.is_some_and(|(_, running)| running == id) {
             state.seal_on = Some(id);
         } else {
-            state.sealed = true;
+            state.sealed = Some(Instant::now());
         }
     }
 
@@ -149,12 +177,13 @@ impl DeviceLock {
     pub fn unseal(&self) {
         let mut state = self.state();
         state.seal_on = None;
-        state.sealed = false;
+        state.sealed = None;
     }
 
-    /// Vrai si le verrou est scellé pour la fermeture.
+    /// Vrai si le verrou est scellé pour la fermeture (scellement non encore expiré : il n'est
+    /// levé qu'à la demande suivante, voir [`Self::try_begin_at`]).
     pub fn is_sealed(&self) -> bool {
-        self.state().sealed
+        self.state().sealed.is_some()
     }
 }
 
@@ -171,7 +200,7 @@ impl Drop for OpGuard<'_> {
         state.current = None;
         if state.seal_on == Some(self.id) {
             state.seal_on = None;
-            state.sealed = true;
+            state.sealed = Some(Instant::now());
         }
     }
 }
@@ -210,6 +239,34 @@ mod tests {
         );
         lock.unseal();
         assert!(lock.try_begin(Operation::Transfer).is_ok());
+    }
+
+    /// Fermeture acceptée mais jamais aboutie (#652) : le scellement tient pendant
+    /// [`SEAL_GRACE`] (aucune opération ne se glisse entre la fin de l'écriture et la fermeture),
+    /// puis est levé à la demande suivante.
+    #[test]
+    fn le_scellement_est_leve_si_la_fenetre_ne_se_ferme_pas() {
+        let lock = DeviceLock::new();
+        let guard = lock.try_begin(Operation::Transfer).unwrap();
+        let (_, id) = lock.current_id().unwrap();
+        lock.seal_after(id);
+        drop(guard);
+        let sealed_at = Instant::now();
+        assert_eq!(
+            lock.try_begin_at(
+                Operation::Transfer,
+                sealed_at + SEAL_GRACE - Duration::from_secs(1)
+            )
+            .unwrap_err(),
+            Busy(Operation::Closing),
+            "encore scellé juste avant le délai"
+        );
+        assert!(lock.is_sealed());
+        let late = sealed_at + SEAL_GRACE + Duration::from_millis(1);
+        let again = lock.try_begin_at(Operation::Transfer, late).unwrap();
+        assert!(!lock.is_sealed());
+        drop(again);
+        assert!(lock.try_begin(Operation::Remove).is_ok());
     }
 
     #[test]

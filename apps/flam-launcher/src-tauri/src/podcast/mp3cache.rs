@@ -887,6 +887,12 @@ impl CacheAccess {
     }
 
     /// Comme [`Self::under_lock`], sur le sous-dossier `sub` de la source (aperçus, #508).
+    ///
+    /// Le marqueur de `podcasts/` n'est pas exigé ici, à dessein (#591, #652) : un sous-dossier
+    /// non marqué reste utilisé par l'application comme avant (limite décrite dans `cache`), et
+    /// le cache des MP3 n'y touche qu'à ses propres fichiers (`podcasts/<source_id>/<sub>/…`,
+    /// `<source_id>` étant l'identifiant d'une source de l'application). Les suppressions en
+    /// masse (éviction, restes) sont, elles, gardées par le marqueur ([`scan`]).
     async fn under_dir<T: Send + 'static>(
         &self,
         sub: &'static str,
