@@ -2,7 +2,7 @@
 
 > Procédure unique, ordonnée par priorité, des tests qui ne peuvent se faire que sur la vraie
 > Flam ou sur la machine du mainteneur. Elle remplace les listes éparpillées dans #236, #219,
-> #413, #470, #443 et #462 (ces issues restent le lieu où **consigner** les résultats).
+> #413, #470, #443 et #462 (ces issues, ou #650 pour celles qui sont fermées, restent le lieu où **consigner** les résultats).
 > Rédigée le 2026-10-24 d'après `main` (dernière fusion : #480). Les points qui dépendent d'une
 > PR non fusionnée sont marqués « après fusion de … ».
 
@@ -15,7 +15,7 @@ Cocher la case une fois le résultat consigné dans l'issue indiquée.
 | [ ]  | M0  | Sauvegarde complète de la Flam et préparation                             | tous    | Flam 1.x ou 2.x                | 20 min | (aucun)        |
 | [ ]  | M1  | Mise à jour NSIS depuis `launcher-v0.1.0-beta.1` (sans Python)            | A       | VM ou compte Windows propre    | 45 min | #236           |
 | [ ]  | M2  | Packs de podcasts sur la Flam : carrousel, enchaînement, retour, capacité | B       | Flam 1.x                       | 1 h 30 | #219           |
-| [ ]  | M3  | Glisser-déposer de l'arborescence du pack (WebView2)                      | B       | installation de M1 ou de B     | 10 min | #413           |
+| [ ]  | M3  | Glisser-déposer de l'arborescence du pack (WebView2)                      | B       | installation de M1 ou de B     | 10 min | #650           |
 | [ ]  | M4  | Fumée de l'envoi carrier avec le convertisseur Rust (installateur N)      | B       | Flam 1.x                       | 30 min | #236           |
 | [ ]  | M5  | Voix Windows : test réel, voix « en ligne », sans réseau                  | A       | poste de dev, voix FR          | 20 min | #462           |
 | [ ]  | M6  | Mesure `sync_all` sur clé USB                                             | A       | clé USB, poste de dev          | 15 min | #443           |
@@ -25,7 +25,7 @@ Cocher la case une fois le résultat consigné dans l'issue indiquée.
 | [ ]  | M10 | Deuxième Flam d'un autre compte (#236 point 7, #234)                      | D       | 2 Flam, 2 comptes              | 45 min | #236           |
 | [ ]  | M11 | Titres lus à voix haute dans un pack, sur la Flam                         | E       | Flam 1.x                       | 45 min | #462           |
 | [ ]  | M12 | Histoires STUdio sur Flam 2.x (#517, L1 à L15)                            | D       | Flam 2.x                       | 1 h 30 | #236           |
-| [ ]  | M13 | « Installer et envoyer » : enchaînement, Flam débranchée, fenêtre réduite | B       | Flam 1.x ou 2.x                | 1 h    | #609           |
+| [ ]  | M13 | « Installer et envoyer » : enchaînement, Flam débranchée, fenêtre réduite | B       | Flam 1.x ou 2.x                | 1 h    | #650           |
 
 Ordre conseillé : A (PC seul, sans risque pour la Flam), puis B (une installation, une connexion
 de la Flam), puis C (risqué, seulement après B et une sauvegarde vérifiée). D et E dépendent de
@@ -241,7 +241,7 @@ launcher (critère d'acceptation de #219). **Durée** : 1 h 30.
 glisser-déposer ; les messages de limite détaillés n'apparaissent qu'à la validation, en
 cliquant sur **Créer l'histoire**) ; l'ordre est conservé après réouverture.
 
-**Consigner dans #413** (case « Mainteneur : vérifier le glisser-déposer »). **Durée** : 10 minutes.
+**Consigner dans #650** (case « éditeur de pack de podcasts : glisser-déposer » ; #413 est fermée). **Durée** : 10 minutes.
 
 ### M13. « Installer et envoyer » (#609, second lot)
 
@@ -338,7 +338,7 @@ Mes histoires après l'envoi sur la Flam » désactivé au départ.
 depuis le clic ; aucun fichier laissé dans `.flam-transfer/` après les étapes 4 à 6 ; avec deux
 Flam, rien n'est jamais écrit sur celle qui n'était pas affichée au moment du clic.
 
-**Consigner dans #609.** Firmware de la Flam, résultat de chaque étape, ordre observé à
+**Consigner dans #650** (#609 est fermée). Firmware de la Flam, résultat de chaque étape, ordre observé à
 l'étape 3, comportement de la fenêtre réduite à l'étape 10, résultat des étapes 12 à 14 si elles
 sont faites (dont « `.mdf` différents » ou « identiques » à l'étape 13). **Durée** : 1 heure
 (1 h 30 avec deux Flam).
