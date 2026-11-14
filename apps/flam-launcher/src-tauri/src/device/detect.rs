@@ -150,6 +150,13 @@ pub struct DetectedDevice {
 /// Contenu de `.mdf` lu sur l'appareil. En firmware 2.x il porte les clés et le numéro de série :
 /// la mémoire est mise à zéro à la libération de la dernière copie (#652), et le format de
 /// débogage n'en montre que la taille. Se lit comme une tranche d'octets (`Deref`).
+///
+/// Effacement au mieux : des copies résiduelles, connues, ne sont pas effacées : l'état interne
+/// de `Sha256` pendant le calcul des condensés (et les condensés de 32 octets eux-mêmes), les
+/// lectures de `.mdf` faites hors de ce type (relectures de la garde et du transfert), la
+/// relecture de la sauvegarde par `fs::read` dans [`backup_mdf`] (ses réallocations
+/// éventuelles), une réallocation si le fichier grandit pendant la lecture, et les tampons du
+/// système.
 #[derive(Clone, PartialEq, Eq)]
 pub struct MdfBytes(Zeroizing<Vec<u8>>);
 
