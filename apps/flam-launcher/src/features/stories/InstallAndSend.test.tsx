@@ -21,7 +21,7 @@ import type { StoryEntry } from "../../api/story";
 import { ToastProvider } from "../../components";
 import { PAGE_LEVEL_RULES, expectNoAxeViolations } from "../../test/axe";
 import { makeEntry } from "../../test/entries";
-import { firmwareV1, firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { slowIt, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { CompatProvider } from "../compat/CompatProvider";
 import { DeviceProvider } from "../device/DeviceProvider";
@@ -109,6 +109,7 @@ function detected(over: Partial<NonNullable<DeviceStatus["device"]>> = {}): Devi
       backup_failed: false,
       firmware: "2.4.2",
       firmware_status: firmwareV2(),
+      fingerprint: TEST_FINGERPRINT,
       ...over,
     },
   };
@@ -481,7 +482,11 @@ slowIt("installe, puis envoie sur la Flam du clic, une seule fois", async () => 
 
   await installDone(ours);
   await waitFor(() => expect(sent()).toEqual(["ours"]));
-  expect(callsOf("device_send_story")[0]?.args).toEqual({ root: "E:\\", uuid: "ours" });
+  expect(callsOf("device_send_story")[0]?.args).toEqual({
+    root: "E:\\",
+    uuid: "ours",
+    expected: { fingerprint: TEST_FINGERPRINT },
+  });
   await waitFor(() =>
     expect(within(queueRow("Les trois ours")).getByText("Envoyée")).toBeVisible(),
   );
@@ -1394,7 +1399,7 @@ it("autre Flam sous la même lettre entre deux relevés : l'envoi prévu part av
   expect(callsOf("device_send_story")[0]?.args).toEqual({
     root: "E:\\",
     uuid: "ours",
-    fingerprint: FLAM_1,
+    expected: { fingerprint: FLAM_1 },
   });
   await waitFor(() =>
     expect(within(queueRow("Les trois ours")).getByText(OTHER_DEVICE)).toBeVisible(),

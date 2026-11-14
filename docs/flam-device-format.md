@@ -332,16 +332,23 @@ Une taille autre que 126 octets ou un en-tête autre que `01 00` **ne refuse rie
 
 **Empreinte de l'appareil** (#609). Toutes les Flam portent le même nom de volume : sous une
 même lettre de lecteur, rien d'autre que `.mdf` ne les distingue. `device_status` rend donc une
-empreinte opaque de la Flam détectée (`fingerprint`, absente si `.mdf` est illisible) : SHA-256
+empreinte opaque de la Flam détectée (`fingerprint`, absente si `.mdf` n'a pas été lu : plus de
+64 Kio ; un `.mdf` qui ne s'ouvre pas rend la Flam non détectée) : SHA-256
 d'un préfixe, d'un sel tiré au hasard à chaque lancement du launcher et du SHA-256 de `.mdf`. Elle
 ne révèle ni le numéro de série ni les clés, n'est ni stable d'un lancement à l'autre, ni
 journalisée, ni écrite sur disque, ni reprise dans un message d'erreur ou dans le diagnostic.
-L'interface la renvoie avec chaque demande d'écriture (envoi, reprise au branchement, retrait,
-ordre) : celle de la Flam **affichée au moment du clic**. `check_write` la compare, avant tout
-autre contrôle, à celle du `.mdf` qu'il vient de lire, celui que retient le permis d'écriture
-(aucune fenêtre entre la comparaison et le permis) ; différente, refus `device_changed` sans rien
-écrire : ni nettoyage du dossier de travail, ni préparation, ni reprise, ni corbeille. Sans
-empreinte transmise, rien n'est comparé. L'éjection n'en reçoit pas (elle n'écrit aucun fichier et
+Le SHA-256 nu de `.mdf` n'est transmis à l'interface par aucune réponse ; il ne subsiste que dans
+le nom de la sauvegarde personnelle de `.mdf` (16 chiffres, dossier de données du launcher, sur le
+disque de l'utilisateur), choix antérieur conservé.
+L'interface renvoie l'empreinte avec chaque demande d'écriture (envoi, reprise au branchement,
+retrait, ordre), dans `expected` : celle de la Flam **affichée au moment du clic**. `check_write`
+la compare, avant tout autre contrôle, à celle du `.mdf` qu'il vient de lire, celui que retient le
+permis d'écriture (aucune fenêtre entre la comparaison et le permis) ; différente, refus
+`device_changed` sans rien écrire : ni nettoyage du dossier de travail, ni préparation, ni reprise,
+ni corbeille. Une Flam affichée **sans empreinte** (`expected` présent, `fingerprint` nul) n'est
+jamais reconnue : même refus, pour qu'une autre Flam, lisible, qui reprendrait la lettre ne
+reçoive pas l'écriture. Sans `expected` (appels d'avant l'empreinte, reprise qui suit un
+changement de Flam), rien n'est comparé. L'éjection n'en reçoit pas (elle n'écrit aucun fichier et
 doit rester possible quand `.mdf` est illisible), « Retirer du PC » non plus (rien n'est écrit sur
 la Flam, et le `.mdf` branché est déjà comparé à celui de l'envoi).
 

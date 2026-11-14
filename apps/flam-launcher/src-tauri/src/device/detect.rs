@@ -6,8 +6,8 @@
 //! attendus mais leur absence n'est qu'un avertissement.
 //!
 //! Le format interne de `.mdf` n'est **pas encore spécifié** (#224) : [`parse_mdf`] renvoie
-//! [`MdfError::FormatUnspecified`] et ne lit aucun champ. Seuls la taille et l'empreinte
-//! SHA-256 du contenu sont exposées.
+//! [`MdfError::FormatUnspecified`] et ne lit aucun champ. Seule la taille est exposée ; le
+//! SHA-256 du contenu ne sert qu'au nom de la sauvegarde et n'est jamais sérialisé (#609).
 //!
 //! La logique est sans Tauri et sans accès direct au système : les racines candidates, le nom
 //! de volume et l'espace disque passent par [`Environment`] (même modèle que
@@ -21,9 +21,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-
-use crate::catalog::blocking;
-use crate::AppResult;
 
 /// Nom du fichier marqueur, à la racine du volume.
 pub const MDF_FILE: &str = ".mdf";
@@ -134,7 +131,12 @@ pub struct DetectedDevice {
     pub space: Option<Space>,
     /// Taille de `.mdf` en octets.
     pub mdf_size: u64,
-    /// SHA-256 (hexadécimal) du contenu de `.mdf`, absent si le fichier n'a pas été lu.
+    /// SHA-256 (hexadécimal) du contenu de `.mdf`, absent si le fichier n'a pas été lu. Jamais
+    /// sérialisé (#609) : ce condensé sans sel identifie la Flam d'une session et d'un PC à
+    /// l'autre, et permettrait de rapprocher l'empreinte opaque de l'appareil
+    /// ([`super::guard::device_fingerprint`]) du `.mdf`. Il ne sert qu'au nom de la sauvegarde
+    /// ([`backup_mdf`]).
+    #[serde(skip)]
     pub mdf_sha256: Option<String>,
     /// Résultat du décodage de `.mdf` : `None` si décodé, sinon l'erreur typée.
     pub mdf_error: Option<MdfError>,
@@ -261,6 +263,11 @@ fn sanitize_label(label: &str) -> String {
 /// (le numéro de série n'est pas encore lisible, #224). Idempotent : un contenu déjà
 /// sauvegardé n'est pas réécrit. Rend `Ok(None)` si le contenu n'a pas été lu (trop grand) ou
 /// est tronqué : un fichier douteux ne doit pas être conservé comme référence.
+///
+/// Ce nom porte 16 chiffres du SHA-256 **sans sel** de `.mdf` (choix antérieur à l'empreinte de
+/// l'appareil, #609, conservé pour ne pas dupliquer les sauvegardes existantes) : il reste sur
+/// le disque de l'utilisateur, dans le dossier de données du launcher, et n'est transmis ni à
+/// l'interface, ni au journal, ni au diagnostic.
 pub fn backup_mdf(dir: &Path, device: &DetectedDevice) -> std::io::Result<Option<PathBuf>> {
     let (Some(bytes), Some(hash)) = (&device.mdf_bytes, &device.mdf_sha256) else {
         return Ok(None);
@@ -284,12 +291,6 @@ pub fn backup_mdf(dir: &Path, device: &DetectedDevice) -> std::io::Result<Option
 /// Espace libre du volume de `root`, en octets (`None` : indisponible, ou hors Windows).
 pub(crate) fn free_space(root: &Path) -> Option<u64> {
     sys::disk_space(root).map(|space| space.free)
-}
-
-/// Détecte la Flam branchée (lecture seule : aucune sauvegarde, aucune écriture).
-#[tauri::command]
-pub async fn device_detect() -> AppResult<DetectionReport> {
-    blocking(|| detect(&Environment::current())).await
 }
 
 #[cfg(windows)]
@@ -636,6 +637,11 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(!json.contains("mdf_bytes"));
         assert!(json.contains("format_unspecified"));
+        // #609 : ni le condensé sans sel de `.mdf`, ni son début (nom de la sauvegarde).
+        let digest = report.devices[0].mdf_sha256.clone().unwrap();
+        assert_eq!(digest, sha256_hex(&synthetic_mdf()));
+        assert!(!json.contains("mdf_sha256"), "{json}");
+        assert!(!json.contains(&digest[..16]), "{json}");
     }
 
     /// Lecteurs Windows réels : `cargo test -- --ignored lecteurs_reels --nocapture`. Branchez

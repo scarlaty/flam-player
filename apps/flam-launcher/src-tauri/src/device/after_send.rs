@@ -334,6 +334,12 @@ pub(crate) fn send_then_settle(
     send: impl FnOnce(&Path) -> AppResult<TransferReport>,
     remove: impl FnOnce(Check<'_>) -> AppResult<()>,
 ) -> AppResult<TransferReport> {
+    // Oublié avant l'envoi, même si la garde le refuse ensuite sans rien écrire (autre Flam que
+    // celle du clic, #609) : ce refus a le même `kind` que les changements de Flam vus pendant
+    // l'envoi, après lesquels l'ancien relevé ne vaut plus à coup sûr ; les distinguer ici pour
+    // rétablir l'entrée ferait courir un risque pour un gain nul. Oublier ne retire qu'une
+    // commodité (« Retirer du PC », que l'interface retire de toute façon dès que la Flam
+    // change) et ne permet jamais un retrait de plus.
     registry.forget_uuid(uuid);
     // Empreinte prise avant de lire le fichier envoyé.
     let before = SentStamp::capture(cache_root, uuid);

@@ -35,11 +35,23 @@ export interface DeviceSummary {
   firmware_status: FirmwareStatus;
   /**
    * Empreinte opaque de cette Flam pour ce lancement du launcher (#609) : à renvoyer avec chaque
-   * demande d'écriture, refusée ({@link DEVICE_CHANGED}) si la Flam branchée n'est plus celle-ci.
-   * `null` : `.mdf` illisible. Elle ne dit rien du numéro de série ni des clés, change à chaque
-   * lancement, et n'est ni affichée, ni journalisée, ni conservée.
+   * demande d'écriture ({@link ExpectedDevice}), refusée ({@link DEVICE_CHANGED}) si la Flam
+   * branchée n'est plus celle-ci. `null` : `.mdf` n'a pas été lu (plus de 64 Kio). Elle ne dit
+   * rien du numéro de série ni des clés, change à chaque lancement, et n'est ni affichée, ni
+   * journalisée, ni conservée.
    */
-  fingerprint?: string | null;
+  fingerprint: string | null;
+}
+
+/**
+ * Flam affichée au moment d'une demande d'écriture (miroir de `SeenDevice` dans
+ * `device/guard.rs`, paramètre `expected` des commandes d'écriture, #609). `fingerprint` est
+ * celle de {@link DeviceSummary} ; `null` : la Flam était affichée sans empreinte, ou aucune Flam
+ * ne l'était, et le backend refuse alors l'écriture sur toute Flam ({@link DEVICE_CHANGED}).
+ * Paramètre `expected` absent : aucune comparaison.
+ */
+export interface ExpectedDevice {
+  fingerprint: string | null;
 }
 
 /** Famille du firmware (miroir de `Family` dans `device/guard.rs`). */
@@ -463,22 +475,21 @@ export const DEVICE_CHANGED = "device_changed";
  * {@link LUNII_NEEDS_V2} pour une histoire STUdio sur une Flam 1.x). `replace` : UUID de
  * l'histoire de la Flam à remplacer (même à version égale), l'ancienne n'étant retirée qu'une
  * fois la nouvelle en place ; refusé (`validation`) s'il ne désigne pas l'histoire de
- * l'archive. `fingerprint` : empreinte de la Flam affichée au moment du clic
- * (`DeviceSummary.fingerprint`, #609) ; si la Flam branchée n'est pas celle-là, refus
- * {@link DEVICE_CHANGED} avant toute écriture.
+ * l'archive. `expected` : Flam affichée au moment du clic (#609) ; si la Flam branchée n'est pas
+ * celle-là, refus {@link DEVICE_CHANGED} avant toute écriture.
  */
 export function sendStoryToDevice(
   root: string,
   uuid: string,
   carrier?: CarrierSend,
   replace?: string,
-  fingerprint?: string | null,
+  expected?: ExpectedDevice,
 ): Promise<TransferReport> {
   const args: Record<string, unknown> = carrier
     ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
     : { root, uuid };
   if (replace) args.replace = replace;
-  if (fingerprint) args.fingerprint = fingerprint;
+  if (expected) args.expected = expected;
   return invokeCommand<TransferReport>("device_send_story", args);
 }
 
@@ -525,54 +536,57 @@ export function cancelDeviceTransfer(): Promise<boolean> {
 }
 
 /**
- * `device_recover_transfers` : reprise des transferts et index interrompus. `fingerprint` :
- * empreinte de la Flam dont le branchement vient d'être vu (#609) ; une autre Flam à sa place :
- * refus {@link DEVICE_CHANGED}, rien n'est repris. `null` : reprise de la Flam branchée quelle
- * qu'elle soit (après un envoi interrompu par un changement de Flam).
+ * `device_recover_transfers` : reprise des transferts et index interrompus. `expected` : Flam
+ * dont le branchement vient d'être vu (#609) ; une autre Flam à sa place : refus
+ * {@link DEVICE_CHANGED}, rien n'est repris. `null` : aucune comparaison, reprise de la Flam
+ * branchée quelle qu'elle soit (après un envoi interrompu par un changement de Flam).
  */
 export function recoverDeviceTransfers(
   root: string,
-  fingerprint: string | null,
+  expected: ExpectedDevice | null,
 ): Promise<TransferRecovery> {
   return invokeCommand<TransferRecovery>(
     "device_recover_transfers",
-    fingerprint ? { root, fingerprint } : { root },
+    expected ? { root, expected } : { root },
   );
 }
 
 /**
  * `device_remove_story` : retire l'histoire `id` de la Flam ; `confirmed` doit être vrai.
- * `fingerprint` : empreinte de la Flam affichée à la demande du retrait (#609) ; une autre Flam à
- * sa place : refus {@link DEVICE_CHANGED}, rien n'est touché.
+ * `expected` : Flam affichée à la demande du retrait (#609) ; une autre Flam à sa place : refus
+ * {@link DEVICE_CHANGED}, rien n'est touché.
  */
 export function removeDeviceStory(
   root: string,
   id: string,
   confirmed: boolean,
-  fingerprint: string | null,
+  expected: ExpectedDevice,
 ): Promise<RemoveReport> {
-  return invokeCommand<RemoveReport>(
-    "device_remove_story",
-    fingerprint ? { root, id, confirmed, fingerprint } : { root, id, confirmed },
-  );
+  return invokeCommand<RemoveReport>("device_remove_story", {
+    root,
+    id,
+    confirmed,
+    expected,
+  });
 }
 
 /**
  * `device_reorder_stories` : réécrit l'index de la Flam de `root` dans l'ordre `order` (tous les
  * UUID de l'index, chacun une fois). `validation` si l'ordre ne correspond plus à l'index, si
- * l'index est abîmé ou si la Flam est occupée ; rien n'est alors écrit. `fingerprint` : empreinte
- * de la Flam dont l'ordre était affiché (#609) ; une autre Flam à sa place : refus
- * {@link DEVICE_CHANGED}, rien n'est écrit.
+ * l'index est abîmé ou si la Flam est occupée ; rien n'est alors écrit. `expected` : Flam dont
+ * l'ordre était affiché (#609) ; une autre Flam à sa place : refus {@link DEVICE_CHANGED}, rien
+ * n'est écrit.
  */
 export function reorderDeviceStories(
   root: string,
   order: string[],
-  fingerprint: string | null,
+  expected: ExpectedDevice,
 ): Promise<ReorderReport> {
-  return invokeCommand<ReorderReport>(
-    "device_reorder_stories",
-    fingerprint ? { root, order, fingerprint } : { root, order },
-  );
+  return invokeCommand<ReorderReport>("device_reorder_stories", {
+    root,
+    order,
+    expected,
+  });
 }
 
 /**

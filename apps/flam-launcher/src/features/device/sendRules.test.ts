@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { firmwareV1, firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import type { DeviceStories, DeviceSummary } from "../../api/device";
 import {
   estimateMinutes,
@@ -22,6 +22,7 @@ const device: DeviceSummary = {
   backup_failed: false,
   firmware: "2.4.2",
   firmware_status: firmwareV2(),
+  fingerprint: TEST_FINGERPRINT,
 };
 
 const stories: DeviceStories = {

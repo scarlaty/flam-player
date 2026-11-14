@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceStatus } from "../../api/device";
 import type { LibraryEntry } from "../../api/library";
 import { ToastProvider } from "../../components";
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { makeEntry } from "../../test/entries";
 import { StoriesContext, type StoriesApi } from "../stories/StoriesContext";
 import { DeviceLibrarySend } from "../stories/DeviceLibrarySend";
@@ -31,6 +31,7 @@ const status: DeviceStatus = {
     backup_failed: false,
     firmware: "2.4.2",
     firmware_status: firmwareV2(),
+    fingerprint: TEST_FINGERPRINT,
   },
 };
 

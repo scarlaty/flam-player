@@ -698,9 +698,11 @@ réglage n'est ajouté.
 - **Limites restantes** : l'empreinte repose sur l'hypothèse que deux Flam différentes ont des
   `.mdf` différents, **non confirmée sur deux appareils réels** ; si elle était fausse, deux Flam
   de même `.mdf` ne seraient pas distinguées (comme avant l'empreinte, sans dégât de plus). Un
-  `.mdf` momentanément illisible à un relevé (empreinte absente) change la clé d'appareil : les
-  envois prévus sont alors perdus et la file en attente annulée, par prudence. Le comportement
-  de WebView2 pour une fenêtre réduite (`document.hidden` vrai ou non) n'a pas été vérifié sur
+  `.mdf` qui ne s'ouvre pas ou ne se lit pas à un relevé rend la Flam **non détectée**
+  (`detect.rs`, comme avant ce lot) : l'absence est vue, les envois prévus sont perdus et la
+  file s'arrête par la voie « Flam absente », sans rapport avec l'empreinte. L'empreinte n'est
+  absente d'une Flam détectée que si son `.mdf` dépasse 64 Kio (il n'est alors pas lu, et
+  l'écriture est refusée). Le comportement de WebView2 pour une fenêtre réduite (`document.hidden` vrai ou non) n'a pas été vérifié sur
   l'application réelle : si la fenêtre réduite n'est pas déclarée masquée, la scrutation
   continue et une absence reste vue ; fiche M13, étape 10.
 
@@ -712,7 +714,13 @@ qu'aucune écriture n'atteigne une autre Flam que celle affichée au moment du c
   `.mdf`, en hexadécimal. Elle ne révèle ni le numéro de série ni les clés, change à chaque
   lancement (rien à rapprocher d'une session ou d'un PC à l'autre), n'est ni affichée, ni
   journalisée, ni écrite sur disque, ni reprise dans un message d'erreur ou dans le diagnostic
-  copiable. `null` si `.mdf` est illisible (aucune écriture n'est alors possible).
+  copiable. `null` si `.mdf` n'a pas été lu (plus de 64 Kio ; aucune écriture n'est alors
+  possible). Le SHA-256 **nu** de `.mdf` n'est transmis à l'interface par aucune réponse (il
+  permettrait de reconnaître une Flam malgré le sel) : `mdf_sha256` de la détection n'est plus
+  sérialisé et la commande `device_detect`, sans appelant, est retirée. Il en reste une trace,
+  antérieure et conservée : le nom de la sauvegarde personnelle de `.mdf`
+  (`<volume>-<16 chiffres du SHA-256>.mdf`, dossier de données du launcher), sur le disque de
+  l'utilisateur seulement.
 - **Côté interface** : l'empreinte entre dans la clé d'appareil (`deviceKeyOf`). Une autre Flam
   sous la même lettre est donc une autre clé : reprise au branchement refaite, liste relue,
   dialogue des clés carrier fermé, choix carrier de session oublié, « Retirer du PC » retiré,
@@ -723,10 +731,15 @@ qu'aucune écriture n'atteigne une autre Flam que celle affichée au moment du c
   ouverture de la confirmation pour un retrait, ouverture de l'édition pour l'ordre. Dans une
   file de plusieurs histoires, chaque ligne garde l'empreinte de son clic.
 - **Côté backend** : `device_send_story`, `device_recover_transfers`, `device_remove_story` et
-  `device_reorder_stories` acceptent `fingerprint` (facultatif). La garde commune
-  (`check_write`) la compare à celle du `.mdf` qu'elle vient de lire, celui que retient le
-  permis d'écriture : différente, refus `device_changed` **avant toute écriture** (ni nettoyage
-  du dossier de travail, ni préparation, ni reprise, ni corbeille). Absente : aucune comparaison.
+  `device_reorder_stories` acceptent `expected` (facultatif), la Flam affichée au moment de la
+  demande : `{ fingerprint }`. Trois états (`ExpectedDevice`) : `expected` absent, aucune
+  comparaison (appels d'avant l'empreinte ; l'interface ne s'en sert que pour la reprise qui
+  suit un changement de Flam) ; empreinte fournie, la garde commune (`check_write`) la compare à
+  celle du `.mdf` qu'elle vient de lire, celui que retient le permis d'écriture ; `fingerprint`
+  `null` (Flam affichée sans empreinte, ou aucune Flam affichée), toujours refusé : une autre
+  Flam, lisible, qui reprendrait la lettre ne reçoit donc jamais l'écriture. Refus
+  `device_changed` **avant toute écriture** (ni nettoyage du dossier de travail, ni préparation,
+  ni reprise, ni corbeille).
 - **Commandes sans empreinte** : `device_eject` (n'écrit aucun fichier, doit rester possible
   quand `.mdf` est illisible) ; `library_remove_sent` (n'écrit rien sur la Flam et compare déjà
   le `.mdf` branché à celui de l'envoi) ; `device_carrier_forget` et `device_carrier_accept`
@@ -739,7 +752,7 @@ qu'aucune écriture n'atteigne une autre Flam que celle affichée au moment du c
   processus (instance unique) : sel et verrou d'appareil communs. Flam 1.x en mode carrier : même
   empreinte, tirée de `.mdf` ; elle est vérifiée avant que les clés carrier soient consultées.
 - **Hypothèse** : deux Flam différentes ont des `.mdf` différents (numéro de série, clés). Elle
-  n'est pas confirmée sur deux appareils réels (fiche M13, étape 12).
+  n'est pas confirmée sur deux appareils réels (fiche M13, étape 13).
 
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au

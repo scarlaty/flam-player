@@ -41,7 +41,9 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::detect::MDF_FILE;
-use super::guard::{check_write, WriteContext, WriteKind, WriteRefused};
+use super::guard::{
+    check_write, ExpectedDevice, SeenDevice, WriteContext, WriteKind, WriteRefused,
+};
 use super::index::{
     read_index, recover, write_index, Consent, IndexError, IndexKind, IndexRead, IndexState,
     Recovery, StoryId, STORIES_DIR,
@@ -495,25 +497,23 @@ fn remove_with(
 }
 
 /// Retire une histoire de la Flam montée en `root`. `confirmed` : l'utilisateur a confirmé
-/// la suppression dans l'interface (sinon refus, rien n'est touché). `fingerprint` : empreinte
-/// de la Flam affichée quand il a demandé le retrait (#609) ; une autre Flam à sa place (elle
-/// peut porter une histoire de même UUID) : refus `device_changed`, rien n'est touché, corbeille
-/// et reprise d'index comprises. Absente : aucune comparaison.
+/// la suppression dans l'interface (sinon refus, rien n'est touché). `expected` : Flam
+/// affichée quand il a demandé le retrait (`{ fingerprint }`, #609) ; une autre Flam à sa place
+/// (elle peut porter une histoire de même UUID) : refus `device_changed`, rien n'est touché,
+/// corbeille et reprise d'index comprises. Absent : aucune comparaison.
 #[tauri::command]
 pub async fn device_remove_story(
     config: tauri::State<'_, crate::storage::ConfigState>,
     root: String,
     id: String,
     confirmed: bool,
-    fingerprint: Option<String>,
+    expected: Option<SeenDevice>,
 ) -> AppResult<RemoveReport> {
     let cache_root = super::transfer::launcher_cache_root(&config);
-    // « Retirer du PC » ne vaut plus pour une histoire qu'on retire de la Flam (#609) : oublié
-    // avant le retrait, quelle qu'en soit l'issue.
-    super::after_send::SENT.forget_story(&id);
-    blocking(move || -> AppResult<RemoveReport> {
+    let story = id.clone();
+    let result = blocking(move || -> AppResult<RemoveReport> {
         // Racine reçue de l'interface : contrôlée par la garde (lecteur détecté seulement).
-        let ctx = WriteContext::current(cache_root).expecting(fingerprint);
+        let ctx = WriteContext::current(cache_root).expecting(ExpectedDevice::from_ipc(expected));
         Ok(remove_story(
             Path::new(&root),
             &DEVICE_LOCK,
@@ -522,7 +522,24 @@ pub async fn device_remove_story(
             &ctx,
         )?)
     })
-    .await?
+    .await
+    .and_then(|done| done);
+    // « Retirer du PC » ne vaut plus pour une histoire qu'on retire de la Flam (#609) : oublié
+    // quelle que soit l'issue du retrait, sauf si la Flam branchée n'était pas celle de la
+    // demande (rien n'a été touché, l'envoi enregistré vaut toujours pour la Flam d'origine).
+    // L'oubli vient après le retrait sans risque : pendant le retrait, « Retirer du PC » est
+    // refusé (verrou de la Flam) ; ensuite, il relit la Flam et refuse une histoire qui n'y est
+    // plus listée ([`super::after_send::OnDevice::verify`]).
+    if forgets_sent(&result) {
+        super::after_send::SENT.forget_story(&story);
+    }
+    result
+}
+
+/// Vrai si l'issue `result` d'un retrait fait oublier les envois enregistrés de l'histoire :
+/// toujours, sauf le refus d'une Flam qui n'était pas celle de la demande.
+fn forgets_sent<T>(result: &AppResult<T>) -> bool {
+    !matches!(result, Err(AppError::DeviceChanged(_)))
 }
 
 #[cfg(test)]

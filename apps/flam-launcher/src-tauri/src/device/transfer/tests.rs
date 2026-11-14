@@ -2802,7 +2802,7 @@ fn une_autre_flam_que_celle_du_clic_est_refusee_avant_toute_ecriture() {
     let aged = crate::device::prepare::LEFTOVER_MIN_AGE + std::time::Duration::from_secs(60);
     crate::device::prepare::backdate(&staging, aged);
 
-    let send = |expected: Option<String>, replace: Option<&str>| {
+    let send = |expected: ExpectedDevice, replace: Option<&str>| {
         send_from_library_with(
             &FaultyFs::new(),
             &root,
@@ -2816,8 +2816,13 @@ fn une_autre_flam_que_celle_du_clic_est_refusee_avant_toute_ecriture() {
         )
     };
     let (device_before, work_before) = (snapshot(&root), snapshot(&work));
-    for replace in [None, Some(NEW)] {
-        let err = send(Some(clicked.clone()), replace).unwrap_err();
+    // Flam du clic affichée avec son empreinte, ou affichée sans empreinte : même refus.
+    for (expected, replace) in [
+        (ExpectedDevice::Fingerprint(clicked.clone()), None),
+        (ExpectedDevice::Fingerprint(clicked.clone()), Some(NEW)),
+        (ExpectedDevice::Unidentified, None),
+    ] {
+        let err = send(expected, replace).unwrap_err();
         assert!(
             matches!(err, TransferError::Refused(WriteRefused::DeviceChanged)),
             "{err:?}"
@@ -2832,7 +2837,10 @@ fn une_autre_flam_que_celle_du_clic_est_refusee_avant_toute_ecriture() {
     // La reprise au branchement reçoit la même empreinte : rien n'est repris sur B.
     let lock = crate::device::lock::DeviceLock::new();
     let guard = lock.try_begin(Operation::Transfer).unwrap();
-    let ctx = test_ctx().expecting(Some(clicked.clone()));
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(clicked.clone()));
+    let err = recover_device(&guard, &root, &ctx).unwrap_err();
+    assert_eq!(crate::AppError::from(err).kind(), "device_changed");
+    let ctx = test_ctx().expecting(ExpectedDevice::Unidentified);
     let err = recover_device(&guard, &root, &ctx).unwrap_err();
     assert_eq!(crate::AppError::from(err).kind(), "device_changed");
     assert_eq!(snapshot(&root), device_before);
@@ -2841,7 +2849,7 @@ fn une_autre_flam_que_celle_du_clic_est_refusee_avant_toute_ecriture() {
     // Empreinte de la Flam branchée : l'envoi se fait (reprise et nettoyage compris).
     let own = device_fingerprint(&mdf_b).as_str().to_string();
     std::fs::remove_file(root.join("etc/library/list.new")).unwrap();
-    let report = send(Some(own), None).unwrap();
+    let report = send(ExpectedDevice::Fingerprint(own), None).unwrap();
     assert_eq!(report.id, NEW);
     assert!(!report.device_changed);
     assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);

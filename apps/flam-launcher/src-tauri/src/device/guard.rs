@@ -55,8 +55,18 @@
 //! à chaque lancement ([`device_fingerprint`]). L'interface la renvoie avec chaque demande
 //! d'écriture ([`WriteContext::expecting`]) ; [`check_write`] la compare à celle du `.mdf` qu'il
 //! vient de lire, celui-là même que retient le [`WritePermit`], et refuse
-//! ([`WriteRefused::DeviceChanged`]) avant toute écriture si elle diffère. Sans empreinte
-//! attendue, rien n'est comparé (comportement d'avant).
+//! ([`WriteRefused::DeviceChanged`]) avant toute écriture si elle diffère.
+//!
+//! Trois états ([`ExpectedDevice`]) : demande sans indication (appel d'avant l'empreinte, ou
+//! reprise voulue pour la Flam branchée quelle qu'elle soit), rien n'est comparé ; empreinte de
+//! la Flam affichée, comparée ; Flam affichée **sans empreinte** (son `.mdf` n'avait pas été
+//! lu), toujours refusée : un permis ne vaut que pour une Flam dont `.mdf` vient d'être lu, donc
+//! pourvue d'une empreinte, qui ne peut pas être reconnue comme celle affichée.
+//!
+//! Le condensé SHA-256 nu de `.mdf` n'est transmis à l'interface par aucune réponse (il
+//! permettrait de reconnaître une Flam d'un lancement à l'autre malgré le sel). Il subsiste à
+//! un seul endroit, antérieur à l'empreinte : le nom de la sauvegarde personnelle de `.mdf`
+//! ([`super::detect::backup_mdf`], 16 chiffres), sur le disque de l'utilisateur.
 //!
 //! **Hypothèse** : deux Flam différentes ont des `.mdf` différents (numéro de série, clés). Elle
 //! n'est pas confirmée sur deux appareils réels (voir [`WritePermit::same_mdf`]). Si elle était
@@ -70,7 +80,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::carrier::{
@@ -349,8 +359,9 @@ impl std::fmt::Debug for DeviceFingerprint {
 }
 
 /// Empreinte d'un `.mdf` de SHA-256 `mdf_digest` avec le sel `salt` : SHA-256 d'un préfixe
-/// propre à cet usage, du sel puis du condensé. Sans le sel, rien ne permet de remonter au
-/// condensé, encore moins au contenu.
+/// propre à cet usage, du sel puis du condensé. Sans le sel, elle ne se rapproche ni du condensé
+/// ni du contenu ; le condensé nu n'est d'ailleurs transmis à l'interface par aucune réponse
+/// (voir le module).
 fn fingerprint_with(salt: &[u8; 32], mdf_digest: &[u8; 32]) -> DeviceFingerprint {
     let mut hasher = Sha256::new();
     hasher.update(b"flam-launcher/empreinte-appareil/v1/");
@@ -369,6 +380,50 @@ fn fingerprint_with(salt: &[u8; 32], mdf_digest: &[u8; 32]) -> DeviceFingerprint
 /// module). Lecture pure. À ne calculer que pour un `.mdf` lu : sans lui, pas d'empreinte.
 pub fn device_fingerprint(mdf: &[u8]) -> DeviceFingerprint {
     fingerprint_with(&FINGERPRINT_SALT, &Sha256::digest(mdf).into())
+}
+
+/// Flam affichée par l'interface au moment de la demande d'écriture, telle que la commande la
+/// reçoit (`expected`) : `fingerprint` est l'empreinte rendue par `device_status`, ou `null` si
+/// la Flam était affichée sans empreinte. Un champ absent vaut `null` (refus).
+#[derive(Clone, Deserialize)]
+pub struct SeenDevice {
+    #[serde(default)]
+    fingerprint: Option<String>,
+}
+
+/// Appareil attendu par une écriture (#609, voir le module).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum ExpectedDevice {
+    /// Demande sans indication : aucune comparaison.
+    #[default]
+    Unchecked,
+    /// Flam affichée, d'empreinte connue : l'écriture n'est permise que sur elle.
+    Fingerprint(String),
+    /// Flam affichée sans empreinte (`.mdf` non lu au relevé) : aucune Flam ne peut être reconnue
+    /// comme celle-là, l'écriture est refusée.
+    Unidentified,
+}
+
+impl ExpectedDevice {
+    /// Paramètre `expected` d'une commande : absent, aucune comparaison.
+    pub fn from_ipc(seen: Option<SeenDevice>) -> Self {
+        match seen {
+            None => Self::Unchecked,
+            Some(SeenDevice {
+                fingerprint: Some(fingerprint),
+            }) => Self::Fingerprint(fingerprint),
+            Some(SeenDevice { fingerprint: None }) => Self::Unidentified,
+        }
+    }
+
+    /// Vrai si `permit` peut servir à cette demande.
+    fn allows(&self, permit: &WritePermit) -> bool {
+        match self {
+            Self::Unchecked => true,
+            Self::Fingerprint(expected) => permit.fingerprint().as_str() == expected,
+            Self::Unidentified => false,
+        }
+    }
 }
 
 // --- Contexte et mémoire de session ---------------------------------------------------------
@@ -421,9 +476,8 @@ pub struct WriteContext<'a> {
     detected_roots: OnceCell<Option<Vec<PathBuf>>>,
     cache_root: Option<PathBuf>,
     launcher: OnceCell<HashSet<String>>,
-    /// Empreinte de la Flam affichée au moment de la demande ([`Self::expecting`]) ; `None` :
-    /// aucune comparaison.
-    expected: Option<String>,
+    /// Flam affichée au moment de la demande ([`Self::expecting`]).
+    expected: ExpectedDevice,
 }
 
 impl WriteContext<'static> {
@@ -435,7 +489,7 @@ impl WriteContext<'static> {
             detected_roots: OnceCell::new(),
             cache_root,
             launcher: OnceCell::new(),
-            expected: None,
+            expected: ExpectedDevice::Unchecked,
         }
     }
 }
@@ -454,15 +508,15 @@ impl<'a> WriteContext<'a> {
             detected_roots: OnceCell::from(detected_roots),
             cache_root: None,
             launcher,
-            expected: None,
+            expected: ExpectedDevice::Unchecked,
         }
     }
 
-    /// Exige que la Flam de l'écriture soit celle d'empreinte `fingerprint` ([`DeviceFingerprint`]
-    /// rendue par `device_status` au moment de la demande de l'utilisateur) : [`check_write`]
-    /// refuse sinon ([`WriteRefused::DeviceChanged`]). `None` : aucune comparaison.
-    pub fn expecting(mut self, fingerprint: Option<String>) -> Self {
-        self.expected = fingerprint;
+    /// Exige que la Flam de l'écriture soit `expected`, celle que l'interface affichait au moment
+    /// de la demande de l'utilisateur : [`check_write`] refuse sinon
+    /// ([`WriteRefused::DeviceChanged`]).
+    pub fn expecting(mut self, expected: ExpectedDevice) -> Self {
+        self.expected = expected;
         self
     }
 
@@ -733,9 +787,10 @@ fn check_root(root: &Path, ctx: &WriteContext<'_>) -> Result<(), WriteRefused> {
 /// (voir le module). N'écrit rien sur la Flam. À appeler sous le verrou de l'appareil, avant
 /// toute écriture, y compris une reprise.
 ///
-/// Si le contexte porte une empreinte attendue ([`WriteContext::expecting`], #609), le permis
+/// Si le contexte désigne la Flam attendue ([`WriteContext::expecting`], #609), le permis
 /// n'est rendu que si son empreinte ([`WritePermit::fingerprint`], celle du `.mdf` lu ici, le
-/// seul que le permis retient : aucune fenêtre entre la comparaison et le permis) est celle-là ;
+/// seul que le permis retient : aucune fenêtre entre la comparaison et le permis) est la sienne
+/// (jamais, pour une Flam affichée sans empreinte) ;
 /// sinon refus [`WriteRefused::DeviceChanged`], avant les autres contrôles et sans toucher à la
 /// mémoire de session.
 pub fn check_write(
@@ -751,13 +806,11 @@ pub fn check_write(
         mdf_digest: Sha256::digest(&mdf[..]).into(),
         root: Some(session_key(root, &[]).0),
     };
-    if let Some(expected) = ctx.expected.as_deref() {
-        if permit.fingerprint().as_str() != expected {
-            tracing::warn!(
-                "écriture refusée : la Flam branchée n'est pas celle affichée au moment de la demande"
-            );
-            return Err(WriteRefused::DeviceChanged);
-        }
+    if !ctx.expected.allows(&permit) {
+        tracing::warn!(
+            "écriture refusée : la Flam branchée n'est pas celle affichée au moment de la demande"
+        );
+        return Err(WriteRefused::DeviceChanged);
     }
     let assessment = assess(root, &mdf, ctx, Mode::Write(kind));
     if let Some(reason) = assessment.refused {

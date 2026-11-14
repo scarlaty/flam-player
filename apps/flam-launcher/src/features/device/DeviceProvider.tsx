@@ -37,7 +37,7 @@ import {
   type TransferProgressView,
 } from "./DeviceContext";
 import { CarrierDialog } from "./CarrierDialog";
-import { deviceKeyOf, fingerprintOfKey } from "./deviceKey";
+import { deviceKeyOf, expectedOfKey } from "./deviceKey";
 import { sendErrorMessage } from "./sendError";
 import { REASON_TEXT } from "./sendReasons";
 import { findOnDevice, sendBlock } from "./sendRules";
@@ -227,7 +227,7 @@ export function DeviceProvider({
       return;
     }
     // Reprise de la Flam dont le branchement vient d'être vu, et d'aucune autre (#609).
-    recoverDeviceTransfers(root, fingerprintOfKey(key))
+    recoverDeviceTransfers(root, expectedOfKey(key))
       .then((report) => {
         if (
           startedKey.current === key &&
@@ -465,7 +465,7 @@ export function DeviceProvider({
           next.uuid,
           next.carrier,
           next.replace,
-          fingerprintOfKey(next.deviceKey),
+          expectedOfKey(next.deviceKey),
         );
         waitingAtResult = snapshotWaiting();
         changed = sent.device_changed === true;
@@ -579,8 +579,8 @@ export function DeviceProvider({
         losePlans(() => true, true);
         // Copie temporaire, cache ou ancienne version peuvent rester sur la Flam branchée :
         // reprise tout de suite (elle supprime une copie inachevée, ne l'installe jamais), puis
-        // état relu. Sans empreinte attendue : c'est la Flam branchée, quelle qu'elle soit, qui
-        // est à nettoyer, et l'état affiché n'est peut-être plus le sien.
+        // état relu. Sans Flam attendue (seule écriture dans ce cas) : c'est la Flam branchée,
+        // quelle qu'elle soit, qui est à nettoyer, et l'état affiché n'est peut-être plus le sien.
         const rootAfter = rootRef.current;
         if (rootAfter)
           await recoverDeviceTransfers(rootAfter, null).catch(() => undefined);
@@ -1123,7 +1123,7 @@ export function DeviceProvider({
           rootNow,
           uuid,
           true,
-          fingerprintOfKey(expectedKey),
+          expectedOfKey(expectedKey),
         );
         bumpReload();
         return { cleanupPending: report.cleanup_pending };
@@ -1145,7 +1145,7 @@ export function DeviceProvider({
         throw { kind: "not_found", message: text.errors.noDevice };
       try {
         // Empreinte de la Flam dont l'ordre était affiché à l'ouverture de l'édition (#609).
-        return await reorderDeviceStories(rootNow, order, fingerprintOfKey(expectedKey));
+        return await reorderDeviceStories(rootNow, order, expectedOfKey(expectedKey));
       } catch (caught) {
         // Autre Flam branchée : l'état affiché n'est plus le sien, il est relu.
         if (toAppError(caught).kind === DEVICE_CHANGED) retry();

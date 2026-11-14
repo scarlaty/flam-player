@@ -1,5 +1,11 @@
 import type { FirmwareStatus } from "../api/device";
 
+/**
+ * Empreinte opaque inventée d'une Flam de test (`DeviceSummary.fingerprint`, #609) : le backend
+ * la rend pour toute Flam dont `.mdf` a été lu.
+ */
+export const TEST_FINGERPRINT = "5a".repeat(32);
+
 /** État du firmware d'une Flam 2.x (écriture autorisée, sans contradiction). */
 export function firmwareV2(overrides: Partial<FirmwareStatus> = {}): FirmwareStatus {
   return {

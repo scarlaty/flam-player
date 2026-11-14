@@ -328,9 +328,10 @@ Mes histoires après l'envoi sur la Flam » désactivé au départ.
     sur une histoire installée, la débrancher et la rebrancher aussitôt pendant que
     l'avertissement « expérimentale » est encore ouvert (réinitialiser l'avertissement si
     besoin, sinon noter « non fait »), puis confirmer : l'envoi se fait sur cette même Flam.
-    Noter aussi, pendant une file de plusieurs envois, si des lignes passent à « Annulée » sans
-    que la Flam ait été touchée (relevé où `.mdf` n'a pas pu être lu) : c'est un défaut à
-    rapporter. Fermer puis rouvrir le launcher, Flam restée branchée : elle est reconnue et un
+    Noter aussi, pendant une file de plusieurs envois, si des lignes passent à « Annulée » ou à
+    « Flam non détectée » sans que la Flam ait été touchée : un relevé où `.mdf` ne s'ouvre pas
+    rend la Flam non détectée (comportement antérieur à l'empreinte, qui n'y change rien) ; c'est
+    un défaut à rapporter. Fermer puis rouvrir le launcher, Flam restée branchée : elle est reconnue et un
     envoi se fait normalement (aucune empreinte n'est gardée d'un lancement à l'autre).
 
 **Résultat attendu.** Étapes 1 à 11 conformes ; aucun envoi sans Flam inchangée et surveillée

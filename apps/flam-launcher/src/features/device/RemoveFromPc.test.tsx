@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceStatus, DeviceStory, LibraryCopy } from "../../api/device";
 import { ToastProvider } from "../../components";
 import { expectNoAxeViolations } from "../../test/axe";
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { useDevice } from "./DeviceContext";
 import { DeviceProvider } from "./DeviceProvider";
@@ -46,6 +46,7 @@ function detected(): DeviceStatus {
       backup_failed: false,
       firmware: "2.4.2",
       firmware_status: firmwareV2(),
+      fingerprint: TEST_FINGERPRINT,
     },
   };
 }

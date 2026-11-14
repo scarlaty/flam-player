@@ -65,8 +65,9 @@ pub struct DeviceSummary {
     pub firmware_status: FirmwareStatus,
     /// Empreinte opaque de cette Flam pour ce lancement du launcher (#609,
     /// [`guard::device_fingerprint`]) : l'interface la renvoie avec chaque demande d'écriture,
-    /// refusée si la Flam branchée n'est plus celle-ci. `None` si `.mdf` est illisible (aucune
-    /// écriture n'est alors possible). Ni numéro de série ni clé ne s'en déduisent.
+    /// refusée si la Flam branchée n'est plus celle-ci. `None` si `.mdf` n'a pas été lu (plus
+    /// de 64 Kio : aucune écriture n'est alors possible ; un `.mdf` qui ne s'ouvre pas rend la
+    /// Flam non détectée). Ni numéro de série ni clé ne s'en déduisent.
     pub fingerprint: Option<DeviceFingerprint>,
 }
 

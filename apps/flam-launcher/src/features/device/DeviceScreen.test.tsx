@@ -4,7 +4,7 @@ import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { expectNoAxeViolations } from "../../test/axe";
-import { firmwareV1, firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { SLOW_TEST_MS, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { ToastProvider } from "../../components";
 import { DeviceProvider } from "./DeviceProvider";
@@ -43,6 +43,7 @@ function detected(
       backup_failed: false,
       firmware: "2.4.2",
       firmware_status: firmwareV2(),
+      fingerprint: TEST_FINGERPRINT,
       ...overrides,
     },
   };

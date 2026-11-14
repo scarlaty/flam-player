@@ -750,6 +750,38 @@ fn l_empreinte_de_l_appareil_est_stable_distincte_et_opaque() {
     );
 }
 
+/// #609 : trois états de l'appareil attendu. Une Flam affichée **sans empreinte** (clé relevée
+/// alors que `.mdf` n'avait pas été lu) n'est jamais reconnue : refus `device_changed` sur toute
+/// Flam lisible, même la seule branchée, sans rien écrire. Un paramètre `expected` absent ne
+/// compare rien (appels d'avant l'empreinte) ; présent sans champ `fingerprint`, il refuse.
+#[test]
+fn une_flam_affichee_sans_empreinte_n_est_jamais_reconnue() {
+    let seen = |json: &str| ExpectedDevice::from_ipc(Some(serde_json::from_str(json).unwrap()));
+    assert!(ExpectedDevice::from_ipc(None) == ExpectedDevice::Unchecked);
+    assert!(ExpectedDevice::default() == ExpectedDevice::Unchecked);
+    assert!(seen(r#"{"fingerprint":null}"#) == ExpectedDevice::Unidentified);
+    assert!(seen("{}") == ExpectedDevice::Unidentified);
+    assert!(seen(r#"{"fingerprint":"abc"}"#) == ExpectedDevice::Fingerprint("abc".into()));
+
+    for mdf in [mdf_v2_known(), mdf_v1_real(), mdf_other_device()] {
+        let dev = device(&mdf);
+        for kind in [WriteKind::Send, WriteKind::Other] {
+            let ctx = test_ctx().expecting(ExpectedDevice::Unidentified);
+            assert_eq!(refused(dev.path(), &ctx, kind), WriteRefused::DeviceChanged);
+            // Même demande sans indication : permis, comme avant l'empreinte.
+            let ctx = test_ctx().expecting(ExpectedDevice::Unchecked);
+            check_write(dev.path(), &ctx, kind).unwrap();
+        }
+    }
+    // La Flam elle-même illisible reste refusée pour sa propre raison (`.mdf` absent ici).
+    let empty = tempfile::tempdir().unwrap();
+    let ctx = test_ctx().expecting(ExpectedDevice::Unidentified);
+    assert_eq!(
+        refused(empty.path(), &ctx, WriteKind::Send),
+        WriteRefused::DeviceNotFound
+    );
+}
+
 /// #609 : une empreinte attendue qui n'est pas celle de la Flam branchée fait refuser la garde
 /// (`device_changed`), avant tout autre contrôle, sans rien écrire ni toucher à la mémoire de
 /// session ; le message ne cite aucune empreinte. Empreinte juste, ou absente : comme avant.
@@ -760,7 +792,7 @@ fn une_empreinte_attendue_differente_est_refusee_avant_tout() {
     let dev = device(&mdf_other_device());
     let session_key_now = session_key(dev.path(), &mdf_other_device());
     for kind in [WriteKind::Send, WriteKind::Other] {
-        let ctx = test_ctx().expecting(Some(seen.as_str().to_string()));
+        let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(seen.as_str().to_string()));
         let generation = ctx.session.with(session_key_now.clone(), |e| e.generation);
         let err = refused(dev.path(), &ctx, kind);
         assert_eq!(err, WriteRefused::DeviceChanged);
@@ -778,14 +810,14 @@ fn une_empreinte_attendue_differente_est_refusee_avant_tout() {
     }
     // Ce refus passe avant ceux du firmware : l'autre Flam n'est pas même évaluée.
     let unsupported = device(&mdf_with(KNOWN_HEADER, "main: 3.0.0-x"));
-    let ctx = test_ctx().expecting(Some(seen.as_str().to_string()));
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(seen.as_str().to_string()));
     assert_eq!(
         refused(unsupported.path(), &ctx, WriteKind::Send),
         WriteRefused::DeviceChanged
     );
     // Une valeur qui n'est pas une empreinte ne passe pas non plus.
-    for bogus in ["", "0", "E:\\"] {
-        let ctx = test_ctx().expecting(Some(bogus.to_string()));
+    for bogus in ["", "0", "null", "E:\\"] {
+        let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(bogus.to_string()));
         assert_eq!(
             refused(dev.path(), &ctx, WriteKind::Other),
             WriteRefused::DeviceChanged
@@ -794,7 +826,7 @@ fn une_empreinte_attendue_differente_est_refusee_avant_tout() {
 
     // Empreinte de la Flam branchée : permis, et son empreinte est celle transmise.
     let own = device_fingerprint(&mdf_other_device());
-    let ctx = test_ctx().expecting(Some(own.as_str().to_string()));
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(own.as_str().to_string()));
     let permit = check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     assert_eq!(permit.fingerprint(), own);
     assert!(permit.same_mdf(&mdf_other_device()));
@@ -802,11 +834,11 @@ fn une_empreinte_attendue_differente_est_refusee_avant_tout() {
     // Sans empreinte attendue : aucune comparaison.
     let permit = check_write(dev.path(), &test_ctx(), WriteKind::Send).unwrap();
     assert_eq!(permit.fingerprint(), own);
-    let ctx = test_ctx().expecting(None);
+    let ctx = test_ctx().expecting(ExpectedDevice::Unchecked);
     check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
     // Un firmware refusé reste refusé avec la bonne empreinte.
     let print = device_fingerprint(&mdf_with(KNOWN_HEADER, "main: 3.0.0-x"));
-    let ctx = test_ctx().expecting(Some(print.as_str().to_string()));
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(print.as_str().to_string()));
     assert!(matches!(
         refused(unsupported.path(), &ctx, WriteKind::Send),
         WriteRefused::UnsupportedFirmware { .. }

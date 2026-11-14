@@ -129,7 +129,8 @@ use super::crypto::{
 };
 use super::detect::{MDF_FILE, MDF_MAX_SIZE};
 use super::guard::{
-    check_write, VersionForm, WriteContext, WriteKind, WritePermit, WriteRefused, MDF_MIN_LEN,
+    check_write, ExpectedDevice, SeenDevice, VersionForm, WriteContext, WriteKind, WritePermit,
+    WriteRefused, MDF_MIN_LEN,
 };
 use super::index::{
     self, read_index, Consent, IndexError, IndexKind, IndexState, Recovery, StoryId, WriteOutcome,
@@ -1564,9 +1565,10 @@ struct ProgressEvent<'a> {
 /// `replace` : UUID de l'histoire de la Flam à remplacer (refusé s'il ne désigne pas celle de
 /// l'archive ; absent : pas de remplacement). `carrier` : source des clés pour une Flam en
 /// firmware 1.x (mode carrier, consentement préalable obligatoire) ; `remember` : conserver le couple sur ce PC, chiffré (faux par défaut).
-/// `fingerprint` : empreinte de la Flam affichée au moment du clic (`device_status`, #609) ; si
-/// la Flam branchée n'est pas celle-là, refus `device_changed` avant toute écriture, y compris
-/// le nettoyage du dossier de travail et la reprise. Absente : aucune comparaison.
+/// `expected` : Flam affichée au moment du clic (`{ fingerprint }`, empreinte rendue par
+/// `device_status`, #609) ; si la Flam branchée n'est pas celle-là, ou si elle était affichée
+/// sans empreinte, refus `device_changed` avant toute écriture, y compris le nettoyage du
+/// dossier de travail et la reprise. Absent : aucune comparaison.
 ///
 /// Après un envoi réussi (#609), verrou de la Flam toujours tenu : l'histoire est retirée de
 /// « Mes histoires » si le réglage `remove_after_send` est actif, sinon « Retirer du PC » devient
@@ -1585,7 +1587,7 @@ pub async fn device_send_story(
     replace: Option<String>,
     carrier: Option<CarrierChoice>,
     remember: Option<bool>,
-    fingerprint: Option<String>,
+    expected: Option<SeenDevice>,
 ) -> AppResult<TransferReport> {
     let (cache_root, consent, remove_after_send) = {
         let _guard = config.guard();
@@ -1618,7 +1620,8 @@ pub async fn device_send_story(
             }
         }
         let _clear = ClearCancel;
-        let ctx = WriteContext::current(Some(cache_root.clone())).expecting(fingerprint);
+        let ctx = WriteContext::current(Some(cache_root.clone()))
+            .expecting(ExpectedDevice::from_ipc(expected));
         let mut emit = |progress: Progress| {
             use tauri::Emitter;
             let _ = app.emit(
@@ -1773,16 +1776,16 @@ pub(crate) fn recover_device_with(
 }
 
 /// Reprise au branchement : transferts et index interrompus ([`recover_device`]). Refusée,
-/// comme toute écriture, si la garde du firmware refuse ([`check_write`]). `fingerprint` :
-/// empreinte de la Flam que l'interface vient de voir se brancher (#609) ; une autre Flam à sa
-/// place : refus `device_changed`, rien n'est repris. Absente : aucune comparaison (reprise de
+/// comme toute écriture, si la garde du firmware refuse ([`check_write`]). `expected` :
+/// Flam que l'interface vient de voir se brancher (`{ fingerprint }`, #609) ; une autre Flam à sa
+/// place : refus `device_changed`, rien n'est repris. Absent : aucune comparaison (reprise de
 /// la Flam branchée quelle qu'elle soit, après un envoi interrompu par un changement de Flam :
 /// la reprise ne fait que terminer ou défaire les opérations du launcher trouvées sur place).
 #[tauri::command]
 pub async fn device_recover_transfers(
     config: State<'_, ConfigState>,
     root: String,
-    fingerprint: Option<String>,
+    expected: Option<SeenDevice>,
 ) -> AppResult<TransferRecovery> {
     let cache_root = launcher_cache_root(&config);
     let error_cache_root = cache_root.clone();
@@ -1790,7 +1793,7 @@ pub async fn device_recover_transfers(
         let guard = DEVICE_LOCK
             .try_begin(Operation::Transfer)
             .map_err(TransferError::from)?;
-        let ctx = WriteContext::current(cache_root).expecting(fingerprint);
+        let ctx = WriteContext::current(cache_root).expecting(ExpectedDevice::from_ipc(expected));
         Ok(recover_device(&guard, Path::new(&root), &ctx)?)
     })
     .await?;

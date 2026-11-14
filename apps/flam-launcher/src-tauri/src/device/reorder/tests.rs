@@ -661,24 +661,31 @@ fn une_autre_flam_que_celle_affichee_n_est_pas_reordonnee() {
     fs::write(dev.root().join(MDF_FILE), mdf_v2_known()).unwrap();
     dev.put("list.new", b"x");
     let before = snapshot(dev.root());
-    let send = |expected: String| {
+    let send = |expected: ExpectedDevice| {
         reorder_stories(
             dev.root(),
             &DeviceLock::new(),
             &order(&[B, A, C, D]),
-            &test_ctx().expecting(Some(expected)),
+            &test_ctx().expecting(expected),
         )
     };
-    let err = send(seen).unwrap_err();
-    assert!(
-        matches!(err, ReorderError::Refused(WriteRefused::DeviceChanged)),
-        "{err}"
-    );
-    assert_eq!(crate::AppError::from(err).kind(), "device_changed");
-    assert_eq!(snapshot(dev.root()), before);
+    // Flam affichée avec une autre empreinte, ou affichée sans empreinte : même refus.
+    for expected in [
+        ExpectedDevice::Fingerprint(seen),
+        ExpectedDevice::Unidentified,
+    ] {
+        let err = send(expected).unwrap_err();
+        assert!(
+            matches!(err, ReorderError::Refused(WriteRefused::DeviceChanged)),
+            "{err}"
+        );
+        assert_eq!(crate::AppError::from(err).kind(), "device_changed");
+        assert_eq!(snapshot(dev.root()), before);
+    }
 
     fs::remove_file(dev.path("list.new")).unwrap();
-    send(device_fingerprint(&mdf_v2_known()).as_str().to_string()).unwrap();
+    let own = device_fingerprint(&mdf_v2_known()).as_str().to_string();
+    send(ExpectedDevice::Fingerprint(own)).unwrap();
     assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
 }
 

@@ -1,4 +1,4 @@
-import type { DeviceSummary } from "../../api/device";
+import type { DeviceSummary, ExpectedDevice } from "../../api/device";
 
 /** Séparateur des champs de la clé : absent d'une racine, d'un nom de volume et d'une empreinte. */
 const SEPARATOR = "\u0000";
@@ -12,9 +12,11 @@ const SEPARATOR = "\u0000";
  *
  * Hypothèse : deux Flam différentes ont des `.mdf` différents, donc des empreintes différentes.
  * Elle n'est pas confirmée sur deux appareils réels ; si elle était fausse, la clé ne
- * distinguerait pas ces deux Flam, comme avant l'empreinte. `.mdf` illisible : pas d'empreinte,
- * la clé est celle d'une Flam sans identité (aucune écriture n'y est alors possible), différente
- * de celle de la même Flam redevenue lisible.
+ * distinguerait pas ces deux Flam, comme avant l'empreinte.
+ *
+ * Flam détectée sans empreinte (`.mdf` de plus de 64 Kio, que le backend ne lit pas ; un `.mdf`
+ * qui ne s'ouvre pas rend la Flam non détectée) : clé d'une Flam sans identité, différente de
+ * celle de toute Flam lisible, et pour laquelle aucune écriture n'est acceptée.
  */
 export function deviceKeyOf(device: DeviceSummary | null): string | null {
   if (!device) return null;
@@ -22,11 +24,12 @@ export function deviceKeyOf(device: DeviceSummary | null): string | null {
 }
 
 /**
- * Empreinte de la Flam désignée par une clé de {@link deviceKeyOf} (`null` : aucune Flam, ou
- * `.mdf` illisible) : celle à transmettre aux commandes d'écriture pour une demande faite quand
- * cette clé était affichée.
+ * Flam désignée par une clé de {@link deviceKeyOf}, à transmettre à une commande d'écriture
+ * pour une demande faite quand cette clé était affichée. Une clé sans empreinte (ou `null` :
+ * aucune Flam affichée) donne `{ fingerprint: null }`, que le backend refuse sur toute Flam : il
+ * ne retombe jamais sur « aucune comparaison », sans quoi une autre Flam, lisible, qui
+ * reprendrait la lettre recevrait l'écriture.
  */
-export function fingerprintOfKey(key: string | null | undefined): string | null {
-  if (!key) return null;
-  return key.split(SEPARATOR)[2] || null;
+export function expectedOfKey(key: string | null | undefined): ExpectedDevice {
+  return { fingerprint: key?.split(SEPARATOR)[2] || null };
 }

@@ -1,4 +1,4 @@
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2 } from "../../test/firmware";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -7,7 +7,7 @@ import { ToastProvider } from "../../components";
 import { tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
-import { deviceKeyOf, fingerprintOfKey } from "./deviceKey";
+import { deviceKeyOf, expectedOfKey } from "./deviceKey";
 import { SendToDeviceButton } from "./SendToDeviceButton";
 import { TransferPanel } from "./TransferPanel";
 
@@ -94,9 +94,20 @@ let releaseStatus: () => void;
 
 const callsOf = (cmd: string) => calls.filter((c) => c.cmd === cmd);
 
-/** Comme la garde du backend : refus `device_changed` avant toute écriture. */
-function guard(args: Record<string, unknown>) {
-  if (args.fingerprint !== undefined && args.fingerprint !== plugged) {
+/**
+ * Comme la garde du backend : refus `device_changed` avant toute écriture si la Flam attendue
+ * (`expected`) n'est pas celle branchée, y compris une Flam attendue sans empreinte. Plus strict
+ * que lui sur un point, pour voir un oubli de l'interface : une écriture sans `expected` est
+ * refusée, sauf la reprise qui suit un changement de Flam (`unchecked`), seule écriture que
+ * l'interface demande pour la Flam branchée quelle qu'elle soit.
+ */
+function guard(args: Record<string, unknown>, unchecked = false) {
+  const expected = args.expected as { fingerprint: string | null } | undefined;
+  if (expected === undefined) {
+    if (unchecked) return;
+    throw { kind: "validation", message: "écriture demandée sans Flam attendue" };
+  }
+  if (expected.fingerprint !== plugged) {
     throw { kind: "device_changed", message: REFUSAL };
   }
 }
@@ -121,7 +132,7 @@ beforeEach(() => {
           return gate ? gate.then(() => status) : status;
         }
         case "device_recover_transfers":
-          guard(args);
+          guard(args, true);
           return {
             incomplete_removed: 0,
             previous_restored: 0,
@@ -159,6 +170,23 @@ beforeEach(() => {
           guard(args);
           written.push("ordre");
           return { changed: true, cache_removed: true, count: onDevice.length };
+        case "device_carrier_state":
+          return {
+            warning_text: "Avertissement du mode carrier",
+            warning_version: 1,
+            consent: { text_version: 1, accepted_at: "2026-10-17T10:00:00Z" },
+            firmware: "1.15.14",
+            carrier_needed: true,
+            stored_keys: false,
+            candidates: [
+              {
+                uuid: C,
+                title: "Histoire officielle",
+                hidden: false,
+                with_stored: false,
+              },
+            ],
+          };
         case "library_thumbnail":
           return "data:image/png;base64,AAAA";
         default:
@@ -241,18 +269,16 @@ it("la clé d'appareil porte l'empreinte : même lettre et même nom, autre Flam
   expect(first).not.toBeNull();
   expect(first).toBe(deviceKeyOf(detected(FLAM_1).device));
   expect(second).not.toBe(first);
-  expect(fingerprintOfKey(first)).toBe(FLAM_1);
-  expect(fingerprintOfKey(second)).toBe(FLAM_2);
-  // `.mdf` illisible : pas d'empreinte, et une clé qui n'est celle d'aucune Flam lisible.
+  expect(expectedOfKey(first)).toEqual({ fingerprint: FLAM_1 });
+  expect(expectedOfKey(second)).toEqual({ fingerprint: FLAM_2 });
+  // `.mdf` non lu : pas d'empreinte, et une clé qui n'est celle d'aucune Flam lisible. La Flam
+  // attendue est alors « sans empreinte », jamais « aucune comparaison ».
   const unreadable = deviceKeyOf(detected(null).device);
   expect(unreadable).not.toBe(first);
-  expect(fingerprintOfKey(unreadable)).toBeNull();
-  // Réponse d'un backend sans empreinte : même clé que sans empreinte.
-  const legacy = detected(null);
-  delete legacy.device!.fingerprint;
-  expect(deviceKeyOf(legacy.device)).toBe(unreadable);
+  expect(expectedOfKey(unreadable)).toEqual({ fingerprint: null });
   expect(deviceKeyOf(null)).toBeNull();
-  expect(fingerprintOfKey(null)).toBeNull();
+  expect(expectedOfKey(null)).toEqual({ fingerprint: null });
+  expect(expectedOfKey(undefined)).toEqual({ fingerprint: null });
 });
 
 it("envoi manuel : l'empreinte de la Flam affichée au clic accompagne l'envoi et la reprise au branchement", async () => {
@@ -260,14 +286,14 @@ it("envoi manuel : l'empreinte de la Flam affichée au clic accompagne l'envoi e
   await ready();
   expect(callsOf("device_recover_transfers")[0]?.args).toEqual({
     root: "E:\\",
-    fingerprint: FLAM_1,
+    expected: { fingerprint: FLAM_1 },
   });
   fireEvent.click(sendButton("Capi"));
   await waitFor(() => expect(written).toEqual([`envoi ${A}`]));
   expect(callsOf("device_send_story")[0]?.args).toEqual({
     root: "E:\\",
     uuid: A,
-    fingerprint: FLAM_1,
+    expected: { fingerprint: FLAM_1 },
   });
 });
 
@@ -283,7 +309,7 @@ it("envoi manuel, autre Flam sous la même lettre entre le clic et l'envoi : rie
   await waitFor(() => expect(within(panel).getByText("Annulée")).toBeInTheDocument());
   // Une seule demande, avec l'empreinte du clic ; la seconde histoire n'est pas tentée.
   expect(callsOf("device_send_story").map((c) => c.args)).toEqual([
-    { root: "E:\\", uuid: A, fingerprint: FLAM_1 },
+    { root: "E:\\", uuid: A, expected: { fingerprint: FLAM_1 } },
   ]);
   expect(written).toEqual([]);
   // La reprise qui suit vaut pour la Flam branchée, quelle qu'elle soit : sans empreinte.
@@ -312,7 +338,7 @@ it("avertissement resté ouvert pendant que la Flam change : l'envoi garde l'emp
   const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
   expect(await within(panel).findByText(REFUSAL)).toBeInTheDocument();
   expect(callsOf("device_send_story").map((c) => c.args)).toEqual([
-    { root: "E:\\", uuid: A, fingerprint: FLAM_1 },
+    { root: "E:\\", uuid: A, expected: { fingerprint: FLAM_1 } },
   ]);
   expect(written).toEqual([]);
 });
@@ -329,7 +355,7 @@ it("autre Flam vue sous la même lettre et le même nom : nouvelle reprise, list
   );
   expect(callsOf("device_recover_transfers").at(-1)?.args).toEqual({
     root: "E:\\",
-    fingerprint: FLAM_2,
+    expected: { fingerprint: FLAM_2 },
   });
   await waitFor(() =>
     expect(callsOf("device_list_stories").length).toBeGreaterThan(lists),
@@ -338,7 +364,7 @@ it("autre Flam vue sous la même lettre et le même nom : nouvelle reprise, list
   await ready();
   fireEvent.click(sendButton("Capi"));
   await waitFor(() => expect(written).toEqual([`envoi ${A}`]));
-  expect(callsOf("device_send_story")[0]?.args.fingerprint).toBe(FLAM_2);
+  expect(callsOf("device_send_story")[0]?.args.expected).toEqual({ fingerprint: FLAM_2 });
 });
 
 it("retrait : l'empreinte de la Flam affichée à la demande accompagne le retrait ; une autre Flam n'est pas touchée", async () => {
@@ -355,7 +381,7 @@ it("retrait : l'empreinte de la Flam affichée à la demande accompagne le retra
     root: "E:\\",
     id: C,
     confirmed: true,
-    fingerprint: FLAM_1,
+    expected: { fingerprint: FLAM_1 },
   });
   expect(await screen.findByText(new RegExp("rien n'a été écrit"))).toBeInTheDocument();
   expect(written).toEqual([]);
@@ -375,9 +401,98 @@ it("ordre : l'empreinte de la Flam dont l'ordre était affiché accompagne l'enr
   expect(callsOf("device_reorder_stories")[0]?.args).toEqual({
     root: "E:\\",
     order: [D, C],
-    fingerprint: FLAM_1,
+    expected: { fingerprint: FLAM_1 },
   });
   await settle();
   expect(written).toEqual([]);
   release();
+});
+
+it("Flam affichée sans empreinte, puis une autre, lisible, sous la même lettre : l'envoi est refusé, jamais « sans comparaison »", async () => {
+  // La Flam affichée n'a pas d'empreinte (son `.mdf` n'a pas été lu) ; l'état du firmware du
+  // relevé laisse ici le clic possible, pour éprouver le dernier rempart.
+  status = detected(null);
+  render(<Harness />);
+  await ready();
+  // La reprise au branchement elle-même désigne une Flam sans empreinte.
+  expect(callsOf("device_recover_transfers")[0]?.args).toEqual({
+    root: "E:\\",
+    expected: { fingerprint: null },
+  });
+  const release = swapUnseen();
+  fireEvent.click(sendButton("Capi"));
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  expect(await within(panel).findByText(REFUSAL)).toBeInTheDocument();
+  expect(callsOf("device_send_story").map((c) => c.args)).toEqual([
+    { root: "E:\\", uuid: A, expected: { fingerprint: null } },
+  ]);
+  expect(written).toEqual([]);
+  release();
+  await settle();
+  expect(written).toEqual([]);
+});
+
+/** Flam 1.x (mode carrier), d'empreinte donnée. */
+function detectedV1(fingerprint: string): DeviceStatus {
+  const value = detected(fingerprint);
+  value.device!.firmware = "1.15.14";
+  value.device!.firmware_status = firmwareV1();
+  return value;
+}
+
+/** Ouvre le dialogue des clés carrier pour « Capi », histoire officielle déjà proposée. */
+async function openCarrierDialog() {
+  status = detectedV1(FLAM_1);
+  render(<Harness />);
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Flam en firmware 1.x : mode carrier",
+  });
+  await within(dialog).findByRole("radio", {
+    name: "Histoire officielle « Histoire officielle »",
+  });
+  return dialog;
+}
+
+it("dialogue des clés carrier ouvert, autre Flam sous la même lettre entre deux relevés : l'envoi garde l'empreinte du clic, rien n'est écrit", async () => {
+  const dialog = await openCarrierDialog();
+  const release = swapUnseen();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Vérifier et envoyer" }));
+  const panel = await screen.findByRole("region", { name: "Envoi sur la Flam" });
+  expect(await within(panel).findByText(REFUSAL)).toBeInTheDocument();
+  expect(callsOf("device_send_story").map((c) => c.args)).toEqual([
+    {
+      root: "E:\\",
+      uuid: A,
+      carrier: { kind: "device", uuid: C },
+      remember: true,
+      expected: { fingerprint: FLAM_1 },
+    },
+  ]);
+  expect(written).toEqual([]);
+  release();
+  await settle();
+  expect(written).toEqual([]);
+});
+
+it("dialogue des clés carrier ouvert, autre Flam vue sous la même lettre : le dialogue se ferme, rien n'est envoyé", async () => {
+  await openCarrierDialog();
+  plugged = FLAM_2;
+  status = detectedV1(FLAM_2);
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await settle();
+  expect(callsOf("device_send_story")).toHaveLength(0);
+  expect(written).toEqual([]);
+  // Un nouveau clic redemande les clés, pour la Flam désormais affichée.
+  await ready();
+  fireEvent.click(sendButton("Capi"));
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Flam en firmware 1.x : mode carrier",
+  });
+  fireEvent.click(
+    await within(dialog).findByRole("button", { name: "Vérifier et envoyer" }),
+  );
+  await waitFor(() => expect(written).toEqual([`envoi ${A}`]));
+  expect(callsOf("device_send_story")[0]?.args.expected).toEqual({ fingerprint: FLAM_2 });
 });
