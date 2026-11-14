@@ -366,6 +366,10 @@ fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str
 /// `official/`, jamais marqués ici) ne sont ni marqués ni bloquants (jamais comptés ni vidés). Le
 /// marquage est idempotent : si l'enregistrement échoue ensuite, les marqueurs posés restent, et
 /// un nouvel essai réussit.
+///
+/// Le retour au dossier par défaut (`cache_dir` à `None`) n'est pas contrôlé (#591, N3) : ce
+/// dossier appartient à l'application (données locales), il n'a pas de contenu personnel à
+/// protéger, et ses sous-dossiers sont marqués par la migration ou créés marqués.
 fn check_cache_dir_free(raw: &str) -> AppResult<()> {
     let root = Path::new(raw);
     // `flam-transfer` prouvé, dans un dossier qui porte une autre trace de l'application : pas un
@@ -607,6 +611,16 @@ impl SettingsStore {
         settings: Settings,
         write: &dyn Fn(&Path, &Settings) -> AppResult<()>,
     ) -> AppResult<Settings> {
+        self.update_in(settings, &Environment::current(), write)
+    }
+
+    /// Comme [`Self::update_with`], avec l'environnement injectable (dossier par défaut du cache).
+    fn update_in(
+        &self,
+        settings: Settings,
+        env: &Environment,
+        write: &dyn Fn(&Path, &Settings) -> AppResult<()>,
+    ) -> AppResult<Settings> {
         let stored = self.load()?;
         let mut settings = validate(settings)?;
         let mut new_witness = None;
@@ -621,10 +635,12 @@ impl SettingsStore {
                 // dossier configuré au moment de la mise à jour. Le nouveau dossier, contrôlé
                 // ci-dessus, ne doit jamais être migré à l'aveugle : témoin écrit avant le réglage
                 // (arrêt entre les deux : l'ancien dossier reste non marqué, fuite sans perte).
+                // Les sous-dossiers existants du dossier par défaut, que le report n'avait pas
+                // (ou pas entièrement) évalués, sont inscrits en attente dans ce témoin : le
+                // rattrapage les évalue au démarrage avec la preuve par le contenu.
                 let witness = self.dir.join(crate::cache::MIGRATION_WITNESS);
                 if std::fs::symlink_metadata(&witness).is_err() {
-                    std::fs::create_dir_all(&self.dir)?;
-                    std::fs::write(&witness, b"")?;
+                    crate::cache::write_deferred_witness(&witness, &env.default_cache_dir)?;
                     new_witness = Some(witness);
                 }
             }
@@ -1266,6 +1282,46 @@ mod tests {
         );
         assert!(!crate::cache::is_owned(&old.join("archives")));
         assert!(old.join("archives/perso.zip").is_file());
+    }
+
+    /// Migration reportée (dossier configuré refusé ou absent), puis nouveau dossier choisi : le
+    /// témoin écrit par l'enregistrement inscrit en attente les sous-dossiers non marqués du
+    /// dossier par défaut, évalués ensuite par le rattrapage avec la preuve par le contenu (#591).
+    #[test]
+    fn un_cache_choisi_apres_report_garde_les_restes_du_dossier_par_defaut_en_attente() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path());
+        let env = env_in(dir.path());
+        let default = &env.default_cache_dir;
+        // Dossier par défaut en usage pendant le report : `library/` (vide, donc prouvé) et un
+        // homonyme personnel qui ne l'est pas.
+        fs::create_dir_all(default.join("library")).unwrap();
+        touch(&default.join("archives/vacances-2019.zip"));
+        let witness = dir.path().join(crate::cache::MIGRATION_WITNESS);
+        let new_cache = dir.path().join("nouveau-cache");
+        store
+            .update_in(
+                Settings {
+                    cache_dir: Some(new_cache.display().to_string()),
+                    ..Settings::default()
+                },
+                &env,
+                &|path, settings| storage::write_json(path, settings),
+            )
+            .unwrap();
+        assert!(witness.is_file());
+        assert!(
+            !crate::cache::is_owned(&default.join("library")),
+            "rien n'est marqué par l'enregistrement"
+        );
+        // Démarrage suivant : `library/` est prouvé et marqué, l'homonyme reste intact.
+        assert_eq!(
+            crate::cache::migrate_configured(dir.path(), &env).unwrap(),
+            crate::cache::Migration::CaughtUp { marked: 1 }
+        );
+        assert!(crate::cache::is_owned(&default.join("library")));
+        assert!(!crate::cache::is_owned(&default.join("archives")));
+        assert!(default.join("archives/vacances-2019.zip").is_file());
     }
 
     #[test]
