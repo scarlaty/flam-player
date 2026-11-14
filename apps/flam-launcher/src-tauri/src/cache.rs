@@ -390,7 +390,14 @@ enum RootPlace {
 /// dont la racine a encore cette forme : un alias (lecteur réseau, jonction, `subst`) qui a
 /// changé de cible depuis l'inscription n'étend pas le rattrapage à un dossier choisi ensuite.
 /// La forme canonique des racines courantes est lue au plus une fois (à la première entrée qui
-/// en a besoin), celle d'une racine en attente au plus une fois par racine distincte.
+/// en a besoin), celle d'une racine en attente au plus une fois par racine distincte. Une entrée
+/// rattachée par le chemin dont la forme canonique est enregistrée est aussi contrôlée ainsi par
+/// [`catch_up`] avant toute évaluation (lecture de sa seule racine, déjà lue par `is_dir`).
+///
+/// Limite connue (#591) : une entrée rattachée par sa forme canonique et jamais prouvée reste en
+/// attente ; à chaque démarrage, elle fait alors lire la forme canonique de **toutes** les
+/// racines courantes, dossier configuré non retenu (`keep`) compris : si l'une d'elles est un
+/// partage hors ligne, son délai s'ajoute au démarrage, porte de démarrage fermée.
 struct RootMatcher<'a> {
     current: &'a CurrentRoots,
     canon: Canon<'a>,
@@ -420,24 +427,12 @@ impl<'a> RootMatcher<'a> {
         if self.current.keep.iter().any(|r| same_path(r, root)) {
             return RootPlace::Keep;
         }
-        let Some(recorded) = entry.canonical.as_deref() else {
+        // Pas de forme enregistrée, ou la racine ne l'a plus (alias redirigé) ou est illisible :
+        // seule la comparaison des chemins valait.
+        let Some(Some(actual)) = self.recorded_form(entry) else {
             return RootPlace::Left;
         };
         let canon = self.canon;
-        let actual = match self.pending_canon.iter().find(|(r, _)| *r == entry.root) {
-            Some((_, actual)) => actual.clone(),
-            None => {
-                let actual = canon(root).ok();
-                self.pending_canon
-                    .push((entry.root.clone(), actual.clone()));
-                actual
-            }
-        };
-        // La racine n'a plus la forme canonique enregistrée (alias redirigé) ou est illisible :
-        // seule la comparaison des chemins valait.
-        let Some(actual) = actual.filter(|a| same_path(a, Path::new(recorded))) else {
-            return RootPlace::Left;
-        };
         let current = self.current;
         let (eval, keep) = self.current_canon.get_or_insert_with(|| {
             let read = |roots: &[PathBuf]| roots.iter().map(|r| canon(r).ok()).collect();
@@ -456,6 +451,24 @@ impl<'a> RootMatcher<'a> {
             RootPlace::Left
         }
     }
+
+    /// Forme canonique enregistrée de la racine de `entry` comparée à sa forme actuelle (lue au
+    /// plus une fois par racine distincte) : `None` sans forme enregistrée ; `Some(None)` si la
+    /// racine est illisible ou n'a plus cette forme (alias redirigé) ; `Some(Some(forme))` si
+    /// elle l'a toujours.
+    fn recorded_form(&mut self, entry: &Pending) -> Option<Option<PathBuf>> {
+        let recorded = entry.canonical.as_deref()?;
+        let actual = match self.pending_canon.iter().find(|(r, _)| *r == entry.root) {
+            Some((_, actual)) => actual.clone(),
+            None => {
+                let actual = (self.canon)(Path::new(&entry.root)).ok();
+                self.pending_canon
+                    .push((entry.root.clone(), actual.clone()));
+                actual
+            }
+        };
+        Some(actual.filter(|a| crate::settings::same_path(a, Path::new(recorded))))
+    }
 }
 
 /// Rattrapage à chaque démarrage où le témoin existe (#591), et seulement au démarrage (porte de
@@ -473,9 +486,13 @@ impl<'a> RootMatcher<'a> {
 /// [`ensure_subdir`]) d'une racine existante ; toute entrée d'une racine qui n'est plus ni le
 /// dossier effectif, ni le dossier par défaut, ni le dossier configuré non retenu (dossier de
 /// cache quitté : un retour ultérieur sur cette racine passe par l'adoption, [`adopt_legacy_cache`],
-/// et elle seule). Restent en attente, sans rien écrire : racine absente ou qui n'est pas un
-/// dossier (disque débranché, partage hors ligne), contenu non prouvé, élément qui n'est pas un
-/// dossier réel, marqueur anormal, erreur d'écriture du marqueur, dossier configuré non retenu.
+/// et elle seule) ; parmi elles, une entrée qui ne correspond par le chemin à aucune racine
+/// courante et dont la racine (alias) est illisible ou n'a plus la forme canonique enregistrée
+/// est retirée, pas gardée. Restent en attente, sans rien écrire : racine absente ou qui n'est
+/// pas un dossier (disque débranché, partage hors ligne), racine rattachée par le chemin dont la
+/// forme canonique n'est plus celle enregistrée (alias redirigé) ou est illisible, contenu non
+/// prouvé, élément qui n'est pas un dossier réel, marqueur anormal, erreur d'écriture du
+/// marqueur, dossier configuré non retenu. Limite de délai : voir [`RootMatcher`].
 ///
 /// La liste vide, rien n'est lu (ni réglages ni cache). `current` est appelé seulement si la
 /// liste n'est pas vide ; `None` (réglages illisibles) : rien n'est évalué ni retiré. Un dossier
@@ -521,6 +538,17 @@ fn catch_up(
             }
         }
         if !root.is_dir() {
+            kept.push(entry.clone());
+            continue;
+        }
+        // Rattachée par le chemin : si la forme canonique enregistrée n'est plus celle de la
+        // racine (lecteur réseau, jonction ou `subst` redirigé vers un autre dossier), ce n'est
+        // plus le dossier refusé par la migration ; rien n'est évalué, l'entrée reste en attente
+        // (elle redevient évaluable si l'alias revient sur sa cible d'origine).
+        if matches!(matcher.recorded_form(entry), Some(None)) {
+            tracing::warn!(
+                "cache : racine de « {name} » redirigée depuis la migration, non évaluée"
+            );
             kept.push(entry.clone());
             continue;
         }
@@ -1151,9 +1179,10 @@ fn library_children_known(dir: &Path) -> bool {
 /// report, il y inscrit en attente les sous-dossiers non marqués du dossier par défaut
 /// ([`write_deferred_witness`]) : le rattrapage les réévalue. Des réglages illisibles (corrompus)
 /// reportent aussi la migration, sans témoin ni quarantaine ici (le dossier configuré est
-/// inconnu). Mais au même démarrage, après cette migration, les tâches de démarrage
-/// (`remove_stale_tmp_configured`, qui passe par `SettingsStore::load`) mettent le fichier
-/// corrompu de côté (`settings.json.<horodatage>.bak`) et écrivent les réglages par défaut : au
+/// inconnu). Mais au même démarrage, après cette migration, le premier `SettingsStore::load`
+/// (une commande qui lit les réglages ou le dossier de cache, comme `settings_get`, ou au plus
+/// tard les tâches de démarrage, par `remove_stale_tmp_configured`) met le fichier corrompu de
+/// côté (`settings.json.<horodatage>.bak`) et écrit les réglages par défaut : au
 /// démarrage suivant, la migration porte sur le dossier par défaut et le témoin est écrit. Le
 /// dossier configuré dans le fichier corrompu n'est alors jamais migré (fuite de place, jamais de
 /// perte), sauf si l'utilisateur restaure à la main le `.bak` avant ce démarrage suivant.
@@ -1184,8 +1213,8 @@ fn migrate_configured_with(
         });
     }
     // Lecture sans effet de bord : des réglages illisibles (corrompus) ne sont ni mis de côté ni
-    // remplacés ici (`SettingsStore::load` s'en charge, sous le verrou, dès les tâches de
-    // démarrage qui suivent), et le dossier configuré est alors inconnu : la migration est
+    // remplacés ici (`SettingsStore::load` s'en charge, sous le verrou, au plus tard dans les
+    // tâches de démarrage qui suivent), et le dossier configuré est alors inconnu : la migration est
     // reportée, **sans témoin** (#591, M4). Elle s'achève au démarrage suivant, sur les réglages
     // par défaut écrits entre-temps (voir la documentation de `migrate_configured`).
     let Some(settings) = SettingsStore::new(config_dir).peek_readable()? else {
@@ -4520,16 +4549,19 @@ mod tests {
         };
         let witness = base.path().join(MIGRATION_WITNESS);
 
-        // Entrée du dossier par défaut (forme canonique enregistrée) : aucune résolution.
+        // Entrée du dossier par défaut (forme canonique enregistrée) : rattachée par le chemin,
+        // seule sa propre racine est résolue (contrôle de la forme enregistrée), jamais le
+        // dossier effectif hors ligne.
         write_witness(&witness, &[pending_at(&default, "archives", true)]).unwrap();
         let (outcome, calls) = catch_up_counting(&witness, &current);
         assert_eq!(outcome, Migration::CaughtUp { marked: 1 });
-        assert!(calls.is_empty(), "aucune résolution : {calls:?}");
+        assert_eq!(calls, std::slice::from_ref(&default));
         assert!(is_owned(&default.join("archives")));
 
         // Entrées d'un dossier quitté (dernier recours) mêlées à une entrée du dossier par
         // défaut : la racine quittée est résolue une fois pour ses deux entrées, chaque racine
-        // courante une fois.
+        // courante une fois (au dernier recours), puis le dossier par défaut pour le contrôle de
+        // la forme enregistrée de son entrée.
         fs::create_dir_all(default.join("thumbs")).unwrap();
         write_witness(
             &witness,
@@ -4542,7 +4574,10 @@ mod tests {
         .unwrap();
         let (outcome, calls) = catch_up_counting(&witness, &current);
         assert_eq!(outcome, Migration::CaughtUp { marked: 1 });
-        assert_eq!(calls, [left.clone(), offline, default, configured]);
+        assert_eq!(
+            calls,
+            [left.clone(), offline, default.clone(), configured, default]
+        );
         assert!(read_pending(&witness).is_empty(), "dossier quitté retiré");
         assert!(!is_owned(&left.join("archives")));
     }
@@ -4595,6 +4630,41 @@ mod tests {
         let (outcome, _) = catch_up_counting(&witness, &only_chosen);
         assert_eq!(outcome, Migration::CaughtUp { marked: 1 });
         assert!(is_owned(&chosen.join("archives")));
+    }
+
+    /// Une racine rattachée par le chemin mais dont l'alias a été redirigé depuis l'inscription
+    /// (forme canonique enregistrée différente) n'est pas évaluée et reste en attente ; elle
+    /// redevient évaluable quand l'alias revient sur sa cible.
+    #[test]
+    fn une_racine_redirigee_rattachee_par_le_chemin_n_est_pas_evaluee() {
+        let base = tempfile::tempdir().unwrap();
+        let first = base.path().join("ancien");
+        let other = base.path().join("nouveau");
+        for root in [&first, &other] {
+            fs::create_dir_all(root.join("archives")).unwrap();
+        }
+        let alias = base.path().join("alias");
+        link_dir(&alias, &first);
+        let witness = base.path().join(MIGRATION_WITNESS);
+        write_witness(&witness, &[pending_at(&alias, "archives", true)]).unwrap();
+        unlink_dir(&alias);
+        link_dir(&alias, &other);
+        let current = CurrentRoots {
+            eval: vec![alias.clone()],
+            keep: Vec::new(),
+        };
+        let (outcome, _) = catch_up_counting(&witness, &current);
+        assert_eq!(outcome, Migration::AlreadyDone);
+        assert!(!is_owned(&other.join("archives")), "jamais évalué");
+        assert_eq!(read_pending(&witness).len(), 1, "gardé en attente");
+        // L'alias revient sur sa cible d'origine : évalué, marqué.
+        unlink_dir(&alias);
+        link_dir(&alias, &first);
+        let (outcome, _) = catch_up_counting(&witness, &current);
+        assert_eq!(outcome, Migration::CaughtUp { marked: 1 });
+        assert!(is_owned(&first.join("archives")));
+        assert!(!is_owned(&other.join("archives")));
+        assert!(read_pending(&witness).is_empty());
     }
 
     /// `flam-transfer` exige un autre sous-dossier marqué : réévalué après les autres, il est
@@ -4671,7 +4741,16 @@ mod tests {
             backdate_link(&file_link);
             expected.push(file_link);
         }
+        // Témoin positif : un vrai temporaire au nom exact, antidaté, est supprimé par le même
+        // appel.
+        let real_tmp = config.join(format!(".{MIGRATION_WITNESS}.12-2.tmp"));
+        write(&real_tmp, 2);
+        backdate(&real_tmp);
         remove_stale_witness_tmp(&config);
+        assert!(
+            fs::symlink_metadata(&real_tmp).is_err(),
+            "vrai temporaire supprimé"
+        );
         for link in &expected {
             assert!(fs::symlink_metadata(link).is_ok(), "{link:?} gardé");
         }

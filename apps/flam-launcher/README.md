@@ -1538,10 +1538,10 @@ enregistré pendant le report, le témoin écrit à cette occasion inscrit en at
 sous-dossiers existants, non marqués, du dossier par défaut (rien n'est marqué à ce moment) : le
 rattrapage les évalue au démarrage suivant avec la preuve par le contenu. Des réglages illisibles
 (corrompus) au démarrage reportent aussi la migration, sans témoin (le dossier configuré est
-inconnu) ; la migration elle-même ne touche pas au fichier, mais au même démarrage, juste après,
-les tâches de démarrage (nettoyage des temporaires, qui lit les réglages par
-`SettingsStore::load`) le mettent de côté en `settings.json.<horodatage>.bak` et écrivent les
-réglages par défaut. Au démarrage suivant, la migration porte donc sur le dossier par défaut et
+inconnu) ; la migration elle-même ne touche pas au fichier, mais au même démarrage, le premier
+`SettingsStore::load` (une commande qui lit les réglages ou le dossier de cache, comme
+`settings_get`, ou au plus tard les tâches de démarrage, par le nettoyage des temporaires) le met
+de côté en `settings.json.<horodatage>.bak` et écrit les réglages par défaut. Au démarrage suivant, la migration porte donc sur le dossier par défaut et
 le témoin est écrit : le dossier configuré dans le fichier corrompu n'est jamais migré (fuite de
 place, jamais de perte), sauf si l'utilisateur restaure à la main le `.bak` avant ce démarrage
 suivant. Le rattrapage rattache une racine en attente aux racines courantes d'abord par les
@@ -1551,8 +1551,13 @@ par un autre chemin (jonction, lien, nom court) est reconnue par sa forme canoni
 que cette forme ait été enregistrée dans le témoin à l'inscription et soit restée la même (un
 lecteur réseau, une jonction ou un `subst` redirigé depuis n'étend pas le rattrapage à un dossier
 choisi ensuite) ; un témoin écrit par une version antérieure, sans cette forme, ne vaut que par
-les chemins. `flam-transfer/` est réévalué après les autres sous-dossiers. La racine du cache peut être une jonction ou
-un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
+les chemins. Une racine rattachée par le chemin dont la forme enregistrée a changé (alias
+redirigé) ou est illisible n'est pas évaluée et reste en attente ; une racine rattachée par aucun
+chemin dont la forme a changé ou est illisible est retirée. Limite connue : une entrée rattachée
+par sa forme canonique et jamais prouvée fait lire, à chaque démarrage, la forme canonique de
+toutes les racines courantes, dossier configuré non retenu compris ; si l'une est un partage
+hors ligne, son délai s'ajoute au démarrage. `flam-transfer/` est réévalué après les autres
+sous-dossiers. La racine du cache peut être une jonction ou un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
 reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin
 écrit, le démarrage ne lit plus le cache que pour les sous-dossiers en attente du rattrapage. Elle est reportée, sans témoin, si le dossier
