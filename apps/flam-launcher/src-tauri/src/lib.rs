@@ -146,6 +146,14 @@ pub fn run() {
                 .open_js_links_on_click(false)
                 .build(),
         )
+        // Fermeture de la fenêtre retenue pendant une écriture sur la Flam (#577), attente bornée.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    device::close::on_close_requested(window, api);
+                }
+            }
+        })
         .setup(|app| {
             let config_dir = storage::config_dir()?;
             // Porte de démarrage (#591) : toute commande (verrou de configuration) et toute tâche
@@ -217,6 +225,7 @@ pub fn run() {
             device::carrier::device_carrier_state,
             device::carrier::device_carrier_accept,
             device::carrier::device_carrier_forget,
+            device::close::device_write_in_progress,
             device::transfer::device_carrier_preview,
             device::diagnostic::device_diagnostic,
             device::remove::device_remove_story,
@@ -292,6 +301,7 @@ mod tests {
             ("catalog", include_str!("catalog.rs")),
             ("compat", include_str!("compat.rs")),
             ("device::carrier", include_str!("device/carrier.rs")),
+            ("device::close", include_str!("device/close.rs")),
             ("device::diagnostic", include_str!("device/diagnostic.rs")),
             ("device::eject", include_str!("device/eject.rs")),
             ("device::official", include_str!("device/official.rs")),

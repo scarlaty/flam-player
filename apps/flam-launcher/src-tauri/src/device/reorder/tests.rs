@@ -698,3 +698,122 @@ fn reordonnancement_2x_sans_confirmation() {
     reorder(&dev, &[B, A, C, D]).unwrap();
     assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
 }
+
+/// Lecture de `.mdf` scriptée pour la relecture d'avant écriture (#577) : une réponse par essai,
+/// puis le vrai fichier ; les attentes entre essais sont comptées, pas faites.
+struct ScriptedMdf {
+    script: Vec<Result<Vec<u8>, io::ErrorKind>>,
+    reads: usize,
+    sleeps: usize,
+}
+
+impl ScriptedMdf {
+    fn new(script: Vec<Result<Vec<u8>, io::ErrorKind>>) -> Self {
+        Self {
+            script,
+            reads: 0,
+            sleeps: 0,
+        }
+    }
+}
+
+impl MdfSource for ScriptedMdf {
+    fn read_once(&mut self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        let n = self.reads;
+        self.reads += 1;
+        match self.script.get(n) {
+            Some(Ok(bytes)) => Ok(zeroize::Zeroizing::new(bytes.clone())),
+            Some(Err(kind)) => Err(TransferError::Io(io::Error::new(*kind, "essai (test)"))),
+            None => read_mdf(root),
+        }
+    }
+    fn sleep(&mut self, _delay: std::time::Duration) {
+        self.sleeps += 1;
+    }
+}
+
+fn reorder_scripted(
+    dev: &Device,
+    wanted: &[&str],
+    mdf: &mut ScriptedMdf,
+) -> Result<ReorderReport, ReorderError> {
+    reorder_checked(
+        dev.root(),
+        &DeviceLock::new(),
+        &order(wanted),
+        &test_ctx(),
+        &mut |root, entries| write_index(root, IndexKind::Visible, entries, Consent::IfValid),
+        mdf,
+    )
+}
+
+/// #577 : `.mdf` relu juste avant l'écriture de l'index. Une autre Flam, un `.mdf` absent ou
+/// illisible : refus `device_changed`, l'arborescence de la Flam branchée est strictement
+/// inchangée (ni index, ni cache, ni fichier de travail) et le verrou est libéré.
+#[test]
+fn flam_echangee_avant_l_ecriture_de_l_ordre_rien_n_est_ecrit() {
+    use crate::device::guard::tests::{mdf_v2_known, snapshot};
+    let refusals: [Vec<Result<Vec<u8>, io::ErrorKind>>; 3] = [
+        // Autre Flam sous la même lettre.
+        vec![Ok(mdf_v2_known())],
+        // Illisible après tous les essais (verrou persistant : 1 essai + 4 nouveaux).
+        vec![Err(io::ErrorKind::PermissionDenied); 16],
+        // Débranchée : erreur d'entrée/sortie non passagère.
+        vec![Err(io::ErrorKind::NotFound)],
+    ];
+    for script in refusals {
+        let dev = Device::new();
+        let before = snapshot(dev.root());
+        let lock = DeviceLock::new();
+        let mut mdf = ScriptedMdf::new(script);
+        let err = reorder_checked(
+            dev.root(),
+            &lock,
+            &order(&[B, A, C, D]),
+            &test_ctx(),
+            &mut |_, _| panic!("aucune écriture après le changement de Flam"),
+            &mut mdf,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ReorderError::DeviceChangedDuring), "{err}");
+        let app: AppError = err.into();
+        assert_eq!(app.kind(), "device_changed");
+        assert_eq!(snapshot(dev.root()), before);
+        assert_eq!(lock.current(), None);
+    }
+}
+
+/// Un verrou passager sur `.mdf` (antivirus) est réessayé : pas de faux refus.
+#[test]
+fn verrou_passager_sur_mdf_reessaye_sans_faux_refus() {
+    let dev = Device::new();
+    let mut mdf = ScriptedMdf::new(vec![
+        Err(io::ErrorKind::PermissionDenied),
+        Err(io::ErrorKind::PermissionDenied),
+    ]);
+    let report = reorder_scripted(&dev, &[B, A, C, D], &mut mdf).unwrap();
+    assert!(report.changed);
+    assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
+    assert_eq!(mdf.reads, 3);
+    assert_eq!(mdf.sleeps, 2);
+}
+
+/// Un ordre inchangé n'écrit rien : aucune relecture de `.mdf` en plus.
+#[test]
+fn ordre_inchange_ne_relit_pas_mdf() {
+    let dev = Device::new();
+    let mut mdf = ScriptedMdf::new(Vec::new());
+    let report = reorder_scripted(&dev, &[A, B, C, D], &mut mdf).unwrap();
+    assert!(!report.changed);
+    assert_eq!(mdf.reads, 0);
+}
+
+/// Durée d'un changement d'ordre normal : une seule relecture de `.mdf` de plus.
+#[test]
+fn un_changement_d_ordre_normal_relit_mdf_une_fois() {
+    let dev = Device::new();
+    let mut mdf = ScriptedMdf::new(Vec::new());
+    reorder_scripted(&dev, &[B, A, C, D], &mut mdf).unwrap();
+    assert_eq!(mdf.reads, 1);
+    assert_eq!(mdf.sleeps, 0);
+}

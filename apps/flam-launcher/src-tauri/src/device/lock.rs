@@ -22,6 +22,23 @@ pub enum Operation {
 }
 
 impl Operation {
+    /// Vrai si l'opération écrit sur l'appareil ou peut le faire (la fermer en plein milieu
+    /// laisserait un transfert ou un retrait inachevé, voir [`super::close`]). L'éjection n'écrit
+    /// rien : elle est brève et la couper ne perd rien.
+    pub fn writes(self) -> bool {
+        !matches!(self, Operation::Eject)
+    }
+
+    /// Nom stable transmis à l'interface (événement et commande de [`super::close`]).
+    pub fn key(self) -> &'static str {
+        match self {
+            Operation::Remove => "remove",
+            Operation::Transfer => "transfer",
+            Operation::Reorder => "reorder",
+            Operation::Eject => "eject",
+        }
+    }
+
     /// Libellé affiché dans les messages de refus.
     pub fn label(self) -> &'static str {
         match self {

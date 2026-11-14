@@ -282,7 +282,10 @@ cumulés et 16 Mio par fichier à chiffrer (lu en mémoire), contrôlés d'aprè
 **réellement lues**. Les tailles déclarées par l'archive sont aussi additionnées dès le plan : un
 total déclaré au-delà de 4 Gio est refusé avant toute écriture. Sont refusés dès le plan un nom
 de plus de 255 unités UTF-16 (FAT, noms longs) et un nom à la fois fichier et dossier (`a` et `a/b`) ; l'extension
-`.lua` et les fichiers propres à l'archive se reconnaissent sans tenir compte de la casse.
+`.lua` et les fichiers propres à l'archive se reconnaissent sans tenir compte de la casse. Le nom
+**final** sur la Flam est recontrôlé composant par composant après le retrait de `.plain` et le
+passage de `.lua` à `.lsf` (#577) : `img/a..plain` donnerait `img/a.` (point final), `a .plain`
+`a ` (espace final), `.plain` un nom vide ; ces entrées sont refusées comme un nom d'entrée non sûr.
 
 La préparation **n'écrit rien sur l'appareil**. Elle construit l'histoire dans un dossier de
 travail du launcher : tout est écrit dans `<travail>/.partiel-<uuid>-<aléa>/`, renommé en
@@ -375,6 +378,16 @@ histoires en cause, sans rien refuser (faux positifs possibles : `info` en Latin
 celles dont `info` est en clair, les histoires officielles (autre `key`). Un `info` lisible avec
 un autre `key` confirme la clé et l'IV sans rien conclure sur le `key`.
 
+**Racine reçue du front et lectures** (#577) : toute commande qui reçoit une racine accepte
+seulement un lecteur détecté (amovible, ou FAT fixe) : les écritures (garde), mais aussi
+l'éjection, l'état du mode carrier, les titres et les vignettes de « Ma Flam ». `device_list_stories`
+reçoit aussi la racine et la Flam attendue (`root`, `expected` : empreinte de `device_status`) : avec
+deux Flam branchées, la liste est celle de la racine affichée, jamais celle de la première ; une
+autre Flam à sa place est refusée (`device_changed`) ; sans `root`, première Flam, comme avant.
+Argument `expected` : absent et `null` sont indiscernables côté IPC et valent « aucune
+comparaison » ; seul un objet `{ fingerprint }` désigne une Flam (`{ fingerprint: null }` : affichée
+sans empreinte, toujours refusée).
+
 ### 8.1 Installation ([transfert], #229, implémentée)
 
 Préalable : garde commune (§ 8.0), lecture de `.mdf` (au plus 64 Kio ; au-delà, refus), clés de l'appareil (§ 3), puis préparation hors
@@ -395,7 +408,13 @@ appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écri
    listée et présente, sauf mise à jour demandée (`replace`) ; un dossier `str/<uuid>/` présent mais
    non listé (orphelin) est remplacé sans condition, comme une mise à jour ; espace libre suffisant :
    chaque fichier arrondi à un cluster supposé de 32 Kio, plus un cluster par dossier, plus une
-   marge de 32 Mio.
+   marge de 32 Mio. Espace insuffisant : la corbeille d'un retrait précédent (`.flam-trash/`,
+   § 8.2) est d'abord vidée (#577), puis l'espace relu ; elle n'est vidée que dans ce cas (durée
+   d'un envoi normal inchangée). Garde-fous : seules les entrées nommées
+   `<uuid>-<32 hexadécimaux>` sont supprimées, `.mdf` est relu juste avant (autre Flam, absent ou
+   illisible : refus `device_changed`, rien n'est supprimé), le verrou de l'appareil est tenu.
+   Si l'espace manque encore, refus `NotEnoughSpace` : la seule écriture faite est ce vidage, qui
+   ne touche ni histoire, ni index, ni cache.
 2. **Copie** dans `.flam-transfer/<uuid>.in/` à la racine de l'appareil (hors de `str/`, § 4),
    fichier par fichier, par blocs de 1 Mio, chaque fichier synchronisé (`sync_all`). Empreinte
    SHA-256 calculée pendant la lecture de la source ; un fichier source qui change de taille
@@ -439,7 +458,8 @@ appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écri
    vide.
 
 Annulation, échec ou espace insuffisant avant l'étape 5 : `str/` et les index sont inchangés et le
-dossier de copie est supprimé. Seuls `str/<uuid>/` de cet UUID, `.flam-transfer/`, `list` et
+dossier de copie est supprimé (espace insuffisant : seule la corbeille d'un retrait précédent a pu
+être vidée). Seuls `str/<uuid>/` de cet UUID, `.flam-transfer/`, `list` et
 `library.cache` sont modifiés. Durée : environ 4 minutes pour 80 Mo (supposé [rapport], non
 mesuré).
 
@@ -450,6 +470,7 @@ Reprise (`recover`, appelée à chaque envoi et à appeler à la détection), se
 | -------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------- |
 | (refus) `.mdf` changé, à l'entrée      | rien de modifié, reprise comprise                | aucune                                                      |
 | les vérifications                      | rien de modifié                                  | aucune                                                      |
+| (refus) espace insuffisant             | corbeille d'un retrait précédent vidée ; index et `str/` intacts | aucune                                      |
 | (refus) `.mdf` changé avant promotion  | `<uuid>.in/` complet non promu                   | `<uuid>.in/` supprimé (jamais promu)                        |
 | une copie partielle ou la vérification | `<uuid>.in/` non promu                           | `<uuid>.in/` supprimé (copie à refaire)                     |
 | la mise de côté (mise à jour)          | `<uuid>.old/`, `<uuid>.in/`, pas de `str/<uuid>` | `<uuid>.old/` remis en `str/<uuid>/`, `<uuid>.in/` supprimé |
@@ -481,8 +502,14 @@ Ordre inverse de l'installation : index d'abord, dossier ensuite (`remove_story`
 
 1. **Préalables** : confirmation explicite de l'utilisateur (sinon rien n'est lu ni écrit) ; UUID
    valide (36 caractères, tirets aux positions 8, 13, 18, 23) ; racine absolue contenant un `.mdf`
-   qui est un vrai fichier ; verrou d'appareil ; vidage de la corbeille d'un retrait précédent ;
-   reprise des index ; `list` et `list.hidden` doivent être valides ou absents.
+   qui est un vrai fichier ; verrou d'appareil ; garde commune (§ 8.0, empreinte de la Flam du
+   clic comprise) ; vidage de la corbeille d'un retrait précédent ; reprise des index ; `list` et
+   `list.hidden` doivent être valides ou absents.
+   **Flam relue pendant le retrait** (#577) : `.mdf` est relu (même mécanisme et mêmes nouveaux
+   essais que l'envoi, § 8.1) **juste avant chaque écriture** des étapes ci-dessous (corbeille,
+   chaque index, relecture des index, chaque renommage, chaque suppression de la corbeille : 6
+   relectures de 126 octets pour un retrait ordinaire) ; différent, absent ou encore illisible, le
+   retrait s'arrête là (`device_changed`) sans plus rien écrire sur la Flam branchée.
 2. **Cas particuliers** : ni indexée ni présente sur l'appareil = introuvable ; un dossier non
    indexé (orphelin) n'est supprimé que si `list` est valide, sans toucher aux index ; la corbeille
    doit être utilisable avant toute modification.
@@ -503,6 +530,20 @@ Ordre inverse de l'installation : index d'abord, dossier ensuite (`remove_story`
 Les sauvegardes de `usr/0/` de cet UUID (`.prog`, `.save`, dossier) ne sont **jamais** touchées.
 Après une coupure : soit le dossier est entier dans `str/` et hors index (orphelin, retrait
 possible sur confirmation), soit il est dans `.flam-trash/` (vidée au retrait suivant).
+
+Refus parce que la Flam a changé (#577), état laissé **sur la Flam d'origine** et reprise :
+
+| Refus avant…                                    | État laissé                                                                 | Reprise                                                   |
+| ----------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
+| la corbeille ou le premier index                | rien de modifié (hors vidage de la corbeille d'un retrait précédent)        | aucune                                                    |
+| l'index de `list.hidden` (UUID dans les deux)   | UUID retiré de `list`, encore dans `list.hidden` ; dossiers intacts         | nouveau retrait de l'histoire encore listée               |
+| un renommage vers la corbeille                  | UUID absent des index ; dossiers non déplacés entiers (orphelins), les autres dans `.flam-trash/` | orphelin signalé, retrait sur confirmation ; corbeille vidée à l'opération suivante |
+| une suppression de la corbeille                 | histoire retirée ; dossier dans `.flam-trash/`                              | corbeille vidée à l'opération suivante ; rapport `device_changed`, retrait présenté comme réussi |
+
+Une histoire encore listée n'est jamais supprimée (aucun dossier n'est touché avant la relecture des
+index sur la bonne Flam) ; une histoire sortie de l'index n'y revient jamais, même à moitié. La
+fenêtre résiduelle est celle de l'envoi : un échange pendant une écriture elle-même (quelques
+millisecondes) n'est pas vu ; la relecture des index (étape 4) borne de toute façon ce qui suit.
 
 ### 8.3 Masquage (conception, **non implémenté**)
 
@@ -535,8 +576,8 @@ supprime des deux index.
    programme ni un chemin.
 
 Tout échec (fichier ouvert, refus, appareil introuvable, autre système) donne un **repli** : message
-invitant à éjecter depuis l'Explorateur. Une éjection est **refusée** si la racine n'a pas de
-`.mdf` ou si une autre opération est en cours : un transfert ou un retrait n'est jamais coupé.
+invitant à éjecter depuis l'Explorateur. Une éjection est **refusée** si la racine reçue du front n'est pas un lecteur détecté (#577, comme
+pour les écritures), si elle n'a pas de `.mdf` ou si une autre opération est en cours : un transfert ou un retrait n'est jamais coupé.
 Aucune option de retrait forcé n'est utilisée : la Flam peut exécuter des tâches à l'éjection
 (supposé [rapport] ; T5).
 
@@ -546,6 +587,16 @@ Une seule opération à la fois sur l'appareil : retrait, transfert, réordonnan
 éjection. Le verrou ne bloque jamais : une opération qui le trouve pris est refusée aussitôt, avec
 le nom de l'opération en cours. Il est interne au processus ; un second launcher est empêché par le
 plugin d'instance unique.
+
+**Fermeture de la fenêtre** (#577, `device::close`) : fermer le launcher pendant un envoi, un
+retrait, un changement d'ordre ou une reprise couperait l'opération en plein milieu (tableaux de
+reprise ci-dessus). La première demande de fermeture pendant une écriture est donc **retenue** :
+l'événement `device://close-retained` (`{ operation, grace_seconds }`) prévient l'interface, un fil
+attend la fin de l'écriture puis referme la fenêtre. Une deuxième demande pendant l'attente
+(l'utilisateur insiste) est acceptée tout de suite ; l'attente est bornée à 120 s, passé ce délai
+la fenêtre se ferme quand même. La sortie n'est jamais bloquée indéfiniment, et l'éjection (brève,
+sans écriture) ne retient rien. La commande `device_write_in_progress` rend l'opération en cours
+(`transfer`, `remove`, `reorder`) ou `null`.
 
 ### 8.6 Ordre des histoires ([ordre], #233, implémenté)
 
@@ -563,8 +614,11 @@ Réordonner revient à réécrire `list` (`reorder_stories`) ; aucun dossier n'e
    qu'une demande où manque un UUID de `list` (la liste a changé depuis son affichage :
    l'interface la relit). Rien n'est écrit en cas de refus. Une histoire listée sans dossier
    garde sa place comme les autres.
-4. **Écriture** : ordre identique à `list` = rien n'est écrit ; sinon `write_index` (§ 5) et ses
-   six étapes, dont la suppression de `usr/0/library.cache`. Les UUID sont écrits en minuscules.
+4. **Écriture** : ordre identique à `list` = rien n'est écrit ; sinon `.mdf` est **relu** juste
+   avant (#577, même mécanisme et mêmes nouveaux essais que l'envoi : une Flam échangée depuis la
+   garde, absente ou illisible fait refuser, `device_changed`, sans rien écrire sur la Flam
+   branchée ; l'ordre se redemande à la Flam d'origine), puis `write_index` (§ 5) et ses six
+   étapes, dont la suppression de `usr/0/library.cache`. Les UUID sont écrits en minuscules.
 
 Seuls `list`, ses fichiers de travail (`list.new`, `.bak`, `.restore`, idem pour `list.hidden`) et `library.cache` sont
 modifiés ; `list.hidden`, `str/`, `str.hidden/`, `usr/0/` et les réglages ne le sont jamais
@@ -573,6 +627,7 @@ modifiés ; `list.hidden`, `str/`, `str.hidden/`, `usr/0/` et les réglages ne l
 | Coupure ou échec après…                 | État laissé                               | Reprise (`recover`)                |
 | --------------------------------------- | ----------------------------------------- | ---------------------------------- |
 | la validation                           | rien de modifié                           | aucune                             |
+| (refus) `.mdf` changé avant l'écriture  | rien de modifié (ni index ni cache)       | aucune                             |
 | `list.new` (complet ou partiel)         | ancien `list`, `list.new` sans `list.bak` | `list.new` supprimé : ancien ordre |
 | `list.bak` (complet ou partiel)         | ancien `list`, `list.new`, `list.bak`     | ancien ordre gardé                 |
 | le renommage, cible perdue              | `list` absent, `list.new`, `list.bak`     | `list.new` promu : nouvel ordre    |

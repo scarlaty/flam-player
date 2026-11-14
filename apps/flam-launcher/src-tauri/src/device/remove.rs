@@ -10,6 +10,12 @@
 //! - Seuls `str/<uuid>/` et `str.hidden/<uuid>/` de cet UUID sont déplacés ; le dossier d'une
 //!   autre histoire, les sauvegardes `usr/0/` et les réglages ne sont jamais touchés.
 //! - Sans confirmation de l'utilisateur, rien n'est lu ni écrit.
+//! - Le retrait n'atteint jamais une autre Flam que celle de la garde (#577) : `.mdf` est relu
+//!   (même mécanisme et mêmes nouveaux essais que l'envoi, [`super::guard::WritePermit::still_on`]) **juste
+//!   avant chaque écriture** : création de la corbeille, écriture de chaque index, relecture des
+//!   index, chaque renommage vers la corbeille, chaque suppression de la corbeille. `.mdf`
+//!   différent, absent ou encore illisible : le retrait s'arrête là, rien n'est plus écrit (voir
+//!   le tableau).
 //!
 //! # Suppression reprenable
 //!
@@ -30,6 +36,15 @@
 //! | l'index réécrit (ou renommage refusé malgré les nouveaux essais) | dossier entier dans `str/`, absent de l'index | orphelin signalé, retrait sur confirmation |
 //! | le renommage en corbeille      | dossier dans `.flam-trash/`                     | [`purge_trash`] au début de chaque opération |
 //! | une suppression partielle      | restes dans `.flam-trash/`                      | [`purge_trash`]                              |
+//! | (refus) `.mdf` changé avant la corbeille ou le premier index | rien de modifié (hors vidage de la corbeille d'un retrait précédent) | aucune |
+//! | (refus) `.mdf` changé avant l'index de `list.hidden` (UUID dans les deux index) | UUID retiré de `list`, encore dans `list.hidden`, dossiers intacts | nouveau retrait de l'histoire encore listée |
+//! | (refus) `.mdf` changé après les index, avant un renommage | UUID absent des index ; dossiers non déplacés entiers dans `str/` ou `str.hidden/` (orphelins), les déjà déplacés dans la corbeille | orphelin signalé, retrait sur confirmation ; [`purge_trash`] vide la corbeille |
+//! | (signalé) `.mdf` changé avant une suppression de la corbeille | histoire retirée, dossier dans `.flam-trash/` | [`purge_trash`] à la prochaine opération ; `device_changed` dans le rapport, retrait présenté comme réussi |
+//!
+//! Une histoire encore listée n'est jamais supprimée (aucun dossier n'est touché avant la
+//! relecture des index) ; une histoire sortie de l'index n'y revient jamais, même à moitié : les
+//! index se réécrivent l'un après l'autre, et le seul état intermédiaire est « sortie de `list`,
+//! encore dans `list.hidden` » (dossiers intacts), que le nouveau retrait termine.
 //!
 //! Les opérations sur l'appareil sont sérialisées par [`DeviceLock`].
 
@@ -49,6 +64,7 @@ use super::index::{
     Recovery, StoryId, STORIES_DIR,
 };
 use super::lock::{Busy, DeviceLock, Operation, DEVICE_LOCK};
+use super::transfer::{read_mdf, TransferError};
 use crate::catalog::blocking;
 use crate::storage::retry_transient;
 use crate::{AppError, AppResult};
@@ -68,9 +84,15 @@ pub struct RemoveReport {
     pub index_updated: bool,
     /// Nombre de dossiers d'histoire retirés (`str/` et `str.hidden/`).
     pub folders_removed: usize,
-    /// La corbeille n'a pas pu être vidée tout de suite (fichier verrouillé) : l'histoire est
-    /// retirée, l'espace sera libéré à la prochaine opération.
+    /// La corbeille n'a pas pu être vidée tout de suite (fichier verrouillé, ou Flam changée
+    /// avant la suppression, voir `device_changed`) : l'histoire est retirée, l'espace sera
+    /// libéré à la prochaine opération.
     pub cleanup_pending: bool,
+    /// La Flam a été débranchée, remplacée ou momentanément illisible entre le renommage en
+    /// corbeille et sa suppression (#577) : l'histoire est retirée de la Flam d'origine, la
+    /// suppression de la corbeille est laissée à la prochaine opération sur cette Flam. Rien
+    /// n'a été écrit sur l'autre.
+    pub device_changed: bool,
 }
 
 /// Dossier d'histoire présent sur l'appareil mais absent des deux index (rendu par
@@ -94,6 +116,11 @@ pub enum RemoveError {
     NotADevice,
     #[error("histoire {0} introuvable sur la Flam")]
     NotFound(StoryId),
+    /// `.mdf` relu pendant le retrait différent de celui de la garde, absent ou illisible
+    /// (#577) : le retrait s'arrête avant l'écriture suivante, sans rien écrire sur la Flam
+    /// branchée.
+    #[error("la Flam a été débranchée, remplacée ou momentanément illisible pendant le retrait : il est interrompu avant l'écriture suivante ; rebranchez la Flam d'origine puis relancez le retrait, il se termine sans rien perdre")]
+    DeviceChangedDuring,
     #[error(transparent)]
     Busy(#[from] Busy),
     /// Refus de la garde commune des écritures ([`super::guard`]) : aucune suppression.
@@ -119,9 +146,8 @@ impl From<RemoveError> for AppError {
             RemoveError::NotFound(_) => AppError::NotFound(err.to_string()),
             // Flam différente de celle affichée à la demande du retrait (#609) : même `kind` que
             // pour un envoi, rien n'a été touché.
-            RemoveError::Refused(WriteRefused::DeviceChanged) => {
-                AppError::DeviceChanged(err.to_string())
-            }
+            RemoveError::Refused(WriteRefused::DeviceChanged)
+            | RemoveError::DeviceChangedDuring => AppError::DeviceChanged(err.to_string()),
             RemoveError::NotConfirmed
             | RemoveError::InvalidId
             | RemoveError::NotADevice
@@ -155,6 +181,11 @@ trait TrashFs {
     fn remove_file(&self, path: &Path) -> io::Result<()>;
     /// Attente entre deux essais.
     fn sleep(&self, delay: Duration);
+    /// Lit `.mdf` de `root` (une tentative) pour la relecture d'avant écriture
+    /// ([`super::guard::WritePermit::still_on`]).
+    fn read_mdf_once(&self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        read_mdf(root)
+    }
 }
 
 /// Opérations réelles.
@@ -304,6 +335,13 @@ fn purge_trash(root: &Path, ops: &dyn TrashFs) -> io::Result<usize> {
     Ok(removed)
 }
 
+/// Vide la corbeille de la Flam de `root` avec les opérations réelles, pour qu'un envoi libère la
+/// place qu'elle occupe (#577). Mêmes règles que [`purge_trash`] (entrées reconnues seulement) ;
+/// à appeler sous [`DeviceLock`], après le contrôle de l'appareil.
+pub(crate) fn empty_trash(root: &Path) -> io::Result<usize> {
+    purge_trash(root, &RealTrashFs)
+}
+
 /// Dossiers d'histoire (nom au format UUID) présents dans `str/` ou `str.hidden/` mais
 /// absents des deux index. Signalés à l'utilisateur, jamais supprimés sans confirmation.
 /// Refuse si `list` est absent : toutes les histoires paraîtraient orphelines. Peut lancer
@@ -382,7 +420,10 @@ fn remove_with(
     check_device(root)?;
     let _guard = lock.try_begin(Operation::Remove)?;
     // Garde commune, sous le verrou et avant toute écriture (corbeille, reprise d'index).
-    check_write(root, ctx, WriteKind::Other)?;
+    let permit = check_write(root, ctx, WriteKind::Other)?;
+    // `.mdf` relu juste avant chaque écriture irréversible (#577) : la Flam a pu être échangée
+    // depuis la garde ou depuis l'écriture précédente.
+    let still_on = || permit.still_on(|| ops.read_mdf_once(root), |delay| ops.sleep(delay));
 
     if let Err(err) = purge_trash(root, ops) {
         tracing::warn!("restes d'un retrait précédent non supprimés : {err}");
@@ -411,6 +452,9 @@ fn remove_with(
     // Corbeille prête avant de toucher à l'index : un échec ici ne modifie rien.
     let trash = root.join(TRASH_DIR);
     if !folders.is_empty() {
+        if !still_on() {
+            return Err(changed_during());
+        }
         let ready = fs::create_dir_all(&trash).and_then(|()| is_real_dir(&trash));
         if matches!(ready, Ok(true)) {
             hide(&trash);
@@ -428,6 +472,9 @@ fn remove_with(
             continue;
         }
         let rest: Vec<StoryId> = read.entries.iter().filter(|e| **e != id).cloned().collect();
+        if !still_on() {
+            return Err(changed_during());
+        }
         match write_index(root, kind, &rest, Consent::IfValid) {
             Ok(_) => {}
             Err(IndexError::NeedsConsent) => return Err(RemoveError::IndexNeedsUser),
@@ -436,7 +483,11 @@ fn remove_with(
         hook(Step::IndexWritten(kind))?;
     }
 
-    // 2. Relecture : aucun dossier n'est touché tant que l'UUID est lisible dans un index.
+    // 2. Relecture : aucun dossier n'est touché tant que l'UUID est lisible dans un index. Sur la
+    // Flam d'origine seulement : l'index d'une autre Flam ne prouve rien.
+    if !still_on() {
+        return Err(changed_during());
+    }
     for kind in IndexKind::ALL {
         let read = read_index(root, kind);
         if !matches!(read.state, IndexState::Valid | IndexState::Absent)
@@ -449,6 +500,9 @@ fn remove_with(
     // 3. Dossiers déplacés dans la corbeille (renommage dans le même volume).
     let mut moved = Vec::new();
     for folder in &folders {
+        if !still_on() {
+            return Err(changed_during());
+        }
         fs::create_dir_all(&trash).map_err(RemoveError::FolderLeft)?;
         let target = trash.join(format!("{id}-{}", uuid::Uuid::new_v4().simple()));
         // Un verrou passager ne doit pas laisser l'histoire en orphelin (#577). Source absente à un
@@ -477,14 +531,29 @@ fn remove_with(
     // 4. Suppression. Un échec n'annule rien : l'histoire est retirée, la corbeille sera
     // vidée à la prochaine opération.
     let mut cleanup_pending = false;
+    let mut device_changed = false;
     for target in &moved {
+        if !still_on() {
+            // L'histoire est déjà retirée de la Flam d'origine : pas un échec. La corbeille y
+            // sera vidée par la prochaine opération ; rien n'est supprimé sur la Flam branchée.
+            tracing::warn!("Flam débranchée ou remplacée avant la suppression : corbeille laissée");
+            device_changed = true;
+            cleanup_pending = true;
+            break;
+        }
         if let Err(err) = retried(ops, || ops.remove_dir_all(target)) {
             tracing::warn!("dossier retiré non supprimé, nouvel essai plus tard : {err}");
             cleanup_pending = true;
         }
     }
     if !cleanup_pending {
-        let _ = fs::remove_dir(&trash);
+        if still_on() {
+            let _ = fs::remove_dir(&trash);
+        } else {
+            // Dossier de la corbeille, vide, retiré par la prochaine opération.
+            device_changed = true;
+            cleanup_pending = true;
+        }
     }
     hook(Step::Purged)?;
 
@@ -493,14 +562,23 @@ fn remove_with(
         index_updated: !indexed.is_empty(),
         folders_removed: moved.len(),
         cleanup_pending,
+        device_changed,
     })
+}
+
+/// Erreur d'un retrait interrompu parce que la Flam a changé (journal sans chemin).
+fn changed_during() -> RemoveError {
+    tracing::warn!("Flam débranchée ou remplacée pendant le retrait : rien n'est plus écrit");
+    RemoveError::DeviceChangedDuring
 }
 
 /// Retire une histoire de la Flam montée en `root`. `confirmed` : l'utilisateur a confirmé
 /// la suppression dans l'interface (sinon refus, rien n'est touché). `expected` : Flam
 /// affichée quand il a demandé le retrait (`{ fingerprint }`, #609) ; une autre Flam à sa place
 /// (elle peut porter une histoire de même UUID) : refus `device_changed`, rien n'est touché,
-/// corbeille et reprise d'index comprises. Absent : aucune comparaison.
+/// corbeille et reprise d'index comprises. Absent : aucune comparaison. Pendant le retrait,
+/// `.mdf` est relu avant chaque écriture (#577) : une Flam échangée en cours de route interrompt
+/// le retrait (`device_changed`, état et reprise dans le module).
 #[tauri::command]
 pub async fn device_remove_story(
     config: tauri::State<'_, crate::storage::ConfigState>,
@@ -529,7 +607,9 @@ pub async fn device_remove_story(
     // demande (rien n'a été touché, l'envoi enregistré vaut toujours pour la Flam d'origine).
     // L'oubli vient après le retrait sans risque : pendant le retrait, « Retirer du PC » est
     // refusé (verrou de la Flam) ; ensuite, il relit la Flam et refuse une histoire qui n'y est
-    // plus listée ([`super::after_send::OnDevice::verify`]).
+    // plus listée ([`super::after_send::OnDevice::verify`]). Un échange de Flam au milieu du
+    // retrait (#577, même `kind`) n'oublie rien non plus : l'envoi enregistré reste, et la même
+    // relecture refuse l'histoire si elle a déjà quitté l'index de la Flam d'origine.
     if forgets_sent(&result) {
         super::after_send::SENT.forget_story(&story);
     }

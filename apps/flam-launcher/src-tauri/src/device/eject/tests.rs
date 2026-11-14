@@ -521,3 +521,29 @@ fn systeme_reel_refuse_le_lecteur_systeme() {
     assert!(refusal.reason.contains("lecteur système"), "{refusal:?}");
     assert_eq!(refusal.veto, None);
 }
+
+/// #577 : la racine reçue de l'interface doit être un lecteur détecté ; sinon refus sans aucun
+/// appel système ni verrou pris (un dossier quelconque portant un `.mdf` n'est pas éjecté).
+#[test]
+fn ejection_refusee_pour_une_racine_non_detectee() {
+    let dir = device();
+    let other = tempfile::tempdir().unwrap();
+    let lock = DeviceLock::new();
+    let fake = Fake::new(Ok(()), Ok(()));
+    let detected = [other.path().to_path_buf()];
+    let err = eject_checked(dir.path(), Some(&detected), &lock, &fake).unwrap_err();
+    assert!(matches!(err, EjectError::InvalidRoot), "{err}");
+    assert!(fake.calls().is_empty(), "aucun appel système");
+    assert_eq!(lock.current(), None);
+    // Aucun lecteur détecté du tout : refusée aussi.
+    assert!(eject_checked(dir.path(), Some(&[]), &lock, &fake).is_err());
+    assert!(fake.calls().is_empty());
+
+    // Lecteur détecté (casse et séparateur final indifférents) ou aucun contrôle : éjectée.
+    let detected = [dir.path().to_path_buf()];
+    let ok = eject_checked(dir.path(), Some(&detected), &lock, &fake).unwrap();
+    assert_eq!(ok, EjectOutcome::ejected());
+    let fake = Fake::new(Ok(()), Ok(()));
+    eject_checked(dir.path(), None, &lock, &fake).unwrap();
+    assert_eq!(fake.calls(), ["prepare", "eject"]);
+}

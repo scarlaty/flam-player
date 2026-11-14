@@ -330,7 +330,67 @@ fn device_busy() -> bool {
     DEVICE_LOCK.current().is_some()
 }
 
-/// Titres déchiffrés d'un lot d'histoires de la Flam de `root` (voir [`read_titles`]).
+/// Racine reçue de l'interface : un lecteur détecté (`detected`, `None` : pas de contrôle), comme
+/// pour les écritures (#577). Les titres et vignettes déchiffrent avec les clés de la Flam
+/// désignée : une racine arbitraire ne doit pas y mener.
+pub(crate) fn check_root(root: &Path, detected: Option<&[PathBuf]>) -> AppResult<()> {
+    super::transfer::check_front_root(root, detected)?;
+    Ok(())
+}
+
+/// Corps de [`device_story_titles`] : racine contrôlée (`detected`), puis lot de titres (`stop`
+/// interrompt la lecture). Rien n'est lu sur une racine refusée.
+pub(crate) fn titles_for(
+    root: &Path,
+    detected: Option<&[PathBuf]>,
+    uuids: &[String],
+    consent: Option<&CarrierConsent>,
+    store: &CarrierStore,
+    stop: &dyn Fn() -> bool,
+) -> AppResult<StoryTitles> {
+    check_root(root, detected)?;
+    // `.mdf` absent : Flam débranchée ou accroc USB, à redemander (pas un titre illisible).
+    if stop() || !root.join(MDF_FILE).is_file() {
+        return Ok(StoryTitles {
+            titles: Vec::new(),
+            interrupted: true,
+            keys: false,
+            keys_problem: None,
+        });
+    }
+    let (keys, problem) = title_keys_checked(root, consent, store);
+    Ok(StoryTitles {
+        keys_problem: problem,
+        ..read_titles(root, uuids, keys.as_ref(), stop)
+    })
+}
+
+/// Corps de [`device_story_thumbnail`] : racine contrôlée (`detected`), puis vignette (`busy` :
+/// une écriture est en cours, rien n'est lu).
+pub(crate) fn thumbnail_for(
+    root: &Path,
+    detected: Option<&[PathBuf]>,
+    uuid: &str,
+    cache_dir: &Path,
+    busy: bool,
+) -> AppResult<StoryThumbnail> {
+    check_root(root, detected)?;
+    if busy {
+        return Ok(StoryThumbnail {
+            thumb: None,
+            busy: true,
+        });
+    }
+    let thumb = root
+        .join(MDF_FILE)
+        .is_file()
+        .then(|| story_thumbnail(root, uuid, cache_dir))
+        .flatten();
+    Ok(StoryThumbnail { thumb, busy: false })
+}
+
+/// Titres déchiffrés d'un lot d'histoires de la Flam de `root` (voir [`read_titles`]). `root` doit
+/// être un lecteur détecté (#577).
 #[tauri::command]
 pub async fn device_story_titles(
     config: State<'_, ConfigState>,
@@ -340,27 +400,21 @@ pub async fn device_story_titles(
     let consent = stored_consent(&config)?;
     let generation = GENERATION.load(Ordering::SeqCst);
     blocking(move || {
-        let root = Path::new(&root);
         let stop = || device_busy() || GENERATION.load(Ordering::SeqCst) != generation;
-        // `.mdf` absent : Flam débranchée ou accroc USB, à redemander (pas un titre illisible).
-        if stop() || !root.join(MDF_FILE).is_file() {
-            return StoryTitles {
-                titles: Vec::new(),
-                interrupted: true,
-                keys: false,
-                keys_problem: None,
-            };
-        }
-        let (keys, problem) = title_keys_checked(root, consent.as_ref(), &CarrierStore::app());
-        StoryTitles {
-            keys_problem: problem,
-            ..read_titles(root, &uuids, keys.as_ref(), &stop)
-        }
+        titles_for(
+            Path::new(&root),
+            super::transfer::detected_roots_now().as_deref(),
+            &uuids,
+            consent.as_ref(),
+            &CarrierStore::app(),
+            &stop,
+        )
     })
-    .await
+    .await?
 }
 
-/// Vignette d'une histoire de la Flam de `root` (voir [`story_thumbnail`]).
+/// Vignette d'une histoire de la Flam de `root` (voir [`story_thumbnail`]). `root` doit être un
+/// lecteur détecté (#577).
 #[tauri::command]
 pub async fn device_story_thumbnail(
     config: State<'_, ConfigState>,
@@ -372,21 +426,15 @@ pub async fn device_story_thumbnail(
         SettingsStore::new(&config.dir).resolved_cache_dir(&Environment::current())?
     };
     blocking(move || {
-        if device_busy() {
-            return StoryThumbnail {
-                thumb: None,
-                busy: true,
-            };
-        }
-        let root = Path::new(&root);
-        let thumb = root
-            .join(MDF_FILE)
-            .is_file()
-            .then(|| story_thumbnail(root, &uuid, &cache_dir))
-            .flatten();
-        StoryThumbnail { thumb, busy: false }
+        thumbnail_for(
+            Path::new(&root),
+            super::transfer::detected_roots_now().as_deref(),
+            &uuid,
+            &cache_dir,
+            device_busy(),
+        )
     })
-    .await
+    .await?
 }
 
 /// Interrompt le lot de titres en cours (changement de Flam, écran quitté).

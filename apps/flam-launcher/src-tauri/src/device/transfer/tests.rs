@@ -128,6 +128,9 @@ pub(crate) struct FaultyFs {
     budget: Cell<Option<u64>>,
     /// Fichier dont le premier octet écrit est altéré.
     pub(crate) corrupt: Option<&'static str>,
+    /// Espace libre rendu une fois la corbeille (`.flam-trash/`) absente de la racine (#577) ;
+    /// `free` tant qu'elle y est.
+    free_without_trash: Option<u64>,
     /// Réponse forcée de `same_directory`.
     same_dir: bool,
     /// Dossier dont la suppression échoue (verrouillé) : le chemin contient ce texte.
@@ -154,6 +157,7 @@ impl FaultyFs {
             crash_at: usize::MAX,
             budget: Cell::new(None),
             corrupt: None,
+            free_without_trash: None,
             same_dir: false,
             locked: None,
             sync_dir_fails: false,
@@ -237,9 +241,12 @@ impl Read for FaultyReader<'_> {
 }
 
 impl DeviceFs for FaultyFs {
-    fn free_space(&self, _root: &Path) -> io::Result<u64> {
+    fn free_space(&self, root: &Path) -> io::Result<u64> {
         self.tick()?;
-        Ok(self.free)
+        match self.free_without_trash {
+            Some(free) if !root.join(".flam-trash").exists() => Ok(free),
+            _ => Ok(self.free),
+        }
     }
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         self.tick()?;
@@ -2855,4 +2862,93 @@ fn une_autre_flam_que_celle_du_clic_est_refusee_avant_toute_ecriture() {
     assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
     assert!(!root.join(TRANSFER_DIR).exists(), "reprise faite");
     assert!(!staging.exists(), "restes du dossier de travail supprimés");
+}
+
+/// Entrée de corbeille d'un retrait terminé : nommée comme `remove` les nomme.
+fn leftover_trash(root: &Path, name: &str) {
+    let trash = root.join(crate::device::remove::TRASH_DIR);
+    write(&trash.join(name).join("ni"), &[7u8; 4096]);
+}
+
+const TRASH_ENTRY: &str = "11111111-2222-3333-4444-555555555555-00000000000000000000000000000000";
+
+/// #577 : la corbeille d'un retrait précédent occupe la place : elle est vidée avant le refus,
+/// l'espace relu, et l'envoi réussit. Aucune histoire ni l'index n'est touché.
+#[test]
+fn corbeille_videe_pour_liberer_la_place() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let p = prepared(tmp.path(), 4);
+    leftover_trash(&root, TRASH_ENTRY);
+    let other = snapshot(&root.join("str").join(OTHER));
+    let fs = FaultyFs {
+        free: 0,
+        free_without_trash: Some(PLENTY),
+        ..FaultyFs::new()
+    };
+    let report = send(&fs, &root, &p, false).unwrap();
+    assert!(report.index_updated);
+    assert!(!root.join(crate::device::remove::TRASH_DIR).exists());
+    assert_eq!(snapshot(&root.join("str").join(OTHER)), other);
+    assert_eq!(listed(&root), [id(OTHER), id(NEW)]);
+}
+
+/// #577 : espace toujours insuffisant après le vidage (entrée inconnue laissée, ou place
+/// vraiment manquante) : refus `NotEnoughSpace`. Seule l'entrée reconnue de la corbeille a été
+/// supprimée ; index, histoires et entrée inconnue sont intacts.
+#[test]
+fn espace_toujours_insuffisant_apres_le_vidage_de_la_corbeille() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let p = prepared(tmp.path(), 4);
+    leftover_trash(&root, TRASH_ENTRY);
+    leftover_trash(&root, "inconnu");
+    let mut expected = snapshot(&root);
+    expected.retain(|k, _| !k.contains(TRASH_ENTRY));
+    let fs = FaultyFs {
+        free: 0,
+        free_without_trash: Some(PLENTY),
+        ..FaultyFs::new()
+    };
+    let err = send(&fs, &root, &p, false).unwrap_err();
+    assert!(
+        matches!(err, TransferError::NotEnoughSpace { .. }),
+        "{err:?}"
+    );
+    assert_eq!(snapshot(&root), expected);
+}
+
+/// #577 : la corbeille n'est pas vidée quand l'espace suffit (durée de l'envoi inchangée).
+#[test]
+fn corbeille_laissee_quand_la_place_suffit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let p = prepared(tmp.path(), 4);
+    leftover_trash(&root, TRASH_ENTRY);
+    send(&FaultyFs::new(), &root, &p, false).unwrap();
+    assert!(root
+        .join(crate::device::remove::TRASH_DIR)
+        .join(TRASH_ENTRY)
+        .is_dir());
+}
+
+/// #577 : `.mdf` relu juste avant le vidage : une autre Flam (ou un `.mdf` illisible) fait
+/// refuser l'envoi avant toute suppression de sa corbeille.
+#[test]
+fn flam_echangee_avant_le_vidage_de_la_corbeille_rien_n_est_supprime() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = device(tmp.path(), false);
+    let p = prepared(tmp.path(), 4);
+    leftover_trash(&root, TRASH_ENTRY);
+    let before = snapshot(&root);
+    // Lecture 0 : entrée de l'envoi ; lecture 1 : avant le vidage, refusée par un verrou persistant.
+    let fs = FaultyFs {
+        free: 0,
+        free_without_trash: Some(PLENTY),
+        mdf_locked: Some((1, 100)),
+        ..FaultyFs::new()
+    };
+    let err = send(&fs, &root, &p, false).unwrap_err();
+    assert!(matches!(err, TransferError::DeviceChanged), "{err:?}");
+    assert_eq!(snapshot(&root), before);
 }

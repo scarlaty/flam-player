@@ -10,6 +10,7 @@
 
 pub mod after_send;
 pub mod carrier;
+pub mod close;
 pub mod crypto;
 pub mod details;
 pub mod detect;

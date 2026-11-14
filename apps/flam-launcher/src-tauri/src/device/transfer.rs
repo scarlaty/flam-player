@@ -25,7 +25,10 @@
 //!    ([`DeviceLock`](super::lock::DeviceLock)), reprise d'un transfert interrompu ([`recover`]) et des index
 //!    ([`index::recover`]), index lisibles, histoire ni masquée ni déjà présente (sauf mise à
 //!    jour demandée), espace libre suffisant (taille arrondie aux clusters, plus
-//!    [`SPACE_MARGIN`]).
+//!    [`SPACE_MARGIN`]). Espace insuffisant : la corbeille d'un retrait précédent
+//!    (`.flam-trash/`, [`super::remove::TRASH_DIR`]) est d'abord vidée (entrées reconnues
+//!    seulement, `.mdf` relu juste avant, #577), puis l'espace relu ; seul ce vidage est écrit
+//!    avant un refus `NotEnoughSpace`, il ne touche à aucune histoire ni à l'index.
 //! 2. Copie dans `.flam-transfer/<uuid>.in/` à la racine de l'appareil, fichier par fichier,
 //!    chacun synchronisé sur le disque (`sync_all`). Empreinte SHA-256 calculée à la lecture de
 //!    la source.
@@ -74,7 +77,8 @@
 //!   soit en place ; jusque-là elle est soit dans `str/<uuid>/`, soit dans
 //!   `.flam-transfer/<uuid>.old/` d'où [`recover`] la remet en place.
 //! - Annulation, échec ou espace insuffisant avant l'étape 5 : index et `str/` inchangés, le
-//!   dossier temporaire est supprimé. Une vérification d'espace qui échoue n'écrit rien.
+//!   dossier temporaire est supprimé. Une vérification d'espace qui échoue n'écrit rien, hors le
+//!   vidage de la corbeille d'un retrait précédent (étape 1).
 //! - Seuls `str/<uuid>/` de cet UUID, `.flam-transfer/`, `list` (via `index`) et
 //!   `library.cache` sont modifiés ; jamais `usr/0/` (sauvegardes) ni les réglages.
 //!
@@ -87,6 +91,7 @@
 //! | (refus) Flam différente de celle affichée à la demande (empreinte, #609) | rien de modifié, reprise et dossier de travail compris | aucune |
 //! | (refus) `.mdf` changé depuis la garde, à l'entrée de l'envoi | rien de modifié, reprise comprise | aucune             |
 //! | les vérifications              | rien de modifié                               | aucune                                    |
+//! | (refus) espace insuffisant     | corbeille d'un retrait précédent vidée (restes d'une histoire déjà retirée) ; index, `str/` intacts | aucune |
 //! | une copie partielle            | `<uuid>.in/` incomplet ; index, `str/` intacts | `<uuid>.in/` supprimé                     |
 //! | la vérification                | `<uuid>.in/` complet mais non promu            | `<uuid>.in/` supprimé (copie à refaire)   |
 //! | (refus) `.mdf` changé avant la promotion | `<uuid>.in/` complet, non promu, laissé tel quel | `<uuid>.in/` supprimé              |
@@ -815,7 +820,31 @@ pub(crate) fn send_with(
     }
     let (files, total) = plan(prepared)?;
     let needed = needed_space(&files);
-    let free = fs.free_space(root)?;
+    let mut free = fs.free_space(root)?;
+    if free < needed {
+        // La corbeille d'un retrait précédent (`.flam-trash/`, vidée seulement à l'opération
+        // suivante) occupe peut-être la place manquante (#577). Vidée seulement ici, faute de
+        // place : entrées reconnues (`<uuid>-<32 hexadécimaux>`) d'un retrait terminé, après le
+        // contrôle de l'appareil (garde, `.mdf` relu) et sous le verrou. Un échec n'empêche rien :
+        // l'espace est relu et décide.
+        if !matches!(same_device(fs, permit, root), Ok(true)) {
+            return Err(TransferError::DeviceChanged);
+        }
+        match super::remove::empty_trash(root) {
+            Ok(0) => {}
+            Ok(removed) => {
+                tracing::info!(
+                    entrees = removed,
+                    "corbeille de la Flam vidée pour libérer de la place"
+                );
+                free = fs.free_space(root)?;
+            }
+            Err(err) => {
+                tracing::warn!("corbeille de la Flam non vidée : {err}");
+                free = fs.free_space(root)?;
+            }
+        }
+    }
     if free < needed {
         return Err(TransferError::NotEnoughSpace { needed, free });
     }
@@ -1503,14 +1532,26 @@ fn carrier_outcome(
 /// doit pas pouvoir faire écrire dans un dossier quelconque qui contiendrait un `.mdf`.
 /// Hors Windows, aucune détection n'existe : pas de contrôle.
 pub(crate) fn ensure_detected_root(root: &Path) -> Result<(), TransferError> {
-    #[cfg(windows)]
-    {
-        ensure_root_among(root, &super::detect::Environment::current().roots)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = root;
-        Ok(())
+    check_front_root(root, detected_roots_now().as_deref())
+}
+
+/// Racines des lecteurs détectés à l'instant (`None` : pas de contrôle, hors Windows aucune
+/// détection n'existe).
+pub(crate) fn detected_roots_now() -> Option<Vec<PathBuf>> {
+    cfg!(windows).then(|| super::detect::Environment::current().roots)
+}
+
+/// Contrôle de la racine reçue de l'interface par une commande qui ne passe pas par la garde
+/// d'écriture (éjection, mode carrier, détails des histoires, #577) : un lecteur détecté de
+/// `detected`, comme pour les écritures ; `None` : pas de contrôle (voir
+/// [`detected_roots_now`]).
+pub(crate) fn check_front_root(
+    root: &Path,
+    detected: Option<&[PathBuf]>,
+) -> Result<(), TransferError> {
+    match detected {
+        Some(roots) => ensure_root_among(root, roots),
+        None => Ok(()),
     }
 }
 
