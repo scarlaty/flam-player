@@ -219,13 +219,64 @@ Options :
 | `--strict` | Plus proche de l'appareil : `require()` limité à `script/`, image `.lif` absente = erreur |
 | `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main, même enveloppé dans `pcall` ou réparti sur des coroutines ; réarmé à chaque tour de la boucle principale, donc les callbacks suivant un callback interrompu dans le même tour échouent aussi (défaut 10000, `0` = désactivé) |
 | `--lua-mem <Mo>` | Plafond mémoire de l'état Lua (défaut 256, `0` = aucun, sinon 8 à 16384 ; une valeur invalide est refusée, code de sortie 2) ; au-delà, Lua lève `not enough memory`, rattrapable seulement dans le script (l'hôte dispose d'une petite réserve hors script) |
+| `--unsafe-libs` | **Développement seulement** : rouvre `io`, `os`, `dofile`, `loadfile`, `package.loadlib` (code natif), `string.dump` et le bytecode aux scripts, ce que l'appareil n'expose pas ; avertissement sur stderr ; jamais par défaut, et le launcher ne le passe pas. `debug` reste retiré. Ne jamais lancer une histoire inconnue avec cette option |
 | `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
 | `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
 
-Bac à sable Lua : comme l'appareil (audit de sécurité : `debug` = nil), le player n'expose pas `debug`
-aux scripts (ni `debug.sethook`, qui désarmerait le watchdog, ni `getupvalue`/`getregistry`, qui
-rendraient les fonctions d'origine de ses gardes ; `require("debug")` échoue aussi). `io`, `os` et
-`package` restent disponibles dans l'émulateur, contrairement à l'appareil.
+#### Bac à sable Lua (#575)
+
+Décision : le player n'offre pas aux scripts plus que l'appareil, pour qu'une histoire malveillante
+lancée dans le player n'agisse pas sur le poste (fichiers, processus, code natif). Le blocage vaut
+**dans tous les modes**, avec ou sans `--strict` : le launcher lance le player sans `--strict`
+(`--stdin-control`, `--parent-hwnd`, chemin de l'histoire) ; aucun script du dépôt n'a besoin de ce qui
+est retiré. Seule exception, `--unsafe-libs` (développement, avertissement sur stderr).
+
+Référence (ce que l'appareil expose) et état du player. « Non documenté » : le dépôt ne dit rien, rien
+n'est deviné ; à essayer sur un appareil réel.
+
+| Élément | Appareil (source) | Player par défaut | Player `--unsafe-libs` |
+|---------|-------------------|-------------------|------------------------|
+| `io` | `nil` (`docs/security/security-audit-report.md` §2, §4.2 ; `skills/flam-homebrew/references/device-pitfalls.md` piège 12) | `nil` (dans `_G` et `package.loaded`) | complet |
+| `os` (dont `os.time`, `os.clock`, `os.date`) | `nil` (rapport §2, §4.2 : aucune de ses fonctions n'est citée ; piège 12). Le rapport §3.3 relève une globale `current_time` à l'appareil, sans la décrire | `nil` : un script qui lit l'heure par `os.time()` échoue comme sur l'appareil (aucun script du dépôt n'en a besoin) | complet |
+| `debug` | `nil` (rapport §2) | `nil` (toujours, y compris `--unsafe-libs` : `debug.sethook` retirerait le watchdog) | `nil` |
+| `package` | rapport §2 : `nil` ; mais le runtime éprouvé sur appareil écrit `package.loaded[nom] = nil` et lit `package.loaded` (`tools/telmi2flam/runtime/script/global.lua`, `lua-api.md` §3) : contradiction, `package.loaded` existe en pratique | table réduite à `loaded`, `preload`, `searchers` (+ `config`) ; **sans** `loadlib`, `cpath`, `path`, `searchpath` | complète |
+| `require` | relatif à `script/` (rapport §2) ; l'appareil accepte `require("../main")` (rapport §3.2, vulnérabilité confirmée, recommandation §8 : la filtrer) | `package.preload` puis chercheur de l'hôte (texte seulement, `script/` et, hors `--strict`, la racine de l'histoire) ; `..`, chemin absolu, `:` et noms de périphériques refusés : plus strict que l'appareil, volontairement | + chercheurs de fichier et de bibliothèque C de Lua |
+| `package.loadlib`, chercheurs C | non documenté (le rapport dit `package` = nil) | absents : aucun code natif chargeable | présents (charge une DLL sous Windows) |
+| `load` | non documenté | présent, **texte seulement** : le mode est forcé à `"t"` même si le script passe `"b"` ou `"bt"` (un morceau binaire donne `nil, "attempt to load a binary chunk (mode is 't')"`) ; l'environnement (4e argument) passe tel quel | binaire accepté |
+| `loadstring` | n'existe pas en Lua 5.4 | absent | absent |
+| `loadfile`, `dofile` | `nil` (rapport §4.2 : « No dofile, no loadfile ») | `nil` | présents, lisent n'importe quel fichier, y compris du binaire |
+| `string.dump` | non documenté | `nil` (sans objet une fois `load` limité au texte) | présent |
+| chargeurs de l'hôte (`main.lua`, `require`, `load_lua_table` des sauvegardes) | n.a. | texte seulement (déjà le cas) | idem |
+| `lv.img_src.load`, `audio.load` | audio : `audio.load(1, "../../etc/library/list")` échoue sans fuite (rapport §4.3) ; images : non documenté | **mode histoire** (dossier `.plain` ou `.plain.pk`) : chemin absolu, `..`, lecteur `X:`, antislash de tête, noms de périphériques Windows (`CON`, `NUL`, `COM1`...) et composants terminés par un point ou une espace refusés comme un fichier absent (`nil` ou erreur en `--strict` pour une image ; `-1` pour un son). **Script `.lua` lancé directement** : chemins pris tels quels (les tests passent des chemins absolus). Le mode se déduit de la cible, sans tenir compte de la casse (ASCII) : fichier se terminant par `.plain.pk` (`Evil.Plain.Pk` aussi, comme le launcher) ou dossier contenant `main.lua` = histoire (confinée) ; fichier se terminant par `.lua` = script direct ; toute autre cible est refusée (message sur stderr, code de sortie 2) | idem |
+| `coroutine`, `string`, `table`, `math`, `utf8`, `pcall`/`xpcall`, `select`, `rawget`/`rawset`/`rawequal`/`rawlen`, `next`, `pairs`, `tostring`... | `ipairs`, `tostring`, `pairs`, `string`, `math`, `table`, `math.random` cités (`lua-api.md` §1, §12) ; le reste non documenté | présents, inchangés | idem |
+| `getmetatable`, `setmetatable` | `setmetatable` utilisé par le runtime (`button-theme.lua`) ; `getmetatable` non documenté | présents, inchangés | idem |
+| `collectgarbage` | `"collect"` et `"count"` utilisés par le runtime ; les autres options non documentées | toutes les options présentes ; `"stop"` ne contourne pas `--lua-mem` | idem |
+| `print`, `warn`, `error`, `assert`, `select`, `_G`, `_VERSION` | `print` : sortie série (rapport §2) ; le reste non documenté | présents | idem |
+
+Les erreurs sont celles de Lua devant un `nil` : `attempt to index a nil value (global 'io')`,
+`attempt to call a nil value (global 'dofile')`, `attempt to call a nil value (field 'loadlib')` ; aucun
+message inventé. Les noms sont retirés de `_G` ET de `package.loaded` : `require("io")`,
+`package.loaded.io`, `_G.io`, `load("return io")()`, une coroutine ou la métatable des chaînes
+(`getmetatable("").__index.dump`) ne retrouvent rien. Tests : `tests/e2e/e2e_sandbox.py` (un script par
+voie d'évasion, rien créé ni modifié hors du dossier de l'histoire, player vivant puis arrêt propre).
+
+**Plus permissif que l'appareil, volontairement ou faute de savoir** : `load` (texte), `string`,
+`collectgarbage` (toutes options), `getmetatable`, `coroutine` et le reste de la bibliothèque de base,
+dont l'appareil n'a pas documenté le contenu exact ; `package.loaded`, `preload` et `searchers` (le
+runtime en dépend) ; `lua_lv`/`audio`/`progression` exposent des fonctions de l'émulateur qui ne sont
+pas toutes vérifiées sur l'appareil. À essayer sur un appareil réel, une histoire qui affiche
+`type(load)`, `type(getmetatable)`, `type(package)`, `type(package.loaded)`, `type(string.dump)`,
+`type(collectgarbage)`, `type(coroutine)`, `type(rawget)` et le résultat de `collectgarbage("stop")` :
+aligner ensuite le player sur la réponse.
+
+**Ce que le bac à sable ne couvre PAS** : les finaliseurs `__gc` (Lua coupe les hooks, une boucle y est
+infinie ; le comportement de l'appareil est inconnu) ; le temps passé dans une fonction C (motif de
+`string.find` catastrophique) ; les défauts de mémoire de l'interpréteur (Lua 5.4.8) et des bindings
+`lv.*`/`audio.*` (les audits de l'appareil en ont trouvé, dont l'utilisation après libération) ; les
+liens symboliques et jonctions placés dans le dossier d'une histoire (via le launcher, la copie de travail ignore liens et jonctions : le trou ne concerne que l'appel direct en ligne de commande sur un dossier ; l'extraction des `.plain.pk` les
+refuse, un dossier `.plain` d'auteur est joué tel quel) ; les scripts lancés directement (`flam-player
+script.lua`) pour les chemins d'images et de sons. `debug` mis à part, `--unsafe-libs` n'a aucune
+protection : c'est le comportement d'avant #575.
 
 Limites du watchdog, non corrigées (corriger demanderait de modifier Lua lui-même, sous-module) :
 Lua coupe les hooks pendant l'exécution d'un finaliseur, donc une boucle dans un `__gc` n'est jamais

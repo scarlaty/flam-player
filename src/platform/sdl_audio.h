@@ -32,6 +32,13 @@ void sdl_audio_register_lua(lua_State *L);
 void sdl_audio_set_base_path(const char *path);
 
 /**
+ * Confine audio.load au dossier de l'histoire : chemin absolu, "..", lecteur
+ * ou nom de peripherique refuses (formats/path_guard.h). Hors confinement
+ * (defaut), le chemin est pris tel quel.
+ */
+void sdl_audio_set_confine_paths(int on);
+
+/**
  * Arrete et libere toute lecture audio en cours, et remet a zero l'etat
  * lie a Lua (callback oublie sans luaL_unref, "stop" differe annule).
  * A appeler avant lua_close ; sdl_audio_register_lua l'appelle aussi

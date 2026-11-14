@@ -349,7 +349,9 @@ class TestExplore(unittest.TestCase):
         self.inject(plain, '    if id == "s1" then local ok, e = pcall(function() local t = nil; t.x = 1 end); '
                            'io.stderr:write("Erreur Lua: " .. tostring(e) .. "\\n"); io.stderr:flush(); '
                            'os.exit(3) end')
-        res = explore.explore(PLAYER, plain, timeout_s=60, back_every=0)
+        # os et io n'existent plus dans le bac a sable du player (#575) : --unsafe-libs
+        res = explore.explore(PLAYER, plain, timeout_s=60, back_every=0,
+                              player_args=("--unsafe-libs",))
         self.assertEqual(res["status"], "lua_error", self.explain(res))
         self.assertEqual(res["exit_code"], 3, self.explain(res))
         self.assertEqual(res["done_reason"], "exit")

@@ -101,18 +101,19 @@ SCEN_E = _lua("ran = 0",
               "end)",
               "root()")
 # F : debug.sethook() retire le watchdog quand `debug` est expose
-SCEN_F = _lua("io.stderr:write('DEBUG_TYPE ' .. type(debug) .. ' ' .. type(package.loaded.debug) .. '\\n')",
-              "io.stderr:write('REQUIRE_DEBUG ' .. tostring((pcall(require, 'debug'))) .. '\\n')",
+SCEN_F = _lua("print('DEBUG_TYPE ' .. type(debug) .. ' ' .. type(package.loaded.debug))",
+              "print('REQUIRE_DEBUG ' .. tostring((pcall(require, 'debug'))))",
               "if debug then debug.sethook() end",
               "while true do end")
 # G : fonction C longue, plafonnee par l'allocateur
 SCEN_G = _lua("local ok, e = pcall(string.rep, 'x', 32 * 1024 * 1024)",
-              "io.stderr:write('REP_RESULT ' .. tostring(ok) .. ' ' .. tostring(e):sub(1, 40) .. '\\n')",
+              "print('REP_RESULT ' .. tostring(ok) .. ' ' .. tostring(e):sub(1, 40))",
               "local small = string.rep('y', 1000)",
-              "io.stderr:write('AFTER_OK ' .. #small .. '\\n')")
+              "print('AFTER_OK ' .. #small)")
 # H : memoire remplie jusqu'aux derniers octets (chaines de taille decroissante,
 # sans fermeture ni concatenation pendant le remplissage), puis retour a l'hote
-SCEN_H = _lua("fill = {}",
+SCEN_H = _lua("warn('@on')",
+              "fill = {}",
               "for i = 1, 100000 do fill[i] = true end",
               "collectgarbage('stop')",
               "local k = 0",
@@ -139,14 +140,16 @@ SCEN_H = _lua("fill = {}",
               "  if not ok then break end",
               "  put(s)",
               "end",
-              "io.stderr:write('FILLED ', collectgarbage('count'), '\\n')",
+              # memoire gardee PLEINE jusqu'au retour a l'hote : print alloue (et io n'existe
+              # plus), warn sur des litteraux n'alloue pas (sortie : "Lua warning: ...")
               "local ok1 = pcall(rep, 'x', 1 << 20)",
-              "io.stderr:write('PROBE_1MB ', tostring(ok1), '\\n')")
+              "if collectgarbage('count') >= 16000 then warn('FILLED_16MB') end",
+              "if ok1 then warn('PROBE_1MB true') else warn('PROBE_1MB false') end")
 # J : warn() et un finaliseur en erreur
 SCEN_J = _lua("warn('@on')",
               "setmetatable({}, {__gc = function() error('boom_gc') end})",
               "collectgarbage()",
-              "io.stderr:write('WARN_DONE\\n')")
+              "print('WARN_DONE')")
 LEGIT = ('local ok, err = pcall(error, "attendue")\n'
          'local ok2 = pcall(function() return 1 end)\n'
          'print("LEGIT_DONE", ok, ok2)\n')
@@ -276,7 +279,7 @@ def main():
         with open(sh, "w", newline="") as f:
             f.write(SCEN_H)
         out, rc = run(exe, sh, tmp, "PROBE_1MB", ("--lua-mem", "16", "--watchdog", "120000"))
-        check("FILLED 1638" in out, "memoire remplie jusqu'au plafond (16 Mo)", out)
+        check("FILLED_16MB" in out, "memoire remplie jusqu'au plafond (16 Mo)", out)
         check("PROBE_1MB false" in out, "memoire pleine : 1 Mo refuse au script (reserve de l'hote fermee)", out)
         check("PANIC" not in out, "memoire pleine : pas de PANIC de l'etat Lua", out)
         check(rc == 0, "memoire pleine : le player reste en vie et quitte (code %r)" % rc, out)

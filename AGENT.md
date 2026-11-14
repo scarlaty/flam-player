@@ -65,7 +65,8 @@ Etapes, recapitulatif en fin de sortie (`RESULTAT : OK` si tout passe) :
 6. **Bout en bout** : `tests\e2e\e2e_telmi.py` (paquet TELMI -> telmi2flam -> flam-player
    pilote, pilotes SDL dummy) ; saute sans python ou flam-player.exe.
    Suivent `e2e_embed.py`, `e2e_pk_extract.py`, `e2e_watchdog.py` (watchdog, `debug`, plafond
-   memoire) et `e2e_audio_clock.py` (horloge audio sans peripherique).
+   memoire), `e2e_sandbox.py` (bac a sable Lua : io, os, code natif, bytecode, chemins) et
+   `e2e_audio_clock.py` (horloge audio sans peripherique).
 
 Variables : `FLAM_BUILD_DIR` (dossier de build, defaut `build\`), `FLAM_PYTHON` (python),
 `FLAM_LUA` (Lua 5.4 autonome pour verifier les `nodes.lua` generes). `test_run.bat` fixe
@@ -101,6 +102,9 @@ Un fichier sans aucune assertion, ou dont le chargement/`setup()` echoue, compte
 Options du player :
 - `--strict` : plus proche du device (`require()` limite a `script/`, `lv.img_src.load` sur
   un `.lif` absent = erreur Lua au lieu de `nil`).
+- `--unsafe-libs` : DEVELOPPEMENT seulement. Rouvre `io`, `os`, `dofile`, `loadfile`, `package.loadlib`
+  (code natif), `string.dump` et le bytecode aux scripts (voir « Bibliotheques standard Lua »),
+  avertissement sur stderr ; jamais par defaut, le launcher ne le passe pas. `debug` reste retire.
 - `--watchdog <ms>` : interrompt un script Lua qui ne rend pas la main (defaut 10000, `0` = off).
   Une fois declenche, le hook s'execute a chaque instruction (etat principal et etat declencheur ;
   les autres coroutines basculent a leur prochain hook, et `coroutine.create/wrap/resume/close` et les
@@ -296,18 +300,29 @@ Le script Lua a acces a :
 - `progression.save(cle, t)` / `progression.load(cle)` — cle limitee a `[A-Za-z0-9_-]`, 64 car.
 - `context_menu.set_entries({...})` — menu contextuel (comme le firmware)
 - `goto_library()`, `back_callback` (defaut = `goto_library`), `screen.*` (stubs), `progress`
-- Bibliotheques standard Lua (`io`, `os`, `package`...) — PAS de sandbox dans l'emulateur. Les
-  chargeurs de l'hote (`main.lua`, `require`) n'acceptent que du source texte, mais `load`,
-  `loadfile` et `dofile` de la bibliotheque de base acceptent du bytecode (`load(string.dump(f))`).
-  Exception : `debug` est retire des
-  scripts (`debug` et `package.loaded.debug` a `nil`, `require("debug")` echoue), comme sur l'appareil
-  (`docs/security/security-audit-report.md` : `debug` = nil) ; sinon `debug.sethook()` desarme le
-  watchdog et `debug.getupvalue/getregistry` contournent ses gardes. Le player n'en depend pas
-  (traceback en C, `luaL_traceback`). Les tests sous flam-test/flam-test-audio gardent `debug`
-  (`debug.getinfo`, `debug.getregistry`) : leur runner a son propre etat Lua. Le retrait de `debug`
-  n'est PAS une frontiere de securite tant que `io`, `os`, `package.loadlib` et le bytecode
-  restent ouverts : il rend le watchdog fidele a l'appareil et robuste contre les erreurs, pas contre
-  un script malveillant.
+- Bibliotheques standard Lua : le player n'offre pas aux scripts plus que l'appareil (#575), dans TOUS
+  les modes (le launcher lance le player sans `--strict` : `--stdin-control`, `--parent-hwnd`, chemin).
+  Retires de `_G` ET de `package.loaded` : `io`, `os`, `debug` ; retires : `dofile`, `loadfile`,
+  `string.dump`, `package.loadlib`, `package.cpath`, `package.path`, `package.searchpath` et les chercheurs
+  de fichier / de bibliotheque C de `require` (il ne reste que `package.preload` et le chercheur de
+  l'hote, texte seulement ; `package.loaded`, `preload`, `searchers` restent : le runtime fait
+  `package.loaded[nom] = nil`). `load` reste, texte seulement : le mode est force a `"t"`, meme si le
+  script passe `"b"` ou `"bt"`. Les erreurs sont celles de Lua devant un `nil`
+  (`attempt to index a nil value (global 'io')`). En mode histoire, `lv.img_src.load` et `audio.load`
+  refusent les chemins absolus, `..`, lecteur, antislash de tete et noms de peripheriques (comme un
+  fichier absent) ; un script `.lua` lance directement garde ses chemins tels quels (les tests passent
+  des chemins absolus). `--unsafe-libs` rouvre `io`, `os`, `dofile`, `loadfile`, `package` complet,
+  `string.dump` et le bytecode (avertissement) ; `debug` reste retire (`debug.sethook` desarmerait le
+  watchdog). Reference, sources et ecarts : `docs/player.md` (« Bac a sable Lua »). Tests :
+  `tests/e2e/e2e_sandbox.py` (un script par voie d'evasion). Ce que le bac a sable ne couvre PAS :
+  finaliseurs `__gc`, temps passe dans une fonction C, defauts de memoire de l'interpreteur ou des
+  bindings, liens symboliques dans un dossier d'histoire. `debug` retire : `debug` et
+  `package.loaded.debug` a `nil`, `require("debug")` echoue, comme sur l'appareil
+  (`docs/security/security-audit-report.md` : `debug` = nil). Le player n'en depend pas
+  (traceback en C, `luaL_traceback`). Les tests sous flam-test/flam-test-audio gardent `io`, `os` et
+  `debug` (`debug.getinfo`, `debug.getregistry`) : leur runner a son propre etat Lua, non restreint ;
+  les tests e2e dont les scripts tournent dans `flam-player` n'utilisent donc ni `io` ni `os`
+  (`print` : stdout, vide a chaque appel).
 - Audio sans peripherique (`SDL_OpenAudioDevice` en echec, session sans son, VM) ou `SDL_QueueAudio`
   en echec : la file de sortie est virtuelle et se vide au rythme de l'horloge murale
   (`SDL_GetTicks`, gelee en pause), sinon l'horloge audio courait ~10 fois trop vite.
@@ -317,7 +332,8 @@ Le script Lua a acces a :
   (lecture, pause, seek, reprise) et `tests/audio/*.lua` rejoues sans peripherique par
   `test_run.bat` (etape 3).
 
-**Sur le vrai dispositif FLAM** : la sandbox Lua ne laisse que `lv.*`, pas de `io`/`os`/`debug`/`package`.
+**Sur le vrai dispositif FLAM** : la sandbox Lua ne laisse que `lv.*`, pas de `io`/`os`/`debug`/`package`
+(le rapport d'audit ; le runtime y lit pourtant `package.loaded`, voir `docs/player.md`).
 
 ## Ecran FLAM
 

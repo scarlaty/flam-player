@@ -5,7 +5,7 @@ murale, pas la vitesse du decodage.
     python tests/e2e/e2e_audio_clock.py --build <dossier contenant flam-player.exe>
 
 flam-player est lance sur un script .lua qui joue un MP3 synthetique de ~2,5 s
-(pilotes SDL dummy, --stdin-control) et trace chaque callback audio sur stderr :
+(pilotes SDL dummy, --stdin-control) et trace chaque callback audio (print, sur stdout ; le test lit stdout et stderr) :
   A) avec le peripherique "dummy" de SDL (temoin, sans trace de file virtuelle) ;
   B) sans peripherique (FLAM_AUDIO_NO_DEVICE=1 : dev_id == 0, comme une session
      sans son ou une VM), avec la trace dediee prouvant le passage par la file
@@ -39,7 +39,7 @@ DURATION_LONG = FRAMES_LONG * 1152 / 44100.0
 FRAME_BYTES = 417                # 144 * 128000 / 44100, sans bourrage
 
 SCRIPT = r'''audio.load(0, "clock.mp3", function(s, t)
-  io.stderr:write("AUDIO_EV " .. s .. " " .. string.format("%.2f", t) .. "\n")
+  print("AUDIO_EV " .. s .. " " .. string.format("%.2f", t))
 end)
 audio.play()
 '''

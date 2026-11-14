@@ -187,6 +187,10 @@ void lua_lv_anim_unhook_obj(lv_obj_t *obj);
 void lua_lv_set_strict(int strict);
 int  lua_lv_get_strict(void);
 
+/* Confinement des chemins d'images au dossier de l'histoire (main.c, mode
+   histoire) : absolu, "..", lecteur, nom de peripherique refuses. */
+void lua_lv_set_confine_paths(int on);
+
 /* ================================================================== */
 /* Garde du tas LVGL (X1a)                                             */
 /* ================================================================== */

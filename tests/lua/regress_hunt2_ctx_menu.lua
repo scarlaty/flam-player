@@ -13,6 +13,8 @@
 -- flam-test n'appelle pas fw_pump : le test lance flam-player.exe (pilotes SDL
 -- dummy, rendu logiciel) sur un petit script ; FLAM_TEST_CTX_MENU_MS simule l'appui sur M
 -- (sdl_driver.c), un timer du script termine le processus par os.exit(0).
+-- Le script enfant a besoin de io.stderr et os.exit, que le bac a sable du player ne
+-- laisse pas aux scripts (#575) : le player est lance avec --unsafe-libs (test seulement).
 
 require("test_helpers")
 print("--- regress_hunt2_ctx_menu ---")
@@ -57,11 +59,11 @@ end, 1500)
     if is_win then
         -- guillemets externes : cmd /c retire le premier et le dernier
         cmd = string.format('"set "SDL_VIDEODRIVER=dummy"&& set "SDL_AUDIODRIVER=dummy"'
-            .. '&& set "SDL_RENDER_DRIVER=software"&& set "FLAM_TEST_CTX_MENU_MS=200"&& ".\\%s" --watchdog 0'
+            .. '&& set "SDL_RENDER_DRIVER=software"&& set "FLAM_TEST_CTX_MENU_MS=200"&& ".\\%s" --watchdog 0 --unsafe-libs'
             .. ' --save-dir "%s" "%s" 1>nul 2>"%s""', exe, save, script, errf)
     else
         cmd = string.format('SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SDL_RENDER_DRIVER=software '
-            .. 'FLAM_TEST_CTX_MENU_MS=200 "./%s" --watchdog 0 --save-dir "%s" "%s"'
+            .. 'FLAM_TEST_CTX_MENU_MS=200 "./%s" --watchdog 0 --unsafe-libs --save-dir "%s" "%s"'
             .. ' >/dev/null 2>"%s"', exe, save, script, errf)
     end
     local ok, how, code = os.execute(cmd)

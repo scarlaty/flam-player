@@ -13,6 +13,7 @@
  */
 
 #include "pk_reader.h"
+#include "path_guard.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,35 +178,11 @@ static void ensure_parent_dirs(const char *filepath)
 
 static int pk_ieq(const char *a, size_t alen, const char *b);
 
-/* Noms de peripheriques Windows (CON, NUL, COM1...) : "NUL.txt" reste le
-   peripherique, et ecrire dans "CON" ecrit sur la console. */
+/* Noms de peripheriques Windows (CON, NUL, COM1...) : liste partagee avec les
+   chargeurs de l'hote, voir path_guard.h */
 static int pk_is_device_name(const char *comp, size_t len)
 {
-    static const char *const fixed[] = { "con", "prn", "aux", "nul", "conin$", "conout$" };
-    size_t base = 0;
-    while (base < len && comp[base] != '.') base++;   /* le nom sans extension */
-    while (base > 0 && comp[base - 1] == ' ') base--;
-    for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
-        if (pk_ieq(comp, base, fixed[i])) return 1;
-    }
-    /* COM1-9 / LPT1-9, aussi avec un chiffre en exposant (1, 2, 3 de cp1252 /
-       Latin-1 : octet 0xB9, 0xB2, 0xB3 ; ou leur forme UTF-8 : 0xC2 puis cet
-       octet). fopen recoit les octets du nom tels quels (page de code ANSI) ;
-       les deux formes sont couvertes. */
-    int c3 = tolower((unsigned char)comp[0]) == 'c' && tolower((unsigned char)comp[1]) == 'o' &&
-             tolower((unsigned char)comp[2]) == 'm';
-    int l3 = tolower((unsigned char)comp[0]) == 'l' && tolower((unsigned char)comp[1]) == 'p' &&
-             tolower((unsigned char)comp[2]) == 't';
-    if (base >= 4 && (c3 || l3)) {
-        unsigned char d = (unsigned char)comp[3];
-        if (base == 4 && ((d >= '1' && d <= '9') || d == 0xB9 || d == 0xB2 || d == 0xB3))
-            return 1;
-        if (base == 5 && d == 0xC2) {
-            unsigned char e = (unsigned char)comp[4];
-            if (e == 0xB9 || e == 0xB2 || e == 0xB3) return 1;
-        }
-    }
-    return 0;
+    return path_guard_is_device_name(comp, len);
 }
 
 int pk_name_is_safe(const char *name)

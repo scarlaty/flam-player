@@ -21,6 +21,8 @@ REM               puis tests\e2e\e2e_embed.py : incrustation dans une
 REM               fenetre hote, sortie par stdin             [facultatif]
 REM               puis tests\e2e\e2e_pk_extract.py : extraction .plain.pk,
 REM               dossier .plain d'auteur non ecrase (#567)  [facultatif]
+REM               puis e2e_watchdog.py, e2e_sandbox.py (bac a sable Lua,
+REM               #575), e2e_audio_clock.py                  [facultatif]
 REM  Facultatif : saute si python ou flam-player.exe absent. Les etapes 5 et 6
 REM  lancent le binaire telmi2flam (cargo build -p telmi2flam --release, ou
 REM  FLAM_TELMI2FLAM) : le convertisseur Python est supprime (#140).
@@ -186,6 +188,12 @@ if "!HAVE_PY!"=="1" (
     echo EXIT_CODE=!WDG_RC!
     if not "!WDG_RC!"=="0" if not "!WDG_RC!"=="77" set "E2E_RC=!WDG_RC!"
     if "!WDG_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (watchdog : SKIP)"
+    REM Bac a sable Lua : rien de plus que l'appareil (io, os, package natif, bytecode, chemins) (#575)
+    "%PY%" "%ROOT%tests\e2e\e2e_sandbox.py" --build "%BUILD%"
+    set "SBX_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!SBX_RC!
+    if not "!SBX_RC!"=="0" if not "!SBX_RC!"=="77" set "E2E_RC=!SBX_RC!"
+    if "!SBX_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (bac a sable : SKIP)"
     REM Horloge audio sans peripherique : cadencee sur l'horloge murale (#575)
     "%PY%" "%ROOT%tests\e2e\e2e_audio_clock.py" --build "%BUILD%"
     set "AUC_RC=!ERRORLEVEL!"
