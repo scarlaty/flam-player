@@ -1047,7 +1047,7 @@ seul argument** (dernier), dossier courant = dossier du player.
   (le paramètre « Réduire la fenêtre pendant la lecture » ne vaut que pour la fenêtre séparée).
 - **Repli** : hors Windows, si la fenêtre d'accueil ne peut pas être créée, ou avec
   `FLAM_LAUNCHER_NO_EMBED=1`, le player est lancé sans `--parent-hwnd`, dans sa propre fenêtre,
-  comme avant. Si c'est le player qui ne parvient pas à s'incruster, il trace `[EMBED] repli : …`
+  comme avant. Si c'est le player qui ne parvient pas à s'incruster, il trace `[EMBED#<jeton>] repli : …`
   sur stderr et ouvre sa fenêtre séparée : le lecteur de stderr repère cette trace, la fenêtre
   d'accueil est détruite, la session passe à `embedded = false` et `player://updated` (charge :
   `PlayerSession`) l'annonce ; l'interface quitte alors l'écran Lecture (affichage sans
@@ -1062,12 +1062,24 @@ seul argument** (dernier), dossier courant = dossier du player.
   **Retour du clavier (F6)** : Tab reste dans la fenêtre native du player et Échap est le
   retour du player ; la touche **F6**, active dans le player incrusté seulement, rend le
   clavier au launcher. Le player donne le focus à la fenêtre racine du launcher et écrit la
-  trace `[EMBED] focus-host` sur stderr ; le lecteur de stderr la relaie par l'événement
+  trace `[EMBED#<jeton>] focus-host` sur stderr ; le lecteur de stderr la relaie par l'événement
   `player://focus-host` (sans charge), le backend donne alors le focus système à la WebView et
   l'écran Lecture place le focus sur « Clavier au lecteur ». Pas de piège clavier : F6 ressort,
   « Clavier au lecteur » rentre. L'aide sous la zone le rappelle. Un ancien `flam-player.exe`
   sans F6 oblige à cliquer hors de la zone. Les placements `player_embed_layout` sont envoyés
   l'un après l'autre (le dernier rectangle l'emporte).
+- **Authenticité des repères `[EMBED]` (#649)** : à chaque lancement incrusté, le launcher tire un jeton
+  aléatoire (UUID v4 sans tirets) et le donne au player par la variable d'environnement
+  `FLAM_EMBED_TOKEN` (jamais par la ligne de commande). Le player la retire de son environnement et
+  préfixe ses traces `[EMBED#<jeton>] …` ; le lecteur de stderr n'accepte que les **lignes entières**
+  qui commencent par ce préfixe, suivi de `repli` ou `focus-host` (une ligne de plus de 1 Kio est
+  ignorée). Une histoire ne peut donc pas déclencher le repli de la fenêtre ou la prise de focus en
+  écrivant ces mots (`warn`, message d'erreur, `audio.load`). Un player plus ancien, sans jeton, n'est
+  plus écouté (plus de repli de fenêtre ni de F6) : launcher et player sont livrés ensemble. Avec un chemin
+  de player configuré ou un build de développement ancien, reconstruire le player (`build-player.ps1`) ; la
+  faille n'est volontairement pas rouverte pour ces anciens players. Dans la sortie conservée et affichée à
+  la fin de la partie, le jeton est masqué (`[EMBED#<jeton>]` devient `[EMBED]`). Les autres repères (`[CONTROL]`, `[PK]`, …) ne
+  sont pas lus par le launcher.
 - **Arrêt (`player_stop`, bouton « Arrêter »)** : le player est lancé avec `--stdin-control` et
   son entrée standard est un tube gardé par le service pendant la session. `player_stop` y écrit
   `quit` : le player sauvegarde et sort avec le code 0 (`player://exited`, `success`). S'il tourne

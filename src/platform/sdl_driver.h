@@ -16,6 +16,20 @@ int sdl_driver_init(void);
    0 : fenetre separee (defaut). Hors Windows : ignore (avec trace). */
 void sdl_driver_set_parent(uintptr_t hwnd);
 
+/* Repere d'authenticite des traces "[EMBED] ..." (#649). Le launcher passe un
+   jeton aleatoire par lancement dans la variable d'environnement
+   FLAM_EMBED_TOKEN ; l'hote ne reconnait que les lignes qui le portent
+   ("[EMBED#<jeton>] repli : ...") et un script Lua, qui ne lit ni l'environnement
+   ni cette trace, ne peut donc pas les imiter. sdl_driver_embed_token_init lit
+   puis retire la variable de l'environnement (a appeler au debut de main ;
+   idempotent) ; sans jeton valide (player lance a la main) le repere reste
+   "[EMBED]". */
+void sdl_driver_embed_token_init(void);
+
+/* Ecrit sur stderr une ligne "[EMBED] <message>" (ou "[EMBED#<jeton>] <message>").
+   fmt ne doit pas contenir le saut de ligne final : il est ajoute ici. */
+void sdl_driver_embed_log(const char *fmt, ...);
+
 /* Libère les ressources SDL. */
 void sdl_driver_quit(void);
 

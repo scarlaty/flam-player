@@ -1442,15 +1442,59 @@ static char *path_acp_by_components(const wchar_t *w)
     return _strdup(out);
 }
 
+/* Vrai si le dossier `path` (ANSI) est absent, ou existe sous exactement ce nom
+   long (et non comme alias 8.3 d'un autre dossier). */
+static int extract_dir_name_is_exact(const char *path)
+{
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(path, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 1;   /* absent : sera cree sous ce nom */
+    FindClose(h);
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    return _stricmp(fd.cFileName, base) == 0;
+}
+
 /* SDL2main fournit argv en UTF-8 alors que tout le player (stat, fopen,
    FindFirstFileA, luaL_loadfile) utilise les API ANSI : un chemin accentue
    passe en argument etait introuvable. On reconvertit donc chaque argument
-   UTF-8 -> ANSI. Si un caractere n'existe pas dans la code page ANSI, les
-   composants concernes sont remplaces par leur nom court 8.3 (les autres,
-   dont le nom final d'un .plain.pk dont derive le dossier d'extraction,
-   sont gardes tels quels). */
-static void argv_utf8_to_acp(int argc, char *argv[])
+   UTF-8 -> ANSI dans un TABLEAU LOCAL : le tableau argv de SDL2main (et ses
+   chaines) reste intact, SDL2main le libere avec son propre allocateur (#648).
+   Si un caractere n'existe pas dans la code page ANSI, les composants concernes
+   sont remplaces par leur nom court 8.3, y compris le nom final : un
+   "Histoire<U+2713>.plain.pk" devient "HISTOI~1.PK". Cet argument est alors memorise
+   (g_pk_alias_arg) : main() le traite comme une archive .plain.pk, le dossier
+   d'extraction ("HISTOI~1.plain") et des sauvegardes portant le nom court. */
+static char **g_argv_conv = NULL;     /* tableau local (argc + 1 pointeurs) */
+static char **g_argv_owned = NULL;    /* chaines allouees ici, liberees a la sortie */
+static int g_argv_owned_n = 0;
+static const char *g_pk_alias_arg = NULL;
+
+static void argv_free_converted(void)
 {
+    for (int i = 0; i < g_argv_owned_n; i++) free(g_argv_owned[i]);
+    free(g_argv_owned);
+    free(g_argv_conv);
+    g_argv_owned = NULL;
+    g_argv_conv = NULL;
+    g_argv_owned_n = 0;
+}
+
+static char **argv_utf8_to_acp(int argc, char *argv[])
+{
+    if (argc < 1) return argv;
+    g_argv_conv = (char **)calloc((size_t)argc + 1, sizeof(char *));
+    g_argv_owned = (char **)calloc((size_t)argc, sizeof(char *));
+    if (!g_argv_conv || !g_argv_owned) {
+        argv_free_converted();
+        return argv;   /* memoire epuisee : arguments non convertis */
+    }
+    atexit(argv_free_converted);
+    for (int i = 0; i < argc; i++) g_argv_conv[i] = argv[i];
+    g_argv_conv[argc] = argv[argc];
+
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         int ascii = 1;
@@ -1465,18 +1509,33 @@ static void argv_utf8_to_acp(int argc, char *argv[])
         if (!w) continue;
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a, -1, w, wn);
 
+        int exact = 1;
         char *s = wide_to_acp_exact(w);
-        if (!s) s = path_acp_by_components(w);
+        if (!s) { exact = 0; s = path_acp_by_components(w); }
+        int is_pk = 0;
+        if (s && !exact) {
+            size_t wl = wcslen(w);
+            is_pk = wl > 9 && _wcsicmp(w + wl - 9, L".plain.pk") == 0;
+        }
         free(w);
-        if (s) argv[i] = s;   /* jamais libere : vit jusqu'a la fin */
+        if (s) {
+            g_argv_conv[i] = s;
+            g_argv_owned[g_argv_owned_n++] = s;
+            if (is_pk) g_pk_alias_arg = s;
+        }
     }
+    return g_argv_conv;
 }
 #endif
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv_sdl[])
 {
+    /* argv_sdl appartient a SDL2main : ne jamais y ecrire (#648) */
+    char **argv = argv_sdl;
+    /* Jeton des traces [EMBED] : lu (et retire de l'environnement) avant tout script */
+    sdl_driver_embed_token_init();
 #ifdef _WIN32
-    argv_utf8_to_acp(argc, argv);
+    argv = argv_utf8_to_acp(argc, argv_sdl);
 #endif
 
     /* Parser les arguments CLI en premier */
@@ -1536,7 +1595,7 @@ int main(int argc, char *argv[])
                 ? strtoull(v, &end, hex ? 16 : 10) : 0;
             if (!end || *end != '\0' || h == 0 || errno == ERANGE ||
                 h > (unsigned long long)UINTPTR_MAX) {
-                fprintf(stderr, "[EMBED] repli : --parent-hwnd invalide : %s\n", v);
+                sdl_driver_embed_log("repli : --parent-hwnd invalide : %s", v);
             } else {
                 sdl_driver_set_parent((uintptr_t)h);
             }
@@ -1553,9 +1612,17 @@ int main(int argc, char *argv[])
     /* Detecter le mode : dossier .plain, archive .plain.pk, ou script Lua */
     int is_story = 0;
     int is_pk = 0;
+    int pk_alias_target = 0;   /* archive designee par son nom court 8.3 (Windows) */
     if (target_path) {
         size_t tlen = strlen(target_path);
-        if (tlen > 9 && ends_with_ci(target_path, ".plain.pk")) {
+        int pk_alias = 0;
+#ifdef _WIN32
+        /* nom hors page ANSI remplace par son nom court (Histoire.plain.pk -> HISTOI~1.PK) */
+        pk_alias = target_path == g_pk_alias_arg && tlen > 3 &&
+                   ends_with_ci(target_path, ".pk");
+#endif
+        if ((tlen > 9 && ends_with_ci(target_path, ".plain.pk")) || pk_alias) {
+            pk_alias_target = pk_alias;
             is_pk = 1;
             is_story = 1;
         } else if (is_story_dir(target_path)) {
@@ -1576,6 +1643,24 @@ int main(int argc, char *argv[])
         /* Retirer .pk pour obtenir le chemin .plain */
         size_t elen = strlen(g_pk_extract_dir);
         if (elen > 3) g_pk_extract_dir[elen - 3] = '\0';
+#ifdef _WIN32
+        if (pk_alias_target) {
+            /* Alias 8.3 : "HISTOI~1" serait lui-meme un nom court, que Windows resout
+               vers un dossier frere ("Histoires") : extraire dans "HISTOI~1.plain"
+               (une extension de 5 lettres n'est jamais un nom court), et refuser un
+               dossier existant dont le nom long reel differe (#648). */
+            if (strlen(g_pk_extract_dir) + sizeof(".plain") > sizeof(g_pk_extract_dir)) {
+                fprintf(stderr, "Erreur: chemin trop long : %s\n", target_path);
+                return 2;
+            }
+            strcat(g_pk_extract_dir, ".plain");
+            if (!extract_dir_name_is_exact(g_pk_extract_dir)) {
+                fprintf(stderr, "Erreur: dossier d'extraction '%s' refuse : son nom reel "
+                                "n'est pas celui demande\n", g_pk_extract_dir);
+                return 2;
+            }
+        }
+#endif
 
         extract_pk_if_needed(target_path, g_pk_extract_dir);
         target_path = g_pk_extract_dir;
