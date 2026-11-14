@@ -32,6 +32,7 @@
 #include "sdl_audio.h"
 #include "firmware/fw_globals.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,53 @@ static HWND g_embed_parent = NULL;   /* parent effectif (NULL : non incruste) */
 static HWND g_embed_child  = NULL;   /* HWND de la fenetre SDL incrustee */
 static int  g_embed_w = -1, g_embed_h = -1;
 #endif
+
+/* Jeton d'authenticite des traces "[EMBED]" (#649), voir sdl_driver.h. */
+#define EMBED_TOKEN_ENV "FLAM_EMBED_TOKEN"
+#define EMBED_TOKEN_MAX 64
+static char g_embed_token[EMBED_TOKEN_MAX + 1] = "";
+static int  g_embed_token_read = 0;
+
+void sdl_driver_embed_token_init(void)
+{
+    if (g_embed_token_read) return;
+    g_embed_token_read = 1;
+    const char *v = getenv(EMBED_TOKEN_ENV);
+    if (v && *v) {
+        size_t n = strlen(v);
+        int ok = n <= EMBED_TOKEN_MAX;
+        for (size_t i = 0; ok && i < n; i++) {
+            char c = v[i];
+            ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                 (c >= 'A' && c <= 'Z');
+        }
+        if (ok) memcpy(g_embed_token, v, n + 1);
+    }
+    /* Retire le jeton de l'environnement du processus */
+#ifdef _WIN32
+    _putenv_s(EMBED_TOKEN_ENV, "");
+#else
+    unsetenv(EMBED_TOKEN_ENV);
+#endif
+}
+
+void sdl_driver_embed_log(const char *fmt, ...)
+{
+    sdl_driver_embed_token_init();
+    char line[1024];
+    int n;
+    if (g_embed_token[0])
+        n = snprintf(line, sizeof(line), "[EMBED#%s] ", g_embed_token);
+    else
+        n = snprintf(line, sizeof(line), "[EMBED] ");
+    if (n < 0 || (size_t)n >= sizeof(line)) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line + n, sizeof(line) - (size_t)n, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "%s\n", line);
+    fflush(stderr);
+}
 
 /* Framebuffer LVGL (un seul buffer plein écran) */
 static lv_color_t g_fb[FLAM_SCREEN_W * FLAM_SCREEN_H];
@@ -308,7 +356,7 @@ static SDL_Window *embed_create_window(void)
 {
     HWND parent = (HWND)g_parent_req;
     if (!IsWindow(parent)) {
-        fprintf(stderr, "[EMBED] repli : HWND parent invalide (%llu)\n",
+        sdl_driver_embed_log("repli : HWND parent invalide (%llu)",
                 (unsigned long long)g_parent_req);
         return NULL;
     }
@@ -316,7 +364,7 @@ static SDL_Window *embed_create_window(void)
         FLAM_SCREEN_W, FLAM_SCREEN_H,
         SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS);
     if (!w) {
-        fprintf(stderr, "[EMBED] repli : SDL_CreateWindow : %s\n", SDL_GetError());
+        sdl_driver_embed_log("repli : SDL_CreateWindow : %s", SDL_GetError());
         return NULL;
     }
     SDL_SysWMinfo info;
@@ -324,7 +372,7 @@ static SDL_Window *embed_create_window(void)
     if (!SDL_GetWindowWMInfo(w, &info) || info.subsystem != SDL_SYSWM_WINDOWS ||
         !info.info.win.window) {
         const char *drv = SDL_GetCurrentVideoDriver();
-        fprintf(stderr, "[EMBED] repli : pas de HWND (pilote video %s)\n",
+        sdl_driver_embed_log("repli : pas de HWND (pilote video %s)",
                 drv ? drv : "?");
         SDL_DestroyWindow(w);
         return NULL;
@@ -345,7 +393,7 @@ static SDL_Window *embed_create_window(void)
     SetWindowLongPtrW(child, GWL_EXSTYLE, ex);
 
     if (!SetParent(child, parent)) {
-        fprintf(stderr, "[EMBED] repli : SetParent refuse (erreur %lu)\n",
+        sdl_driver_embed_log("repli : SetParent refuse (erreur %lu)",
                 (unsigned long)GetLastError());
         SetWindowLongPtrW(child, GWLP_WNDPROC, (LONG_PTR)g_sdl_wndproc);
         SDL_DestroyWindow(w);
@@ -359,7 +407,7 @@ static SDL_Window *embed_create_window(void)
                  SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
     SDL_ShowWindow(w);
     SetFocus(child);
-    fprintf(stderr, "[EMBED] ok : fenetre enfant de %llu (%dx%d)\n",
+    sdl_driver_embed_log("ok : fenetre enfant de %llu (%dx%d)",
             (unsigned long long)g_parent_req, g_embed_w, g_embed_h);
     return w;
 }
@@ -373,7 +421,7 @@ static void embed_release_focus(void)
     if (!g_embed_child || !IsWindow(g_embed_parent)) return;
     HWND root = GetAncestor(g_embed_parent, GA_ROOT);
     SetFocus(root ? root : g_embed_parent);
-    fprintf(stderr, "[EMBED] focus-host\n");
+    sdl_driver_embed_log("focus-host");
     fflush(stderr);
 }
 #endif /* _WIN32 */
@@ -395,7 +443,7 @@ int sdl_driver_init(void)
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
 #else
     if (g_parent_req) {
-        fprintf(stderr, "[EMBED] repli : --parent-hwnd n'est gere que sous Windows\n");
+        sdl_driver_embed_log("repli : --parent-hwnd n'est gere que sous Windows");
         g_parent_req = 0;
     }
 #endif
@@ -454,11 +502,11 @@ int sdl_driver_init(void)
         SDL_RendererInfo info;
         const char *name = SDL_GetRendererInfo(g_renderer, &info) == 0
                            ? info.name : "?";
-        fprintf(stderr, "[EMBED] rendu : %s\n", name);
+        sdl_driver_embed_log("rendu : %s", name);
         const char *forced = SDL_getenv("SDL_RENDER_DRIVER");
         if (strcmp(name, "direct3d11") != 0 && !(forced && *forced))
-            fprintf(stderr, "[EMBED] rendu direct3d11 indisponible : l'image "
-                    "peut etre masquee par l'hote\n");
+            sdl_driver_embed_log("rendu direct3d11 indisponible : l'image "
+                    "peut etre masquee par l'hote");
     }
 #endif
 
@@ -583,7 +631,7 @@ int sdl_driver_poll(void)
 #ifdef _WIN32
     /* Incrustation : suivre la taille du parent ; parent disparu = arret */
     if (embed_follow_parent()) {
-        fprintf(stderr, "[EMBED] fenetre hote disparue : arret\n");
+        sdl_driver_embed_log("fenetre hote disparue : arret");
         return 1;
     }
 #endif

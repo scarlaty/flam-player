@@ -19,7 +19,10 @@ Cas :
      software : avec eux, la zone Lecture reste vide (#332) ;
   3. repli + fin de stdin (sans fenetre, pilote SDL dummy) : un HWND invalide
      donne la trace "[EMBED] repli" et le player tourne quand meme ; la
-     fermeture de stdin l'arrete avec le code 0 (voie de sortie de #119).
+     fermeture de stdin l'arrete avec le code 0 (voie de sortie de #119) ;
+  3b. jeton des traces (#649) : avec FLAM_EMBED_TOKEN=<jeton alphanumerique>, la
+     trace est "[EMBED#<jeton>] repli : ..." (jamais "[EMBED] repli") ; un jeton
+     invalide est ignore (trace "[EMBED] repli" habituelle).
 Rendu logiciel (SDL_RENDER_DRIVER=software) sauf au cas 2b, audio dummy, pas
 de capture auto.
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player, Windows
@@ -311,6 +314,32 @@ def case_fallback_eof(exe, script):
         p.kill()
 
 
+def case_token(exe, script):
+    """Les traces [EMBED] portent le jeton du launcher quand il est donne (#649)."""
+    p = Player(exe, ["--parent-hwnd", "1", "--stdin-control"] + script,
+               {"SDL_VIDEODRIVER": "dummy", "FLAM_EMBED_TOKEN": "abc123XYZ"})
+    try:
+        check(pump(10, lambda: p.exited() or p.has("[EMBED#abc123XYZ] repli : ")),
+              "avec jeton : trace [EMBED#jeton] repli", p)
+        check(not any(line.startswith("[EMBED] ") for line in p.err),
+              "avec jeton : aucune trace [EMBED] sans jeton", p)
+        p.proc.stdin.write(b"quit\n")
+        p.proc.stdin.flush()
+        check(pump(10, p.exited) and p.proc.returncode == 0,
+              "avec jeton : arret par quit (code %s)" % p.proc.returncode, p)
+    finally:
+        p.kill()
+    for bad in ("jeton invalide!", "x" * 65):
+        p = Player(exe, ["--parent-hwnd", "1", "--stdin-control"] + script,
+                   {"SDL_VIDEODRIVER": "dummy", "FLAM_EMBED_TOKEN": bad})
+        try:
+            check(pump(10, lambda: p.exited() or p.has("[EMBED] repli : ")),
+                  "jeton invalide (%d car.) ignore : trace [EMBED] repli" % len(bad), p)
+            check(not p.has("#"), "jeton invalide : aucune trace [EMBED#", p)
+        finally:
+            p.kill()
+
+
 def case_no_control(exe, script):
     """Sans --stdin-control, un stdin ferme n'arrete pas le player."""
     p = Player(exe, script, {"SDL_VIDEODRIVER": "dummy"})
@@ -338,6 +367,7 @@ def main():
     # dossiers du mode script direct dans le dossier temporaire (sauvegardes)
     script = ["--save-dir", tmp, "--img-dir", tmp, "--sounds-dir", tmp, path]
     case_fallback_eof(exe, script)
+    case_token(exe, script)
     case_no_control(exe, script)
     if not IS_WIN:
         print("[SKIP] incrustation : Windows seulement")

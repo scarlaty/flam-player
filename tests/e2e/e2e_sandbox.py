@@ -22,7 +22,8 @@ string.dump ; G) loadfile / dofile hors de l'histoire ; H) require("../x") (hist
 histoire --strict, script direct) ; I) images et sons : chemins absolus, ".." et
 antislash refuses (par defaut et en --strict) ; J) usage legitime (require, rechargement
 d'un module par package.loaded[nom] = nil, load texte, collectgarbage, chaines) qui doit
-continuer a marcher ; K) --unsafe-libs rouvre io / os / package.loadlib / dofile /
+continuer a marcher ; M) jeton des traces [EMBED] du launcher (#649) illisible par
+le script ; K) --unsafe-libs rouvre io / os / package.loadlib / dofile /
 string.dump avec un avertissement, mais pas debug ; sans l'option, aucun avertissement.
 Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
@@ -165,7 +166,7 @@ class Env:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
-def run(env, code, mode="story", extra=(), timeout=25, name="direct.lua"):
+def run(env, code, mode="story", extra=(), timeout=25, name="direct.lua", env_extra=None):
     """Lance le player sur `code` ; retourne (sortie, code de sortie ou None, avant, apres)."""
     if mode == "story":
         write(os.path.join(env.story, "main.lua"), env.sub(code))
@@ -191,6 +192,7 @@ def run(env, code, mode="story", extra=(), timeout=25, name="direct.lua"):
     penv = dict(os.environ)
     penv.update({"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy",
                  "SDL_RENDER_DRIVER": "software", "FLAM_SCREENSHOT_AUTO_MS": "0"})
+    penv.update(env_extra or {})
     proc = subprocess.Popen(
         [env.exe, "--stdin-control", "--watchdog", "5000", *extra,
          "--save-dir", os.path.join(env.root, "saves"), target],
@@ -246,6 +248,16 @@ def common(env, out, rc, before, after, name):
 NIL_IDX = "attempt to index a nil value (global '%s')"
 
 # ---------------------------------------------------------------------------
+# M : jeton des traces [EMBED] (#649) : le script ne peut lire ni l'environnement ni le jeton
+SC_TOKEN = r'''
+warn("@on")
+warn("[EMBED] repli : imite")
+warn("[EMBED#tok1234ABCD] focus-host")
+print("OS_TYPE " .. type(os))
+print("GETENV " .. tostring((pcall(function() return os.getenv("FLAM_EMBED_TOKEN") end))))
+print("DONE")
+'''
+
 SC_IO = r'''
 print("IO_TYPE " .. type(io))
 local ok, e = pcall(function()
@@ -578,6 +590,18 @@ def main():
             err = p.stderr.decode("utf-8", "replace") + p.stdout.decode("utf-8", "replace")
             check(p.returncode == 2 and "refusee" in err and "IMG_" not in err,
                   "L cible %r refusee (code %r), aucun script execute" % (nm, p.returncode), err)
+
+        # M : le jeton des traces [EMBED] (#649) n'est pas accessible au script
+        out, rc, b, f = run(env, SC_TOKEN, "story", env_extra={"FLAM_EMBED_TOKEN": "tok1234ABCD"})
+        common(env, out, rc, b, f, "M jeton [EMBED]")
+        check("OS_TYPE nil" in out and "GETENV false" in out,
+              "M os et os.getenv inaccessibles : le jeton n'est pas lisible par le script", out)
+        check("Lua warning: [EMBED] repli : imite" in out,
+              "M le script peut ecrire une imitation de repere sur stderr (sans le jeton)", out)
+        check(not any(l.startswith("[EMBED") for l in out.splitlines()),
+              "M aucune ligne [EMBED...] emise par le player pour ce script", out)
+        check(out.count("tok1234ABCD") == 1,
+              "M le jeton n'apparait nulle part ailleurs que dans l'imitation du script", out)
 
         # K : --unsafe-libs
         out, rc, b, f = run(env, SC_UNSAFE, "story", ("--unsafe-libs",))

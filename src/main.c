@@ -1517,6 +1517,8 @@ int main(int argc, char *argv_sdl[])
 {
     /* argv_sdl appartient a SDL2main : ne jamais y ecrire (#648) */
     char **argv = argv_sdl;
+    /* Jeton des traces [EMBED] : lu (et retire de l'environnement) avant tout script */
+    sdl_driver_embed_token_init();
 #ifdef _WIN32
     argv = argv_utf8_to_acp(argc, argv_sdl);
 #endif
@@ -1578,7 +1580,7 @@ int main(int argc, char *argv_sdl[])
                 ? strtoull(v, &end, hex ? 16 : 10) : 0;
             if (!end || *end != '\0' || h == 0 || errno == ERANGE ||
                 h > (unsigned long long)UINTPTR_MAX) {
-                fprintf(stderr, "[EMBED] repli : --parent-hwnd invalide : %s\n", v);
+                sdl_driver_embed_log("repli : --parent-hwnd invalide : %s", v);
             } else {
                 sdl_driver_set_parent((uintptr_t)h);
             }

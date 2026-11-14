@@ -138,6 +138,14 @@ Options du player :
   de l'hote dessine par DirectComposition, au-dessus des rendus `direct3d` (D3D9, defaut de
   SDL2), `opengl` et `software`, qui laisseraient la zone vide (#332). Repli sur le rendu par
   defaut si `direct3d11` echoue ; `SDL_RENDER_DRIVER` reste prioritaire.
+- Jeton des traces `[EMBED]` (#649) : le launcher passe un jeton aleatoire par lancement dans la
+  variable d'environnement `FLAM_EMBED_TOKEN` (alphanumerique, 64 caracteres au plus ; invalide :
+  ignore). Le player la lit et la retire de son environnement au demarrage, puis ecrit toutes ses traces
+  `[EMBED]` sous la forme `[EMBED#<jeton>] <message>` (helper `sdl_driver_embed_log`) ; l'hote ne
+  reconnait que les lignes entieres qui portent ce jeton. Un script Lua ne peut ni le lire (`os` est
+  retire) ni imiter une trace (`warn`, message d'erreur, chemin recopie par `audio.load`). Sans la
+  variable (player lance a la main), les traces restent `[EMBED] <message>`. Le jeton n'est pas protege
+  avec `--unsafe-libs` (dev seulement). Tests : `e2e_embed.py` (cas 3b), `e2e_sandbox.py` (cas M).
 - `--stdin-control` : un thread lit stdin ; la ligne `quit` ou la fin de stdin arretent le
   player comme une fermeture de fenetre (etat sauvegarde, code 0), meme sans fenetre (pilote
   `dummy`). Sans l'option, stdin n'est jamais lu. Test : `tests/e2e/e2e_embed.py`.

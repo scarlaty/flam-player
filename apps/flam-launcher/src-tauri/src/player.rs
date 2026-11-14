@@ -64,10 +64,20 @@ pub const EVENT_UPDATED: &str = "player://updated";
 /// Événement émis quand le player incrusté rend le clavier au launcher (touche F6 du player) :
 /// l'interface replace le focus sur « Clavier au lecteur ». Sans charge.
 pub const EVENT_FOCUS_HOST: &str = "player://focus-host";
-/// Trace du player quand l'incrustation échoue et qu'il ouvre sa fenêtre séparée.
-const EMBED_FALLBACK_MARKER: &[u8] = b"[EMBED] repli";
-/// Trace du player incrusté quand F6 lui fait rendre le clavier à la fenêtre hôte.
-const EMBED_FOCUS_HOST_MARKER: &[u8] = b"[EMBED] focus-host";
+/// Variable d'environnement par laquelle le launcher donne au player incrusté le jeton de ses
+/// traces `[EMBED]` (#649). Le jeton est aléatoire, propre à chaque lancement ; le player le
+/// retire de son environnement au démarrage. Un script d'histoire ne lit ni l'environnement
+/// (`os` est retiré du bac à sable) ni la trace, et ne peut donc pas écrire une trace valide.
+pub const EMBED_TOKEN_ENV: &str = "FLAM_EMBED_TOKEN";
+/// Mot-clé de la trace du player quand l'incrustation échoue et qu'il ouvre sa fenêtre séparée :
+/// ligne `[EMBED#<jeton>] repli : …`.
+const EMBED_FALLBACK_KEYWORD: &[u8] = b"repli";
+/// Mot-clé de la trace du player incrusté quand F6 lui fait rendre le clavier à la fenêtre hôte :
+/// ligne `[EMBED#<jeton>] focus-host`.
+const EMBED_FOCUS_HOST_KEYWORD: &[u8] = b"focus-host";
+/// Longueur maximale d'une ligne examinée pour un repère (les repères du player sont courts) ;
+/// une ligne plus longue est ignorée.
+const EMBED_LINE_MAX: usize = 1024;
 
 /// Taille maximale de la sortie d'erreur conservée, et nombre de lignes renvoyées.
 const STDERR_KEEP_BYTES: usize = 8 * 1024;
@@ -245,7 +255,7 @@ impl PlayerService {
     }
 
     /// Le player incrusté de la session `generation` a rendu le clavier à la fenêtre hôte
-    /// (trace [`EMBED_FOCUS_HOST_MARKER`]) : `player://focus-host` l'annonce à l'interface. Une
+    /// (trace [`EMBED_FOCUS_HOST_KEYWORD`]) : `player://focus-host` l'annonce à l'interface. Une
     /// trace d'une session périmée ou sans fenêtre d'accueil est ignorée.
     fn embed_focus_host(&self, generation: u64) {
         let current = lock(&self.control)
@@ -257,7 +267,7 @@ impl PlayerService {
     }
 
     /// Le player de la session `generation` n'a pas pu s'incruster (trace
-    /// [`EMBED_FALLBACK_MARKER`]) : il s'est ouvert dans sa fenêtre séparée. La fenêtre
+    /// [`EMBED_FALLBACK_KEYWORD`]) : il s'est ouvert dans sa fenêtre séparée. La fenêtre
     /// d'accueil est détruite, la session passe à `embedded = false` et `player://updated`
     /// l'annonce : l'interface quitte l'écran Lecture (zone vide sinon).
     fn embed_fallback(&self, generation: u64, pid: u32) {
@@ -432,12 +442,20 @@ impl PlayerService {
         } else {
             self.embed.create()
         };
+        // Jeton des repères d'incrustation de ce lancement (#649), propre au player incrusté.
+        let token = uuid::Uuid::new_v4().simple().to_string();
         let mut command = Command::new(exe);
         command
             .args(player_args(host, &target))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        if host.is_some() {
+            command.env(EMBED_TOKEN_ENV, &token);
+        } else {
+            // Un jeton hérité du launcher n'est jamais transmis au player.
+            command.env_remove(EMBED_TOKEN_ENV);
+        }
         hide_console(&mut command);
         if let Some(dir) = exe.parent() {
             command.current_dir(dir);
@@ -495,7 +513,7 @@ impl PlayerService {
             });
             // Échec de création du thread : pas de stderr, sans autre conséquence.
             let _ = std::thread::Builder::new().spawn(move || {
-                read_into(stream, &kept, on_fallback, on_focus_host);
+                read_into(stream, &kept, &token, on_fallback, on_focus_host);
                 drop(done_tx);
             });
         }
@@ -644,44 +662,84 @@ fn terminate(pid: u32) {
     let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
 }
 
+/// Repère `[EMBED#<jeton>] <mot-clé>` reconnu sur une ligne de stderr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmbedMarker {
+    Fallback,
+    FocusHost,
+}
+
+/// Reconnaît un repère d'incrustation sur une **ligne entière** : elle doit commencer par
+/// `[EMBED#<jeton>] ` (le jeton propre à ce lancement, voir [`EMBED_TOKEN_ENV`]), suivi du
+/// mot-clé puis de la fin de ligne ou d'un espace. Un repère au milieu d'une ligne, sans jeton
+/// ou avec un autre jeton est ignoré (#649) : une histoire peut écrire sur stderr
+/// (`warn`, message d'erreur, chemin recopié par `audio.load`) mais ne connaît pas le jeton.
+fn embed_marker(line: &[u8], prefix: &[u8]) -> Option<EmbedMarker> {
+    let rest = line.strip_prefix(prefix)?;
+    let keyword = |kw: &[u8]| {
+        rest.strip_prefix(kw)
+            .is_some_and(|after| after.is_empty() || after[0] == b' ')
+    };
+    if keyword(EMBED_FALLBACK_KEYWORD) {
+        Some(EmbedMarker::Fallback)
+    } else if keyword(EMBED_FOCUS_HOST_KEYWORD) {
+        Some(EmbedMarker::FocusHost)
+    } else {
+        None
+    }
+}
+
 /// Lit le flux jusqu'à sa fin dans `kept`, borné à [`STDERR_KEEP_BYTES`] octets (les derniers).
-/// `on_fallback` est appelé (une fois) dès que [`EMBED_FALLBACK_MARKER`] apparaît dans le flux,
-/// `on_focus_host` à chaque [`EMBED_FOCUS_HOST_MARKER`] ; les repères sont trouvés même coupés
-/// entre deux lectures.
+/// `on_fallback` est appelé (une fois) dès qu'une ligne `[EMBED#<token>] repli…` est lue,
+/// `on_focus_host` à chaque ligne `[EMBED#<token>] focus-host` (voir [`embed_marker`]) ; les
+/// lignes sont reconstituées même coupées entre deux lectures, une dernière ligne sans fin de
+/// ligne n'est pas prise en compte.
 fn read_into(
     mut stream: impl Read,
     kept: &Mutex<Vec<u8>>,
+    token: &str,
     mut on_fallback: Option<Box<dyn FnOnce() + Send>>,
     on_focus_host: Option<Box<dyn Fn() + Send>>,
 ) {
-    let find =
-        |haystack: &[u8], needle: &[u8]| haystack.windows(needle.len()).position(|w| w == needle);
-    let keep = EMBED_FALLBACK_MARKER
-        .len()
-        .max(EMBED_FOCUS_HOST_MARKER.len())
-        - 1;
+    let prefix = format!("[EMBED#{token}] ").into_bytes();
     let mut chunk = [0u8; 2048];
-    let mut seen: Vec<u8> = Vec::new();
+    // Ligne en cours ; `overlong` : elle a dépassé EMBED_LINE_MAX et sera ignorée.
+    let mut line: Vec<u8> = Vec::new();
+    let mut overlong = false;
     while let Ok(n) = stream.read(&mut chunk) {
         if n == 0 {
             break;
         }
         if on_fallback.is_some() || on_focus_host.is_some() {
-            seen.extend_from_slice(&chunk[..n]);
-            // Repli d'abord : la purge des repères de focus ne doit pas le couper.
-            if on_fallback.is_some() && find(&seen, EMBED_FALLBACK_MARKER).is_some() {
-                if let Some(notify) = on_fallback.take() {
-                    notify();
+            for &byte in &chunk[..n] {
+                if byte != b'\n' {
+                    if line.len() < EMBED_LINE_MAX {
+                        line.push(byte);
+                    } else {
+                        overlong = true;
+                    }
+                    continue;
                 }
-            }
-            if let Some(notify) = &on_focus_host {
-                while let Some(pos) = find(&seen, EMBED_FOCUS_HOST_MARKER) {
-                    notify();
-                    seen.drain(..pos + EMBED_FOCUS_HOST_MARKER.len());
+                if !overlong {
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    match embed_marker(&line, &prefix) {
+                        Some(EmbedMarker::Fallback) => {
+                            if let Some(notify) = on_fallback.take() {
+                                notify();
+                            }
+                        }
+                        Some(EmbedMarker::FocusHost) => {
+                            if let Some(notify) = &on_focus_host {
+                                notify();
+                            }
+                        }
+                        None => {}
+                    }
                 }
-            }
-            if seen.len() > keep {
-                seen.drain(..seen.len() - keep);
+                line.clear();
+                overlong = false;
             }
         }
         let mut kept = lock(kept);
@@ -1808,10 +1866,7 @@ wait_quit
     fn un_repli_du_player_detruit_l_accueil_et_annonce_la_fenetre_separee() {
         let embed = Arc::new(FakeEmbed::default());
         let c = ctx_embed(embed.clone());
-        let story = c.story(
-            "r.plain.pk",
-            "stderr [EMBED] repli : SetParent refuse\nwait_quit\n",
-        );
+        let story = c.story("r.plain.pk", "embed repli : SetParent refuse\nwait_quit\n");
         assert!(c.launch(&story).unwrap().embedded);
         let deadline = Instant::now() + Duration::from_secs(10);
         while c.service.status().is_some_and(|s| s.embedded) && Instant::now() < deadline {
@@ -1833,52 +1888,18 @@ wait_quit
         assert_eq!(*lock(&embed.calls), ["create", "destroy 42"]);
     }
 
-    #[test]
-    fn le_repere_de_repli_est_trouve_meme_coupe_entre_deux_lectures() {
-        let seen = Arc::new(AtomicU64::new(0));
-        let count = seen.clone();
-        let kept = Mutex::new(Vec::new());
-        let stream = (&b"debut [EMB"[..]).chain(&b"ED] repli : x\n[EMBED] repli"[..]);
-        read_into(
-            stream,
-            &kept,
-            Some(Box::new(move || {
-                count.fetch_add(1, Ordering::SeqCst);
-            })),
-            None,
-        );
-        assert_eq!(seen.load(Ordering::SeqCst), 1);
-        assert!(lock(&kept).ends_with(b"[EMBED] repli"));
-    }
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-    #[test]
-    fn les_reperes_de_focus_sont_comptes_meme_coupes_et_a_chaque_fois() {
-        let seen = Arc::new(AtomicU64::new(0));
-        let count = seen.clone();
-        let kept = Mutex::new(Vec::new());
-        let stream = (&b"[EMBED] ok\n[EMBED] foc"[..])
-            .chain(&b"us-host\n[EMBED] focus-host\n[EMBED] focus-host"[..]);
-        read_into(
-            stream,
-            &kept,
-            None,
-            Some(Box::new(move || {
-                count.fetch_add(1, Ordering::SeqCst);
-            })),
-        );
-        assert_eq!(seen.load(Ordering::SeqCst), 3);
-    }
-
-    #[test]
-    fn un_repli_et_un_focus_dans_le_meme_flux_sont_tous_deux_signales() {
+    /// Compte les appels de `on_fallback` et `on_focus_host` sur `stream` (jeton [`TOKEN`]).
+    fn count_markers(stream: impl Read) -> (u64, u64) {
         let fallback = Arc::new(AtomicU64::new(0));
         let focus = Arc::new(AtomicU64::new(0));
         let (f, g) = (fallback.clone(), focus.clone());
         let kept = Mutex::new(Vec::new());
-        let stream = &b"[EMBED] repli : x\n[EMBED] focus-host\n"[..];
         read_into(
             stream,
             &kept,
+            TOKEN,
             Some(Box::new(move || {
                 f.fetch_add(1, Ordering::SeqCst);
             })),
@@ -1886,15 +1907,144 @@ wait_quit
                 g.fetch_add(1, Ordering::SeqCst);
             })),
         );
-        assert_eq!(fallback.load(Ordering::SeqCst), 1);
-        assert_eq!(focus.load(Ordering::SeqCst), 1);
+        (
+            fallback.load(Ordering::SeqCst),
+            focus.load(Ordering::SeqCst),
+        )
+    }
+
+    #[test]
+    fn le_repere_de_repli_est_trouve_meme_coupe_entre_deux_lectures() {
+        let seen = Arc::new(AtomicU64::new(0));
+        let count = seen.clone();
+        let kept = Mutex::new(Vec::new());
+        let stream = (&b"[EMBED#0123456789ab"[..])
+            .chain(&b"cdef0123456789abcdef] repli : x\n[EMBED#0123456789abcdef0123456789abcdef] repli\n"[..]);
+        read_into(
+            stream,
+            &kept,
+            TOKEN,
+            Some(Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            })),
+            None,
+        );
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        // La sortie conservée reste intacte (affichée à l'utilisateur).
+        assert!(lock(&kept).ends_with(b"repli\n"));
+    }
+
+    #[test]
+    fn les_reperes_de_focus_sont_comptes_meme_coupes_et_a_chaque_fois() {
+        let stream = (&b"[EMBED#0123456789abcdef0123456789abcdef] ok\n[EMBED#0123456789abcdef01"[..])
+            .chain(
+                &b"23456789abcdef] focus-host\n[EMBED#0123456789abcdef0123456789abcdef] focus-host\r\n[EMBED#0123456789abcdef0123456789abcdef] focus-host"
+                    [..],
+            );
+        // Le dernier repère n'a pas de fin de ligne : ignoré (le player termine ses lignes).
+        assert_eq!(count_markers(stream), (0, 2));
+    }
+
+    #[test]
+    fn un_repli_et_un_focus_dans_le_meme_flux_sont_tous_deux_signales() {
+        let stream = &b"[EMBED#0123456789abcdef0123456789abcdef] repli : x\n[EMBED#0123456789abcdef0123456789abcdef] focus-host\n"[..];
+        assert_eq!(count_markers(stream), (1, 1));
+    }
+
+    #[test]
+    fn une_ligne_imitee_sans_jeton_est_ignoree() {
+        // Ce qu'une histoire peut écrire : warn, message d'erreur Lua, chemin recopié.
+        let stream = &b"Lua warning: [EMBED] repli : x\n[EMBED] repli : x\n[EMBED] focus-host\n\
+                        [EMBED#] repli\n[EMBED#autre] focus-host\n[EMBED#0123456789abcdef0123456789abcde] repli\n\
+                        [EMBED#0123456789abcdef0123456789abcdef0] repli\n"[..];
+        assert_eq!(count_markers(stream), (0, 0));
+    }
+
+    #[test]
+    fn un_repere_au_milieu_d_une_ligne_est_ignore() {
+        let stream = &b"avant [EMBED#0123456789abcdef0123456789abcdef] repli\n \
+                        [EMBED#0123456789abcdef0123456789abcdef] focus-host\n\
+                        audio.load : introuvable : [EMBED#0123456789abcdef0123456789abcdef] focus-host\n"[..];
+        assert_eq!(count_markers(stream), (0, 0));
+    }
+
+    #[test]
+    fn le_mot_cle_doit_etre_entier() {
+        let stream = &b"[EMBED#0123456789abcdef0123456789abcdef] repliement\n\
+                        [EMBED#0123456789abcdef0123456789abcdef] focus-hosts\n\
+                        [EMBED#0123456789abcdef0123456789abcdef] \n"[..];
+        assert_eq!(count_markers(stream), (0, 0));
+    }
+
+    #[test]
+    fn une_ligne_trop_longue_est_ignoree_sans_perturber_les_suivantes() {
+        let mut data = format!("[EMBED#{TOKEN}] repli ").into_bytes();
+        data.extend(std::iter::repeat_n(b'x', EMBED_LINE_MAX * 3));
+        data.extend_from_slice(format!("\n[EMBED#{TOKEN}] focus-host\n").as_bytes());
+        assert_eq!(count_markers(&data[..]), (0, 1));
+    }
+
+    #[test]
+    fn le_vrai_repere_est_reconnu_apres_des_imitations() {
+        let stream =
+            format!("[EMBED] repli : faux\n[EMBED#{TOKEN}] repli : SetParent refuse (erreur 5)\n");
+        assert_eq!(count_markers(stream.as_bytes()), (1, 0));
+    }
+
+    #[test]
+    fn une_imitation_de_l_histoire_ne_replie_pas_la_fenetre() {
+        let embed = Arc::new(FakeEmbed::default());
+        let c = ctx_embed(embed.clone());
+        let story = c.story(
+            "m.plain.pk",
+            "stderr [EMBED] repli : faux\nstderr [EMBED] focus-host\n\
+             stderr Lua warning: [EMBED#abc] repli\nembed_mid repli\nembed_mid focus-host\n\
+             sleep 500\nwait_quit\n",
+        );
+        assert!(c.launch(&story).unwrap().embedded);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(c.service.status().map(|s| s.embedded), Some(true));
+        assert_eq!(c.recorder.focus_host.load(Ordering::SeqCst), 0);
+        assert!(lock(&c.recorder.updated).is_empty());
+        assert!(c.service.stop());
+        c.wait_exit();
+        assert_eq!(*lock(&embed.calls), ["create", "destroy 42"]);
+    }
+
+    #[test]
+    fn le_jeton_est_transmis_au_player_incruste_et_change_a_chaque_lancement() {
+        let c = ctx_embed(Arc::new(FakeEmbed::default()));
+        let story = c.story("t.plain.pk", "token\nexit 0\n");
+        let mut tokens = Vec::new();
+        for _ in 0..2 {
+            c.launch(&story).unwrap();
+            let done = c.wait_exit();
+            let token = done
+                .stderr
+                .strip_prefix("jeton : ")
+                .expect("jeton transmis")
+                .trim()
+                .to_string();
+            assert_eq!(token.len(), 32, "{token}");
+            assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+            tokens.push(token);
+        }
+        assert_ne!(tokens[0], tokens[1]);
+    }
+
+    #[test]
+    fn sans_incrustation_aucun_jeton_n_est_transmis() {
+        let c = ctx();
+        let story = c.story("n.plain.pk", "token\nexit 0\n");
+        c.launch(&story).unwrap();
+        assert_eq!(c.wait_exit().stderr.trim(), "jeton : absent");
     }
 
     #[test]
     fn f6_du_player_incruste_annonce_le_retour_du_clavier_au_launcher() {
         let embed = Arc::new(FakeEmbed::default());
         let c = ctx_embed(embed);
-        let story = c.story("h.plain.pk", "stderr [EMBED] focus-host\nwait_quit\n");
+        let story = c.story("h.plain.pk", "embed focus-host\nwait_quit\n");
         c.launch(&story).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while c.recorder.focus_host.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {

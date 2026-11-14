@@ -4,6 +4,9 @@
 //! Le fichier `<chemin>` contient un scénario, une instruction par ligne : `stderr <texte>`,
 //! `sleep <ms>`, `child_sleep <ms>`, `exit <code>`, `args` (écrit les options reçues sur
 //! stderr), `console` (écrit sur stderr si le processus a une fenêtre de console, Windows),
+//! `embed <texte>` (écrit `[EMBED#<jeton>] <texte>` avec le jeton de la variable
+//! `FLAM_EMBED_TOKEN`, comme le vrai player incrusté ; `[EMBED] <texte>` sans jeton),
+//! `embed_mid <texte>` (même repère, mais précédé de `avant ` sur la même ligne),
 //! `wait_quit` (attend la ligne `quit` ou la fin de stdin, puis sort avec le code 0,
 //! comme le vrai player avec `--stdin-control`).
 //! Fichier illisible : message sur stderr et code 3 (le vrai player échoue aussi au chargement).
@@ -67,6 +70,19 @@ fn main() {
                 eprintln!("{rest}");
                 let _ = std::io::stderr().flush();
             }
+            "embed" | "embed_mid" => {
+                let tag = match std::env::var("FLAM_EMBED_TOKEN") {
+                    Ok(token) => format!("[EMBED#{token}]"),
+                    Err(_) => "[EMBED]".to_string(),
+                };
+                let lead = if op == "embed_mid" { "avant " } else { "" };
+                eprintln!("{lead}{tag} {rest}");
+                let _ = std::io::stderr().flush();
+            }
+            "token" => eprintln!(
+                "jeton : {}",
+                std::env::var("FLAM_EMBED_TOKEN").unwrap_or_else(|_| "absent".into())
+            ),
             "sleep" => std::thread::sleep(Duration::from_millis(rest.parse().unwrap_or(0))),
             // Processus fils qui hérite de stderr et survit au « player ».
             "child_sleep" => {
