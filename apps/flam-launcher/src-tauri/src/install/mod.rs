@@ -1837,6 +1837,18 @@ fn read_archive_meta(path: &Path) -> Option<ArchiveMeta> {
 /// Décide de la réutilisation d'une archive ou d'un `.part` (E/S bloquantes). Une archive sans
 /// mémoire, d'un autre lien ou d'une autre taille est supprimée ; un `.part` d'un autre lien
 /// aussi.
+///
+/// Politique des `.part` (#578, #652) : aucun balayage automatique par âge ou par taille. Un
+/// `.part` est repris ou supprimé à la demande suivante du même `<uuid>-<version>` (ici), et
+/// supprimé à l'annulation, quand la conversion met l'archive en cause et avec l'archive après
+/// une installation réussie ; celui d'une tâche écartée ou d'une version abandonnée reste, comme
+/// une archive complète gardée après un échec pour une nouvelle tentative sans réseau (un âge ou
+/// une taille limite casserait cette reprise). Il n'est pas pour autant jamais nettoyé :
+/// `archives/` est un sous-dossier de `cache::APP_CACHE_SUBDIRS`, créé marqué ; son contenu est
+/// compté dans l'usage du cache et vidé par « Vider le cache ». Un `archives/` non marqué (refusé
+/// par la migration) n'est ni compté ni vidé, limite commune à tous les sous-dossiers non
+/// marqués (`cache`). Au plus un `.part` par `<uuid>-<version>` : ils ne s'accumulent pas pour
+/// une même version.
 fn prepare_archive(
     dir: &Path,
     dest: &Path,

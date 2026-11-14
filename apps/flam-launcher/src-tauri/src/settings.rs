@@ -330,6 +330,15 @@ fn check_exe(label: &str, raw: &str) -> Result<(), (&'static str, String)> {
 /// Vérifie un dossier de cache : absolu, pas un fichier, ni racine de disque ni dossier protégé.
 /// L'application ne supprime jamais que les sous-dossiers qu'elle a elle-même créés dans ce
 /// dossier ; ces garde-fous évitent de la pointer sur un dossier contenant autre chose.
+///
+/// Chemins réseau (UNC `\\serveur\partage\…`, lecteur réseau) **acceptés** à dessein, à la
+/// différence du chemin du player ([`is_network_path`], exécutable lancé) (#578, #652) : un cache
+/// existant sur un lecteur réseau ou un partage NAS est un usage légitime, que le refus cacherait
+/// sans rien protéger. Aucun exécutable n'est lancé depuis le cache : les scripts des histoires
+/// converties y sont lus par le player sous son bac à sable, comme d'un cache local. La racine
+/// d'un partage (`\\serveur\partage`) est refusée comme celle d'un disque. Limites connues : un
+/// partage hors ligne ralentit le démarrage et les listes ; le vrai remède contre un chemin
+/// imposé par l'IPC est un sélecteur de dossier ouvert côté Rust, hors de ce contrôle.
 fn check_cache_dir(raw: &str, protected: &[PathBuf]) -> Result<(), (&'static str, String)> {
     let path = Path::new(raw);
     let invalid = |reason: &str| {
@@ -1446,6 +1455,19 @@ mod tests {
             assert_eq!(kind, ISSUE_INVALID_PATH, "{bad}");
         }
         assert!(!is_network_path(Path::new("C:\\Windows\\notepad.exe")));
+    }
+
+    /// #652 : la racine d'un partage n'a pas de parent, elle est donc refusée comme celle d'un
+    /// disque par `check_cache_dir` ; un sous-dossier de partage en a un (accepté, voir la doc).
+    /// Sans accès réseau : seule l'analyse du chemin est vérifiée.
+    #[cfg(windows)]
+    #[test]
+    fn racine_de_partage_sans_parent_sous_dossier_avec() {
+        for root in ["\\\\serveur\\partage", "\\\\serveur\\partage\\"] {
+            assert!(Path::new(root).is_absolute(), "{root}");
+            assert!(Path::new(root).parent().is_none(), "{root}");
+        }
+        assert!(Path::new("\\\\serveur\\partage\\flam").parent().is_some());
     }
 
     #[test]
