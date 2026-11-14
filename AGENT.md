@@ -112,9 +112,14 @@ Options du player :
   fonction C (motif de `string.find`/`match`/`gsub` a retour arriere catastrophique) ne sont pas
   interruptibles : limites connues, non corrigees sans modifier Lua (sous-module). `debug` n'est
   plus expose (voir plus bas), donc `debug.sethook` ne peut plus retirer le watchdog.
-- `--lua-mem <Mo>` : plafond memoire de l'etat Lua (defaut 256, `0` = aucun) ; au-dela, Lua leve
-  `not enough memory` (rattrapable). Borne `string.rep` geant, `table.concat` massif, etc., que le hook
-  de comptage ne voit pas (test : `tests/e2e/e2e_watchdog.py`, scenario G).
+- `--lua-mem <Mo>` : plafond memoire de l'etat Lua (defaut 256, `0` = aucun, sinon 8 a 16384 ;
+  une valeur non numerique, negative ou hors bornes est refusee : message et code de sortie 2).
+  Au-dela, Lua leve `not enough memory`, rattrapable seulement DANS le script (`pcall`). Hors
+  script, l'hote dispose d'une reserve de 4 Mo au-dessus du plafond pour ses petites allocations
+  (`lua_push*` hors appel protege : sans elle, un script ayant rempli la memoire ferait paniquer
+  l'etat) ; la reserve ne vaut que pour l'etat sans fonction en cours (`lua_getstack`). Borne
+  `string.rep` geant, `table.concat` massif, etc., que le hook de comptage ne voit pas (tests :
+  `tests/e2e/e2e_watchdog.py`, scenarios G a J).
 - `--screenshot <chemin>` : fichier BMP des captures (sinon `FLAM_SCREENSHOT`, sinon
   `C:/temp/flam-player/screenshot.bmp` code en dur). Capture auto 12 s apres le demarrage :
   `FLAM_SCREENSHOT_AUTO_MS=<ms>`, `0` = desactivee.
@@ -291,17 +296,26 @@ Le script Lua a acces a :
 - `progression.save(cle, t)` / `progression.load(cle)` — cle limitee a `[A-Za-z0-9_-]`, 64 car.
 - `context_menu.set_entries({...})` — menu contextuel (comme le firmware)
 - `goto_library()`, `back_callback` (defaut = `goto_library`), `screen.*` (stubs), `progress`
-- Bibliotheques standard Lua (`io`, `os`, `package`...) — PAS de sandbox dans l'emulateur ; le
-  bytecode Lua est refuse (chargement en mode texte uniquement). Exception : `debug` est retire des
+- Bibliotheques standard Lua (`io`, `os`, `package`...) — PAS de sandbox dans l'emulateur. Les
+  chargeurs de l'hote (`main.lua`, `require`) n'acceptent que du source texte, mais `load`,
+  `loadfile` et `dofile` de la bibliotheque de base acceptent du bytecode (`load(string.dump(f))`).
+  Exception : `debug` est retire des
   scripts (`debug` et `package.loaded.debug` a `nil`, `require("debug")` echoue), comme sur l'appareil
   (`docs/security/security-audit-report.md` : `debug` = nil) ; sinon `debug.sethook()` desarme le
   watchdog et `debug.getupvalue/getregistry` contournent ses gardes. Le player n'en depend pas
   (traceback en C, `luaL_traceback`). Les tests sous flam-test/flam-test-audio gardent `debug`
-  (`debug.getinfo`, `debug.getregistry`) : leur runner a son propre etat Lua.
+  (`debug.getinfo`, `debug.getregistry`) : leur runner a son propre etat Lua. Le retrait de `debug`
+  n'est PAS une frontiere de securite tant que `io`, `os`, `package.loadlib` et le bytecode
+  restent ouverts : il rend le watchdog fidele a l'appareil et robuste contre les erreurs, pas contre
+  un script malveillant.
 - Audio sans peripherique (`SDL_OpenAudioDevice` en echec, session sans son, VM) ou `SDL_QueueAudio`
   en echec : la file de sortie est virtuelle et se vide au rythme de l'horloge murale
-  (`SDL_GetTicks`, geleee en pause), sinon l'horloge audio courait ~10 fois trop vite.
-  `FLAM_AUDIO_NO_DEVICE=1` simule l'absence de peripherique (test : `tests/e2e/e2e_audio_clock.py`).
+  (`SDL_GetTicks`, gelee en pause), sinon l'horloge audio courait ~10 fois trop vite.
+  Variables de test, valeur exacte `1` seulement : `FLAM_AUDIO_NO_DEVICE` simule l'absence de
+  peripherique (trace « desactive par FLAM_AUDIO_NO_DEVICE »), `FLAM_AUDIO_QUEUE_FAIL` fait echouer
+  `SDL_QueueAudio` (trace « SDL_QueueAudio a echoue »). Tests : `tests/e2e/e2e_audio_clock.py`
+  (lecture, pause, seek, reprise) et `tests/audio/*.lua` rejoues sans peripherique par
+  `test_run.bat` (etape 3).
 
 **Sur le vrai dispositif FLAM** : la sandbox Lua ne laisse que `lv.*`, pas de `io`/`os`/`debug`/`package`.
 

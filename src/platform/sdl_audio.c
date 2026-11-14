@@ -122,6 +122,13 @@ static void audio_reset_state(void);
 /* File de sortie : SDL, ou virtuelle cadencee sur l'horloge murale     */
 /* ================================================================== */
 
+static int g_test_queue_fail = 0;  /* FLAM_AUDIO_QUEUE_FAIL=1 */
+
+static int env_is_one(const char *name) {
+    const char *v = SDL_getenv(name);
+    return v && strcmp(v, "1") == 0;
+}
+
 static int audio_queue_is_virtual(void) {
     return g_audio.dev_id == 0 || g_audio.queue_failed;
 }
@@ -156,11 +163,12 @@ static uint32_t audio_queued_bytes(void) {
 
 static void audio_queue_pcm(const void *buf, uint32_t bytes) {
     if (!audio_queue_is_virtual()) {
-        if (SDL_QueueAudio(g_audio.dev_id, buf, bytes) == 0) return;
+        if (!g_test_queue_fail && SDL_QueueAudio(g_audio.dev_id, buf, bytes) == 0) return;
         /* Echec : on bascule sur la file virtuelle pour le reste de la piste,
            en gardant ce que SDL avait deja en attente */
         fprintf(stderr, "audio: SDL_QueueAudio a echoue (%s), lecture cadencee "
-                        "sur l'horloge murale\n", SDL_GetError());
+                        "sur l'horloge murale\n",
+                g_test_queue_fail ? "FLAM_AUDIO_QUEUE_FAIL" : SDL_GetError());
         g_audio.queue_failed = 1;
         g_audio.vq_bytes = SDL_GetQueuedAudioSize(g_audio.dev_id);
         g_audio.vq_credit_frames = 0.0;
@@ -199,9 +207,17 @@ int sdl_audio_init(void) {
     g_audio.queue_failed = 0;
     audio_clear_queue();
 
-    /* FLAM_AUDIO_NO_DEVICE : simule l'absence de peripherique (tests, #575) */
-    g_audio.dev_id = SDL_getenv("FLAM_AUDIO_NO_DEVICE")
-        ? 0 : SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    /* Variables de test (#575), valeur exacte "1" seulement :
+       FLAM_AUDIO_NO_DEVICE simule l'absence de peripherique ;
+       FLAM_AUDIO_QUEUE_FAIL fait echouer SDL_QueueAudio */
+    g_test_queue_fail = env_is_one("FLAM_AUDIO_QUEUE_FAIL");
+    if (env_is_one("FLAM_AUDIO_NO_DEVICE")) {
+        fprintf(stderr, "audio: desactive par FLAM_AUDIO_NO_DEVICE, lecture cadencee "
+                        "sur l'horloge murale (sans son)\n");
+        g_audio.dev_id = 0;
+        return 0;
+    }
+    g_audio.dev_id = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (g_audio.dev_id == 0) {
         /* Le player continue : l'audio est alors cadence sur l'horloge murale
            (file virtuelle), sans son */

@@ -218,7 +218,7 @@ Options :
 | `--scan-dir <dossier>` | Dossier scanné par le navigateur |
 | `--strict` | Plus proche de l'appareil : `require()` limité à `script/`, image `.lif` absente = erreur |
 | `--watchdog <ms>` | Interrompt un script Lua qui ne rend pas la main, même enveloppé dans `pcall` ou réparti sur des coroutines ; réarmé à chaque tour de la boucle principale, donc les callbacks suivant un callback interrompu dans le même tour échouent aussi (défaut 10000, `0` = désactivé) |
-| `--lua-mem <Mo>` | Plafond mémoire de l'état Lua (défaut 256, `0` = aucun) ; au-delà, Lua lève `not enough memory` (rattrapable) |
+| `--lua-mem <Mo>` | Plafond mémoire de l'état Lua (défaut 256, `0` = aucun, sinon 8 à 16384 ; une valeur invalide est refusée, code de sortie 2) ; au-delà, Lua lève `not enough memory`, rattrapable seulement dans le script (l'hôte dispose d'une petite réserve hors script) |
 | `--screenshot <chemin>` | Fichier BMP des captures (prioritaire sur `FLAM_SCREENSHOT`) |
 | `--img-dir`, `--sounds-dir`, `--save-dir` | Dossiers images, sons et sauvegardes (mode script `.lua` direct) |
 

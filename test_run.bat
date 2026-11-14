@@ -105,6 +105,13 @@ if exist "%BUILD%\flam-test-audio.exe" (
     "%BUILD%\flam-test-audio.exe" --timeout 120!AUD_ARGS!
     set "AUDIO_RC=!ERRORLEVEL!"
     echo EXIT_CODE=!AUDIO_RC!
+    REM Meme suite sans peripherique audio (file virtuelle cadencee sur l'horloge murale, #575)
+    set "FLAM_AUDIO_NO_DEVICE=1"
+    "%BUILD%\flam-test-audio.exe" --timeout 120!AUD_ARGS!
+    set "AUDND_RC=!ERRORLEVEL!"
+    set "FLAM_AUDIO_NO_DEVICE="
+    echo EXIT_CODE=!AUDND_RC!
+    if "!AUDIO_RC!"=="0" set "AUDIO_RC=!AUDND_RC!"
 ) else (
     echo [ATTENTION] flam-test-audio.exe introuvable dans "%BUILD%" : etape sautee.
     echo             Construire : cmake --build "%BUILD%" --target flam-test-audio
