@@ -24,6 +24,22 @@ function Reporter() {
   );
 }
 
+function SourcesReporter() {
+  const { report } = useRecovery();
+  return (
+    <button
+      onClick={() =>
+        report("sources.json", {
+          file: "sources.json",
+          backup: "sources.json.20261015-101010.bak",
+        })
+      }
+    >
+      signaler
+    </button>
+  );
+}
+
 function setup() {
   render(
     <RecoveryProvider>
@@ -54,6 +70,11 @@ it("affiche le bandeau avec le nom de la sauvegarde puis l'acquitte", async () =
   const banner = screen.getByRole("status");
   expect(banner).toHaveTextContent("Le fichier settings.json était illisible");
   expect(banner).toHaveTextContent("settings.json.20261015-101010.bak");
+  // Le dossier de cache fait partie des réglages remis par défaut (#652).
+  expect(banner).toHaveTextContent(
+    "Les réglages sont revenus aux valeurs par défaut. Si vous aviez choisi un autre dossier de cache, vos histoires installées y sont toujours",
+  );
+  expect(banner).toHaveTextContent("L'ancien fichier est conservé");
   await expectNoAxeViolations(document.body, ["region", "page-has-heading-one"]);
 
   fireEvent.click(screen.getByRole("button", { name: "J'ai compris" }));
@@ -76,4 +97,17 @@ it("garde le bandeau et signale l'échec de l'acquittement", async () => {
     "Impossible d'enregistrer l'acquittement.",
   );
   expect(screen.getByRole("status")).toBeInTheDocument();
+});
+
+it("dit que les sources sont revenues par défaut pour sources.json", () => {
+  render(
+    <RecoveryProvider>
+      <SourcesReporter />
+      <RecoveryBanners />
+    </RecoveryProvider>,
+  );
+  act(() => screen.getByRole("button", { name: "signaler" }).click());
+  const banner = screen.getByRole("status");
+  expect(banner).toHaveTextContent("seul le Telmi Store reste");
+  expect(banner).not.toHaveTextContent("dossier de cache");
 });

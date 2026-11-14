@@ -115,8 +115,18 @@ export const fr = {
   },
   recovery: {
     title: (file: string) => `Le fichier ${file} était illisible`,
-    body: (backup: string) =>
-      `Il a été remplacé par les valeurs par défaut. L'ancien contenu est conservé dans « ${backup} », à côté du fichier, dans le dossier de configuration.`,
+    /**
+     * `file` : fichier restauré. `settings.json` porte les réglages, dont le dossier de cache
+     * (revenu à l'emplacement par défaut) ; `sources.json` porte les sources.
+     */
+    body: (file: string, backup: string) =>
+      `${
+        file === "settings.json"
+          ? "Les réglages sont revenus aux valeurs par défaut. Si vous aviez choisi un autre dossier de cache, vos histoires installées y sont toujours : choisissez-le de nouveau dans Paramètres pour les retrouver. "
+          : file === "sources.json"
+            ? "Les sources que vous aviez ajoutées ne sont plus dans la liste : seul le Telmi Store reste. "
+            : "Il a été remplacé par les valeurs par défaut. "
+      }L'ancien fichier est conservé sous le nom « ${backup} », à côté du fichier, dans le dossier de configuration.`,
     ack: "J'ai compris",
     ackFailed: "Impossible d'enregistrer l'acquittement.",
   },
@@ -547,15 +557,15 @@ export const fr = {
        */
       confirmDescription: (dirs: readonly string[], path: string, size: string) =>
         dirs.length === 0
-          ? `Aucun dossier créé par Flam Launcher n'est à vider dans « ${path} ». Rien ne sera supprimé.`
+          ? `Aucun dossier créé par Flam Launcher n'est à vider dans « ${path} ». Rien ne sera vidé.`
           : `${
               dirs.includes("library")
-                ? "Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. "
+                ? "Les histoires installées seront retirées de ce PC (leur dossier est vidé) : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. "
                 : ""
             }Seuls les dossiers créés par Flam Launcher (${dirs.join(", ")}) seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché. Espace libéré : ${size}.`,
       /** Relevé du cache illisible à l'ouverture de la confirmation : le pire est annoncé (#591). */
       confirmDescriptionUnknown: (path: string) =>
-        `Les histoires installées seront supprimées : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché.`,
+        `Les histoires installées seront retirées de ce PC (leur dossier est vidé) : il faudra les réinstaller pour les jouer ou les envoyer sur la Flam. Seuls les dossiers créés par Flam Launcher seront vidés dans « ${path} ». Le reste de ce dossier n'est pas touché.`,
       cleared: (size: string) => `Cache vidé : ${size} libérés`,
     },
     appearance: "Apparence",
@@ -1082,7 +1092,6 @@ export const fr = {
           `L'histoire est envoyée, mais n'a pas pu être retirée du PC : ${message}`,
         /** « Retirer du PC » refusé : le bouton n'est plus proposé. */
         refused: (message: string) => `L'histoire n'a pas été retirée du PC : ${message}`,
-        /** Retrait automatique demandé, écriture sur la Flam non confirmée. */
         /** Écriture non confirmée sur le support (réglage actif ou non). */
         unconfirmed:
           "L'histoire est bien sur la Flam. Sa copie est gardée sur ce PC par prudence : si vous la retirez, éjectez ensuite la Flam avec « Éjecter la Flam » avant de la débrancher.",

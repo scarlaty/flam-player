@@ -129,6 +129,9 @@ let installGate: Promise<void> | null;
 let launchGate: Promise<void> | null;
 // Retient la réponse de `library_remove` (suppression en cours).
 let removeGate: Promise<void> | null;
+// La suppression laisse l'entrée dans la liste relue : seule la fermeture explicite de la fiche
+// peut alors la faire disparaître (test discriminant, #652).
+let removeKeepsEntry = false;
 // Une barrière par appel de `library_list` (dans l'ordre) : la réponse reste celle de l'instant de l'appel.
 let listGates: Promise<void>[];
 let calls: { cmd: string; args: Record<string, any> }[];
@@ -155,6 +158,7 @@ beforeEach(() => {
   installGate = null;
   launchGate = null;
   removeGate = null;
+  removeKeepsEntry = false;
   listGates = [];
   windowApi.minimizeWindow.mockClear();
   windowApi.restoreWindow.mockClear();
@@ -193,6 +197,7 @@ beforeEach(() => {
           return sourceChecks;
         case "library_remove": {
           const remove = () => {
+            if (removeKeepsEntry) return null;
             installed = installed.filter((item) => item.uuid !== payload.uuid);
             return null;
           };
@@ -1529,6 +1534,8 @@ it("la suppression qui revient ne ferme pas la fiche d'une autre histoire (#581)
 });
 
 it("la suppression réussie après « Fermer » ferme la fiche encore ouverte sur cette histoire (#581)", async () => {
+  // L'entrée reste dans la liste relue : la fiche ne peut se fermer que par `onClose`.
+  removeKeepsEntry = true;
   const release = await startPendingRemoval();
   // « Fermer » la confirmation : la fiche revient, la suppression continue.
   fireEvent.keyDown(document, { key: "Escape" });
@@ -1538,6 +1545,7 @@ it("la suppression réussie après « Fermer » ferme la fiche encore ouverte su
     await flushPromises();
   });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(callsOf("library_remove")).toHaveLength(1);
 });
 
 it("« Mettre à jour » ne lance rien pendant la suppression de l'histoire (#581)", async () => {

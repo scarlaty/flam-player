@@ -106,8 +106,8 @@ jobs:
         run: test_run.bat strict
 
   # Code POSIX de src/formats/pk_reader.c (realpath, lstat, rmdir, liens symboliques) : jamais compile par
-  # le job Windows ci-dessus (#575). Seul ce module et son test autonome sont compiles ici ; le reste du
-  # player (SDL, LVGL, Lua) n'est pas porte sous Linux. Pas de sous-modules, pas de Python.
+  # le job Windows ci-dessus (#575). Seul ce module et son test autonome sont compiles ET executes ici ;
+  # le reste du player n'est que compile (job player-posix-compile). Pas de sous-modules, pas de Python.
   pk-reader-posix:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -125,3 +125,46 @@ jobs:
 
       - name: Exécuter test_pk_reader
         run: '"$RUNNER_TEMP/test_pk_reader"'
+
+  # Branches non Windows (`#else` des `#ifdef _WIN32`) de main.c, sdl_audio.c, fw_globals.c et des autres
+  # sources du player : jamais compilees par le job Windows (#575, #652). Compilation seule, fichier par
+  # fichier, avec les en-tetes des sous-modules (SDL2, Lua, LVGL, minimp3) : ni edition de liens ni
+  # execution. Le player n'est pas porte sous Linux (CMakeLists.txt lie ole32 et shell32, SDL2 serait a
+  # construire avec ses dependances X11/Wayland). SDL.h sans configuration CMake retombe sur
+  # SDL_config_minimal.h, suffisant pour compiler du code qui appelle SDL. Memes definitions que
+  # CMakeLists.txt. Les avertissements n'echouent pas (pas de -Werror) : seule une erreur de compilation
+  # rend le job rouge. pk_reader.c est compile et teste par pk-reader-posix ; les polices sont des donnees.
+  player-posix-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # En-tetes de SDL2, Lua, LVGL et minimp3.
+          submodules: recursive
+          persist-credentials: false
+
+      # gnu11 (et non c11) : fsync, fileno et mkdir(chemin, mode) sont des extensions POSIX.
+      - name: Compiler les sources du player sans les lier (gcc)
+        run: |
+          mkdir -p "$RUNNER_TEMP/obj"
+          for f in \
+            src/main.c \
+            src/platform/sdl_audio.c \
+            src/firmware/fw_globals.c \
+            src/platform/sdl_driver.c \
+            src/platform/control.c \
+            src/bindings/lua_lv.c \
+            src/bindings/lua_lv_obj.c \
+            src/bindings/lua_lv_style.c \
+            src/bindings/lua_lv_event.c \
+            src/formats/lif_decoder.c \
+            src/formats/mp3map_parser.c
+          do
+            echo "::group::$f"
+            gcc -std=gnu11 -O1 -Wall -c \
+              -DLV_CONF_INCLUDE_SIMPLE -DFLAM_SCREEN_W=320 -DFLAM_SCREEN_H=240 -DFLAM_SCALE=3 \
+              -Isrc -Ilibs -Ilibs/lvgl -Ilibs/lua -Ilibs/minimp3 -Ilibs/SDL2/include \
+              "$f" -o "$RUNNER_TEMP/obj/$(basename "$f" .c).o"
+            echo "::endgroup::"
+          done
