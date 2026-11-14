@@ -1075,7 +1075,10 @@ seul argument** (dernier), dossier courant = dossier du player.
   qui commencent par ce préfixe, suivi de `repli` ou `focus-host` (une ligne de plus de 1 Kio est
   ignorée). Une histoire ne peut donc pas déclencher le repli de la fenêtre ou la prise de focus en
   écrivant ces mots (`warn`, message d'erreur, `audio.load`). Un player plus ancien, sans jeton, n'est
-  plus écouté : launcher et player sont livrés ensemble. Les autres repères (`[CONTROL]`, `[PK]`, …) ne
+  plus écouté (plus de repli de fenêtre ni de F6) : launcher et player sont livrés ensemble. Avec un chemin
+  de player configuré ou un build de développement ancien, reconstruire le player (`build-player.ps1`) ; la
+  faille n'est volontairement pas rouverte pour ces anciens players. Dans la sortie conservée et affichée à
+  la fin de la partie, le jeton est masqué (`[EMBED#<jeton>]` devient `[EMBED]`). Les autres repères (`[CONTROL]`, `[PK]`, …) ne
   sont pas lus par le launcher.
 - **Arrêt (`player_stop`, bouton « Arrêter »)** : le player est lancé avec `--stdin-control` et
   son entrée standard est un tube gardé par le service pendant la session. `player_stop` y écrit

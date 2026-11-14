@@ -258,6 +258,18 @@ print("GETENV " .. tostring((pcall(function() return os.getenv("FLAM_EMBED_TOKEN
 print("DONE")
 '''
 
+# M2 : avec --unsafe-libs (os rouvert), le jeton reste invisible : getenv nil, processus fils aveugle
+SC_TOKEN_UNSAFE = r'''
+print("TOKEN_OS " .. type(os))
+print("TOKEN_GETENV " .. tostring(os.getenv("FLAM_EMBED_TOKEN")))
+local cmd = (package.config:sub(1, 1) == "\\" and "set FLAM_EMBED 2>&1" or "env 2>&1")
+local pipe = io.popen(cmd)
+local child = pipe:read("a"):gsub("%s+", " ")
+pipe:close()
+print("TOKEN_CHILD [" .. child .. "]")
+print("DONE")
+'''
+
 SC_IO = r'''
 print("IO_TYPE " .. type(io))
 local ok, e = pcall(function()
@@ -602,6 +614,18 @@ def main():
               "M aucune ligne [EMBED...] emise par le player pour ce script", out)
         check(out.count("tok1234ABCD") == 1,
               "M le jeton n'apparait nulle part ailleurs que dans l'imitation du script", out)
+
+        # M2 : --unsafe-libs rouvre os, mais pas le jeton ; la trace [EMBED#jeton] est emise
+        out, rc, b, f = run(env, SC_TOKEN_UNSAFE, "story", ("--unsafe-libs", "--parent-hwnd", "1"),
+                            env_extra={"FLAM_EMBED_TOKEN": "tok1234ABCD"})
+        check("TOKEN_OS table" in out, "M2 --unsafe-libs : os rouvert", out)
+        check("TOKEN_GETENV nil" in out, "M2 os.getenv('FLAM_EMBED_TOKEN') vaut nil (variable retiree)", out)
+        child = [l for l in out.splitlines() if l.startswith("TOKEN_CHILD [")]
+        check(child and "tok1234ABCD" not in child[0] and "FLAM_EMBED_TOKEN" not in child[0],
+              "M2 un processus fils ne voit pas la variable ni le jeton", out)
+        check(any(l.startswith("[EMBED#tok1234ABCD] repli : ") for l in out.splitlines()),
+              "M2 la trace [EMBED#jeton] repli est emise par le player", out)
+        check("DONE" in out.splitlines() and rc == 0, "M2 le player s'arrete proprement (code %r)" % rc, out)
 
         # K : --unsafe-libs
         out, rc, b, f = run(env, SC_UNSAFE, "story", ("--unsafe-libs",))

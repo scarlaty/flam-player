@@ -444,6 +444,8 @@ impl PlayerService {
         };
         // Jeton des repères d'incrustation de ce lancement (#649), propre au player incrusté.
         let token = uuid::Uuid::new_v4().simple().to_string();
+        // Dans la sortie conservée et affichée, le jeton est masqué : `[EMBED#<jeton>]` -> `[EMBED]`.
+        let token_tag = format!("[EMBED#{token}]");
         let mut command = Command::new(exe);
         command
             .args(player_args(host, &target))
@@ -534,7 +536,11 @@ impl PlayerService {
             // processus petit-fils peut garder le tube ouvert).
             let _ = done.recv_timeout(STDERR_GRACE);
             let (code, success, stderr) = match status {
-                Ok(status) => (status.code(), status.success(), tail_text(&lock(&kept))),
+                Ok(status) => (
+                    status.code(),
+                    status.success(),
+                    tail_text(&lock(&kept)).replace(&token_tag, "[EMBED]"),
+                ),
                 Err(err) => (None, false, format!("attente du player impossible : {err}")),
             };
             let duration_ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -2030,6 +2036,18 @@ wait_quit
             tokens.push(token);
         }
         assert_ne!(tokens[0], tokens[1]);
+    }
+
+    #[test]
+    fn le_jeton_est_masque_dans_la_sortie_affichee() {
+        let c = ctx_embed(Arc::new(FakeEmbed::default()));
+        let story = c.story(
+            "k.plain.pk",
+            "embed repli : SetParent refuse\nsleep 300\nexit 0\n",
+        );
+        c.launch(&story).unwrap();
+        let done = c.wait_exit();
+        assert_eq!(done.stderr.trim(), "[EMBED] repli : SetParent refuse");
     }
 
     #[test]

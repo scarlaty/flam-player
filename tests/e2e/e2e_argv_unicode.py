@@ -48,6 +48,13 @@ def short_name_available(path):
     return 0 < n < 1024 and buf.value.lower() != path.lower()
 
 
+def short_name_of(path):
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 1024)
+    return os.path.basename(buf.value) if 0 < n < 1024 else "?"
+
+
 def run(exe, target, tmp, marker):
     """Lance le player sur target, attend le marqueur, envoie 'quit'.
     Retourne (sortie, code de sortie ou None)."""
@@ -102,6 +109,7 @@ def write_lua(path, marker):
 def write_pk(path, marker):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
         z.writestr("main.lua", "print('%s')\n" % marker)
+        z.writestr("img/photo.txt", "ECRASE")
 
 
 def play(exe, tmp, name, kind, marker):
@@ -145,10 +153,41 @@ def main():
         check("ARGV_CHECK_LUA" in out, "script avec caractere hors page ANSI : execute", out)
         check(rc == 0, "script hors page ANSI : sortie propre (code %r)" % rc, out)
 
+        # Dossier frere "Histoires" : NTFS lui donne le nom court HISTOI~1, que l'archive
+        # Histoire(coche).plain.pk partage sous la forme HISTOI~1.PK. L'extraction ne doit
+        # jamais y ecrire (#648) : elle va dans "HISTOI~1.plain".
+        sibling = os.path.join(tmp, "Histoires")
+        os.makedirs(os.path.join(sibling, "img"))
+        sentinel = os.path.join(sibling, "img", "photo.txt")
+        with open(sentinel, "w") as f:
+            f.write("PRECIEUX")
+        sibling_short = short_name_of(sibling)
         _, out, rc = play(exe, tmp, "Histoire✓.plain.pk", "pk", "ARGV_PK_CHECK")
         check("refusee" not in out, "Histoire(coche).plain.pk : cible non refusee", out)
         check("ARGV_PK_CHECK" in out, "Histoire(coche).plain.pk : histoire jouee", out)
         check(rc == 0, "Histoire(coche).plain.pk : sortie propre (code %r)" % rc, out)
+        with open(sentinel) as f:
+            check(f.read() == "PRECIEUX", "dossier frere (nom court %s) : fichier intact" % sibling_short)
+        check(sorted(os.listdir(sibling)) == ["img"] and os.listdir(os.path.join(sibling, "img")) == ["photo.txt"],
+              "dossier frere : rien n'y a ete ecrit", str(os.listdir(sibling)))
+        names = os.listdir(tmp)
+        extracted = [n for n in names if n.endswith(".plain") and n.upper().startswith("HISTOI~")]
+        check(len(extracted) == 1 and os.path.isfile(os.path.join(tmp, extracted[0], "main.lua"))
+              and os.path.isfile(os.path.join(tmp, extracted[0], ".extracted")),
+              "extraction dans <nom court>.plain, a cote de l'archive : %s" % ascii(names), out)
+        check(os.path.isfile(os.path.join(tmp, extracted[0], "img", "photo.txt")),
+              "l'archive est extraite dans ce dossier")
+        saves = os.path.join(tmp, "saves")
+        if os.path.isdir(saves):
+            check(extracted[0] in os.listdir(saves) and "HISTOI~1" not in os.listdir(saves),
+                  "sauvegardes sous saves/%s (jamais sous le nom court nu) : %r"
+                  % (extracted[0], os.listdir(saves)))
+
+        # Dossier d'extraction deja present mais qui n'est pas celui demande : refus.
+        # (un nom ".plain" ne peut pas etre un alias 8.3 : le cas est inatteignable en pratique,
+        # on verifie surtout que l'extraction existante est reutilisee sans erreur)
+        _, out, rc = play(exe, tmp, "Histoire" + chr(0x2713) + ".plain.pk", "pk", "ARGV_PK_AGAIN")
+        check(rc == 0 and "ARGV_PK_AGAIN" in out, "Histoire(coche).plain.pk : relance sur l'extraction existante", out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("OK")

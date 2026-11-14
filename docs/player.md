@@ -301,8 +301,10 @@ Arguments non ASCII (Windows) : SDL2main donne `argv` en UTF-8, le player le rec
 ANSI dans un tableau local (le `argv` de SDL2main n'est jamais modifié). Un nom représentable dans la
 page ANSI (`Café.lua`, `Histoire été.plain.pk`) est repris tel quel. Un nom contenant un caractère absent
 de la page ANSI (`Histoire✓.plain.pk`) est remplacé par son nom court 8.3 (`HISTOI~1.PK`) : l'archive
-est reconnue comme `.plain.pk`, extraite dans `HISTOI~1` (nom court sans `.pk`) et ses sauvegardes
-vivent sous `saves/HISTOI~1`, pas sous le nom d'origine. Cela exige que les noms courts soient activés sur
+est reconnue comme `.plain.pk`, extraite dans `HISTOI~1.plain` (nom court sans `.pk`, plus `.plain` : `HISTOI~1`
+seul serait un nom court, résolu par Windows vers un dossier voisin comme `Histoires`, qui serait écrasé ; un
+dossier existant dont le nom réel diffère est refusé) et ses sauvegardes vivent sous `saves/HISTOI~1.plain`,
+pas sous le nom d'origine. Cela exige que les noms courts soient activés sur
 le volume ; sinon la cible est introuvable. Via le launcher (copie de travail vidée avant chaque lancement,
 un seul fichier à côté de `saves/`), le nom court est stable d'un lancement à l'autre, donc la progression
 aussi. Le launcher ne renomme volontairement pas la copie : la progression est rangée sous un nom dérivé
