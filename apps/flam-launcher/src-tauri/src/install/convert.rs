@@ -149,8 +149,11 @@ fn fixed_message(code: &str) -> String {
     match code {
         UNSUPPORTED_FORMAT_CODE => UNSUPPORTED_FORMAT.to_string(),
         "archive_unreadable" => "l'archive de l'histoire est illisible".into(),
+        // L'archive téléchargée est gardée (le support local est en cause, pas l'archive) :
+        // réessayer suffit si la cause a disparu ; sinon « Vider le cache » la retire.
         "archive_io" => "la lecture de l'archive a été refusée par le système (antivirus, fichier \
-             verrouillé, support retiré) ; réessayez"
+             verrouillé, support retiré) ; l'archive est conservée, réessayez, et si l'erreur \
+             persiste, « Vider le cache » la retire pour la retélécharger"
             .into(),
         "not_telmi" => "l'archive n'est pas une histoire Telmi".into(),
         "invalid_content" => "le contenu de l'histoire est invalide".into(),
@@ -842,6 +845,11 @@ b"
         assert_ne!(m, fixed_message("code_inconnu"));
         assert!(
             m.contains("refusée par le système") && m.contains("réessayez"),
+            "{m}"
+        );
+        // Piste exacte : l'archive est gardée, « Vider le cache » la retire.
+        assert!(
+            m.contains("conservée") && m.contains("Vider le cache"),
             "{m}"
         );
         assert!(!m.contains(['/', '\\', ':']), "{m}");

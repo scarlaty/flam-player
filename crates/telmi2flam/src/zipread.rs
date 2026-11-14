@@ -646,11 +646,15 @@ impl<R: Read> ExtFile<'_, R> {
                 return Err(ChunkStop::Cancelled);
             }
             let want = (CODEC_PIECE as u64).min(total - data.len() as u64);
-            let piece = read_up_to(self.reader, want).map_err(io_corrupt)?;
-            self.compress_left -= piece.len() as u64;
-            let short = (piece.len() as u64) < want;
-            data.extend_from_slice(&piece);
-            if short {
+            // Lu directement dans `data` (même `take(want).read_to_end` que `read_up_to`).
+            let before = data.len();
+            (&mut *self.reader)
+                .take(want)
+                .read_to_end(&mut data)
+                .map_err(io_corrupt)?;
+            let got = (data.len() - before) as u64;
+            self.compress_left -= got;
+            if got < want {
                 break;
             }
         }
@@ -1281,7 +1285,8 @@ mod tests {
     }
 
     /// #580 : deflate et stored s'annulent aussi pendant leur lecture, au n-ième appel quel que
-    /// soit n ; la sortie d'une lecture menée au bout reste celle de `read`.
+    /// soit n ; la sortie d'une lecture menée au bout reste celle de `read`. Les octets rendus
+    /// au `sink` sont bornés par ceux produits avant l'appel qui a vu l'annulation.
     #[test]
     fn annulation_au_n_ieme_appel_deflate_et_stored() {
         use std::cell::Cell;
@@ -1323,12 +1328,24 @@ mod tests {
                     calls.set(calls.get() + 1);
                     calls.get() == n
                 };
-                let r = zr.read_chunks(&name, CODEC_PIECE, &at_n, &mut |_| Ok::<(), ()>(()));
+                let mut sunk = 0usize;
+                let r = zr.read_chunks(&name, CODEC_PIECE, &at_n, &mut |c: &[u8]| {
+                    sunk += c.len();
+                    Ok::<(), ()>(())
+                });
                 assert!(
                     matches!(r, Err(ChunkStop::Cancelled)),
                     "{id}, n = {n} : {r:?}"
                 );
                 assert_eq!(calls.get(), n, "{id}, n = {n}");
+                // Avant le n-ième appel, n - 1 appels ont produit au plus `unit` octets chacun :
+                // un morceau de 1 Mio lu (stored), un morceau de 64 Kio décompressé (deflate).
+                let unit = if id == "stored" {
+                    CODEC_PIECE
+                } else {
+                    64 * 1024
+                };
+                assert!(sunk <= (n - 1) * unit, "{id}, n = {n}, {sunk} octets");
             }
         }
     }
