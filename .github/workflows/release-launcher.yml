@@ -12,7 +12,8 @@ name: release-launcher
 #
 # Les releases `v0.x` du dépôt concernent le player : ce workflow n'y touche pas (il ne crée que des
 # releases `launcher-v*` : pré-version, jamais « Latest », si la version porte un suffixe ; version
-# normale marquée « Latest » sinon).
+# normale marquée « Latest » sinon). Seul effet sur les autres releases : une version normale du
+# launcher prend la marque « Latest », que GitHub n'accorde qu'à une release par dépôt.
 #
 # Procédure complète : apps/flam-launcher/README.md, section « Publier une version ».
 # Les étapes de build reprennent celles de launcher.yml (même cache ffmpeg, mêmes actions épinglées) ;
@@ -414,6 +415,20 @@ jobs:
           prerelease=false
           latest=true
           case "$VERSION" in *-*) prerelease=true; latest=false ;; esac
+          # Rejeu d'une ancienne version : elle ne reprend pas « Latest » à une version du launcher
+          # plus récente.
+          if [ "$latest" = "true" ]; then
+            current="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            case "$current" in
+              launcher-v*)
+                newest="$(printf '%s\n' "${current#launcher-v}" "$VERSION" | sort -V | tail -n 1)"
+                if [ "$newest" != "$VERSION" ]; then
+                  echo "::warning::$current est plus récente : $TAG n'est pas marquée « Latest »"
+                  latest=false
+                fi
+                ;;
+            esac
+          fi
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
