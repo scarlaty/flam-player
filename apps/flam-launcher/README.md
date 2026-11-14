@@ -11,7 +11,7 @@ et arrivent avec les issues du jalon M3.
 
 ## Installation (Windows)
 
-1. Télécharger l'installateur : `Flam-Launcher_<version>_x64-setup.exe` pour une pré-version publiée
+1. Télécharger l'installateur : `Flam-Launcher_<version>_x64-setup.exe` pour une version publiée
    (page des releases), ou `Flam Launcher_<version>_x64-setup.exe` (avec une espace) pour l'artefact
    de la CI.
 2. Le lancer : l'installation se fait **pour l'utilisateur courant**, sans droits
@@ -366,13 +366,14 @@ sont déjà présents) : à cocher par le mainteneur avant publication.
       conservées, dossier d'installation vide).
 - [ ] Antivirus : pas de quarantaine de `flam-player.exe` ni de `telmi2flam.exe`.
 
-## Publier une pré-version
+## Publier une version
 
 Workflow `.github/workflows/release-launcher.yml` (#319) : une étiquette `launcher-v<version>`
 poussée sur un commit de `main` construit l'installateur NSIS (mêmes étapes que `launcher.yml`),
-calcule `SHA256SUMS.txt` et crée une **pré-version** GitHub « Flam Launcher <version> » avec
-l'installateur, `SHA256SUMS.txt` et les notes de `release-notes/<version>.md`. Les releases `v0.x`
-du dépôt concernent le player : elles ne sont pas touchées.
+calcule `SHA256SUMS.txt` et crée une release GitHub « Flam Launcher <version> » avec
+l'installateur, `SHA256SUMS.txt` et les notes de `release-notes/<version>.md` : une **pré-version**
+si la version porte un suffixe (`0.1.0-beta.1`), une version normale sinon (`0.1.0`), jamais marquée
+« Latest ». Les releases `v0.x` du dépôt concernent le player : elles ne sont pas touchées.
 
 Procédure (exemple : `0.1.0-beta.1`) :
 
