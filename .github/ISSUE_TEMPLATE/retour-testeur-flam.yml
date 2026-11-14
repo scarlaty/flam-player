@@ -1,6 +1,6 @@
 name: Retour testeur Flam
 description: >-
-  Retour de test du launcher sur une Flam (pré-version, firmware 2.x surtout) : réussite comprise.
+  Retour de test du launcher sur une Flam (firmware 2.x surtout) : réussite comprise.
 title: "[Retour testeur] "
 labels: ["retour-testeur"]
 body:
@@ -40,7 +40,7 @@ body:
     attributes:
       label: Version du launcher
       description: Écran « Paramètres », rubrique « À propos » (elle figure aussi en tête du diagnostic).
-      placeholder: "0.1.0-beta.1"
+      placeholder: "0.1.0"
     validations:
       required: true
   - type: textarea

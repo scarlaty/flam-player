@@ -1,6 +1,6 @@
 # Guide testeur : flam-launcher et Flam en firmware 2.x
 
-Merci de tester ! Cette pré-version envoie des histoires sur une Flam branchée en USB. Sur les
+Merci de tester ! Le launcher envoie des histoires sur une Flam branchée en USB. Sur les
 Flam en **firmware 1.x**, la fonction a été validée sur un appareil réel ; sur les Flam en
 **firmware 2.x**, elle est **expérimentale et n'a jamais été essayée sur un appareil** : c'est
 justement ce que vous allez tester. Elle est **non officielle** : lisez
@@ -12,10 +12,10 @@ clé, abstenez-vous de tester l'envoi.
 
 Vous n'avez pas besoin d'être développeur. Comptez environ une heure.
 
-## 1. Installer la pré-version
+## 1. Installer le launcher
 
 1. Téléchargez l'installateur `Flam-Launcher_<version>_x64-setup.exe` depuis la page des
-   pré-versions (<https://github.com/scarlaty/flam-player/releases>), ainsi que le fichier `SHA256SUMS.txt` publié avec la pré-version (il contient l'empreinte
+   versions (<https://github.com/scarlaty/flam-player/releases>), ainsi que le fichier `SHA256SUMS.txt` publié avec la version (il contient l'empreinte
    **SHA-256** de l'installateur).
 2. **Vérifiez l'empreinte SHA-256** (cela prouve que le fichier n'a pas été altéré). Ouvrez
    le dossier de téléchargement, faites un clic droit dans une zone vide, puis « Ouvrir dans le
@@ -42,7 +42,7 @@ Le launcher ne fait **pas** de sauvegarde complète de la Flam. Il ne garde que 
 `.mdf`. Sans copie de votre part, une erreur pourrait vous faire perdre vos histoires. **Ne
 lancez aucun test avant d'avoir fait cette copie.**
 
-**Pendant toute la bêta, ne synchronisez pas la Flam avec l'application officielle et ne mettez
+**Tant que vous utilisez le launcher, ne synchronisez pas la Flam avec l'application officielle et ne mettez
 pas à jour son firmware.** Si cela arrive, refaites une copie complète avant de continuer.
 
 1. Branchez la Flam au PC et activez le **mode connexion USB** dans ses réglages. Elle apparaît
@@ -62,7 +62,7 @@ pas à jour son firmware.** Si cela arrive, refaites une copie complète avant d
    et les tailles égales. Si Windows a signalé une erreur pendant la copie, ou si les nombres
    diffèrent, recommencez. Vérifiez que la copie contient les dossiers `str` et `etc` et le
    fichier `.mdf`.
-6. Gardez ce dossier jusqu'à la fin de la bêta. Ne le modifiez pas.
+6. Gardez ce dossier tant que vous utilisez le launcher. Ne le modifiez pas.
 
 ### Restaurer
 

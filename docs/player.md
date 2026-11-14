@@ -43,7 +43,7 @@ extraites. Le convertisseur TELMI vers FLAM (`crates/telmi2flam`) a sa
 
 ### Installer sans compiler (Windows)
 
-L'installateur de Flam Launcher (`Flam-Launcher_<version>_x64-setup.exe` dans une pré-version
+L'installateur de Flam Launcher (`Flam-Launcher_<version>_x64-setup.exe` dans une version
 publiée, `Flam Launcher_<version>_x64-setup.exe` comme artefact de la CI) installe, **pour
 l'utilisateur courant et sans droits d'administrateur**, l'application, `flam-player.exe` et le
 convertisseur TELMI vers FLAM (binaire Rust autonome : ni Python ni Pillow à installer). Il n'est pas signé : SmartScreen affiche un

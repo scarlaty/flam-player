@@ -33,7 +33,7 @@ Flam, les fait jouer sur le PC et les copie sur l'appareil.
 </p>
 
 > [!NOTE]
-> Flam Launcher est en **pré-version** (bêta). Il est indépendant du fabricant de la Flam :
+> Flam Launcher est une application **expérimentale**. Il est indépendant du fabricant de la Flam :
 > ni officiel, ni soutenu par lui.
 
 ## Fonctionnalités
@@ -144,7 +144,8 @@ Du catalogue à la Flam : choisir une histoire, la télécharger, puis l'envoyer
 ## Installation
 
 1. Ouvrez la page des [**versions publiées**](https://github.com/scarlaty/flam-player/releases?q=launcher)
-   et prenez la plus récente nommée « Flam Launcher » (marquée « Pre-release » pendant la bêta).
+   et prenez la plus récente nommée « Flam Launcher » (une version marquée « Pre-release » est une
+   version d'essai).
 2. Téléchargez le fichier `Flam-Launcher_<version>_x64-setup.exe` et lancez-le.
 3. L'installation se fait pour votre compte Windows, **sans droits d'administrateur**.
 
