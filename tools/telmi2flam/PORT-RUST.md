@@ -104,7 +104,8 @@ le jeton d'annulation entre deux assets **et dans les boucles de lignes** du dé
 du rééchantillonnage, ainsi que pendant la lecture des entrées de l'archive d'entrée (#580) :
 avant chaque lecture d'au plus 1 Mio de données compressées, avant chaque morceau de 64 Kio
 décompressé en deflate, et à chaque morceau rendu par un décodeur bzip2, LZMA ou Zstandard (ceux
-de Zstandard peuvent être plus gros). Sans cela, une grande image dépasserait le délai de grâce, comme le fait
+de Zstandard peuvent être plus gros), y compris pour la lecture de `metadata.json` de `--info`
+(`read_info_cancellable`, même sortie que `read_info`). Sans cela, une grande image dépasserait le délai de grâce, comme le fait
 aujourd'hui un `KeyboardInterrupt` Python levé n'importe où. Il nettoie ensuite ses
 temporaires et sort avec 130. Le fil qui lit `stdin` ne doit pas empêcher le processus de se
 terminer. L'arrêt
@@ -208,7 +209,7 @@ Invariants (repris de Python, à tester côté Rust) :
 | Panne | Étape | État laissé | Comportement attendu / reprise |
 | --- | --- | --- | --- |
 | Archive absente ou illisible | ouverture | rien | `archive_unreadable`, code 3 |
-| Archive que le système refuse d'ouvrir ou de lire (erreur d'E/S portant un code de l'OS : antivirus, fichier verrouillé, volume retiré ; #580) | ouverture, lecture | rien | `archive_io`, code 3 : l'archive n'est pas en cause, l'appelant peut la garder (le launcher ne met l'archive en cause que pour les codes de `ARCHIVE_FAULT_CODES`, dont `archive_io` est absent : elle est gardée). Règle unique `telmi2flam::error::system_io`, aussi appelée par le launcher : exclus, le positionnement refusé (`InvalidInput`) et, sous Windows, `ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`, qui restent `archive_unreadable`. Python rend `OSError` (code 6) : écart assumé, le code de sortie reste 3. |
+| Archive que le système refuse d'ouvrir ou de lire (erreur d'E/S portant un code de l'OS : antivirus, fichier verrouillé, volume retiré ; #580) | ouverture, lecture | rien | `archive_io`, code 3 : l'archive n'est pas en cause, l'appelant peut la garder (le launcher ne met l'archive en cause que pour les codes de `ARCHIVE_FAULT_CODES`, dont `archive_io` est absent : elle est gardée). Règle unique `telmi2flam::error::system_io`, aussi appelée par le launcher : exclus, le positionnement refusé (`InvalidInput`) et, sous Windows, `ERROR_CRC`, `ERROR_FILE_CORRUPT`, `ERROR_DISK_CORRUPT`, qui restent `archive_unreadable`. À l'ouverture, un chemin en cause (absent, composant qui n'est pas un dossier, nom invalide ou trop long, boucle de liens : `ELOOP` 40 sous Linux, 62 sous macOS et BSD) reste `archive_unreadable` ; un système sans code de boucle connu rend `archive_io` (archive gardée), Windows compris : `ERROR_CANT_RESOLVE_FILENAME` (1921) y est aussi rendu pour un point d'analyse non résolu (dossier synchronisé dont le client est arrêté, jonction vers un volume absent), archive saine. Python rend `OSError` (code 6) : écart assumé, le code de sortie reste 3. |
 | Archive corrompue (CRC, en-tête, troncature) | lecture d'une entrée | rien | `archive_unreadable`, code 3. Le CRC doit être vérifié : lire chaque entrée jusqu'au bout. |
 | Entrée chiffrée, méthode que Python ne lit pas non plus (deflate64…) | lecture | rien | `archive_unreadable`, code 3 (Python : 3 pour une méthode inconnue, mais `internal_error` 6 pour une entrée chiffrée ; divergence volontaire, car Python échoue aussi) |
 | Entrée bzip2, LZMA ou Zstandard | lecture | rien | Lue comme `zipfile` (#458, §3.1). Flux invalide : Python lève `OSError`, `LZMAError` ou `ZstdError` (`internal_error`, code 6), le Rust rend `archive_unreadable` (code 3) : divergence volontaire, Python échoue aussi. Flux tronqué, CRC faux, bombe : voir §3.1. |

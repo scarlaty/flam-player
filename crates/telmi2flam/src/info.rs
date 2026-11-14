@@ -36,14 +36,29 @@ pub struct Info {
 
 /// `read_info` sur un fichier : métadonnées de l'histoire, sans conversion.
 pub fn read_info(path: &Path) -> Result<Info, ConvError> {
-    read_info_from(&mut Archive::open(path)?)
+    read_info_cancellable(path, &|| false)
+}
+
+/// [`read_info`] avec annulation : `cancelled` est consulté pendant la lecture de
+/// `metadata.json` (voir [`Archive::read_cancellable`]) ; levé, [`ConvError::cancelled`] est
+/// rendu. Même résultat que `read_info` sinon.
+pub fn read_info_cancellable(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<Info, ConvError> {
+    read_info_from_cancellable(&mut Archive::open(path)?, cancelled)
 }
 
 /// `read_info` sur une archive déjà ouverte.
 pub fn read_info_from<R: Read + Seek>(archive: &mut Archive<R>) -> Result<Info, ConvError> {
+    read_info_from_cancellable(archive, &|| false)
+}
+
+/// [`read_info_from`] avec annulation (voir [`read_info_cancellable`]).
+pub fn read_info_from_cancellable<R: Read + Seek>(
+    archive: &mut Archive<R>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Info, ConvError> {
     let root = find_root(archive.names())?;
     let raw = archive
-        .read(&format!("{root}metadata.json"))?
+        .read_cancellable(&format!("{root}metadata.json"), cancelled)?
         .ok_or_else(|| ConvError::archive_unreadable("metadata.json introuvable"))?;
     let metadata = load_json(&raw, "metadata.json")?;
     expect(Some(&metadata), &[Kind::Object], "metadata.json", false)?;
@@ -167,6 +182,33 @@ mod tests {
             (100.0, "100.0"),
         ] {
             assert_eq!(py_float_repr(f), s, "{f}");
+        }
+    }
+
+    /// #580 : `--info` s'arrête sur l'annulation (code `cancelled`, 130) pendant la lecture de
+    /// `metadata.json` ; sans annulation, même résultat que `read_info_from`.
+    #[test]
+    fn info_annulable() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/vectors/archive/deflate_metadata_ok.zip"
+        );
+        let open = || {
+            let data = std::fs::read(path).unwrap();
+            Archive::new(std::io::Cursor::new(data), "a.zip".into()).unwrap()
+        };
+        let want = read_info_from(&mut open()).unwrap();
+        let got = read_info_from_cancellable(&mut open(), &|| false).unwrap();
+        assert_eq!(got, want);
+        assert_eq!(
+            read_info_cancellable(Path::new(path), &|| false).unwrap(),
+            want
+        );
+        for e in [
+            read_info_from_cancellable(&mut open(), &|| true).unwrap_err(),
+            read_info_cancellable(Path::new(path), &|| true).unwrap_err(),
+        ] {
+            assert_eq!((e.code, e.exit_code), ("cancelled", 130));
         }
     }
 

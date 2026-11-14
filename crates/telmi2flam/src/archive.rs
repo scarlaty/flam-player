@@ -102,22 +102,46 @@ pub struct Archive<R> {
 }
 
 /// L'ouverture a échoué à cause du chemin lui-même (absent, composant qui n'est pas un dossier,
-/// nom invalide ou trop long, boucle de liens) et non d'un refus du système. Les genres
-/// `InvalidFilename` et `FilesystemLoop` sont instables : codes de l'OS en dur.
+/// nom invalide ou trop long, boucle de liens) et non d'un refus du système. `InvalidFilename`
+/// (stable depuis Rust 1.87) couvre le nom invalide ou trop long ; `FilesystemLoop` est encore
+/// instable : seule la boucle de liens garde un code de l'OS en dur. Un système sans code connu
+/// ici rend `archive_io` (archive gardée) : jamais `archive_unreadable` (archive supprimée) sur
+/// une erreur qui pourrait venir du disque.
 fn bad_path(e: &std::io::Error) -> bool {
-    use std::io::ErrorKind::{IsADirectory, NotADirectory, NotFound};
-    // Windows : `ERROR_INVALID_NAME` 123, `ERROR_BAD_PATHNAME` 161, `ERROR_FILENAME_EXCED_RANGE`
-    // 206. Linux : `ENAMETOOLONG` 36, `ELOOP` 40. macOS : `ENAMETOOLONG` 63, `ELOOP` 62.
-    let codes: &[i32] = if cfg!(windows) {
-        &[123, 161, 206]
-    } else if cfg!(target_os = "linux") {
-        &[36, 40]
-    } else {
-        &[62, 63]
-    };
-    matches!(e.kind(), NotFound | NotADirectory | IsADirectory)
-        || e.raw_os_error().is_some_and(|c| codes.contains(&c))
+    use std::io::ErrorKind::{InvalidFilename, IsADirectory, NotADirectory, NotFound};
+    matches!(
+        e.kind(),
+        NotFound | NotADirectory | IsADirectory | InvalidFilename
+    ) || LINK_LOOP.is_some_and(|code| e.raw_os_error() == Some(code))
 }
+
+/// Code de l'OS de la boucle de liens symboliques : `ELOOP` 40 (Linux et Android, hors MIPS et
+/// SPARC dont les numéros diffèrent : la boucle y rend `archive_io`, archive gardée), `ELOOP` 62 (macOS, iOS
+/// et BSD). Windows n'en a pas ici : `ERROR_CANT_RESOLVE_FILENAME` (1921) est aussi rendu pour
+/// un point d'analyse non résolu (dossier synchronisé dont le client est arrêté, jonction vers
+/// un volume absent), où l'archive est saine : elle est gardée (`archive_io`).
+const LINK_LOOP: Option<i32> = if cfg!(all(
+    any(target_os = "linux", target_os = "android"),
+    not(any(
+        target_arch = "mips",
+        target_arch = "mips64",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))
+)) {
+    Some(40)
+} else if cfg!(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)) {
+    Some(62)
+} else {
+    None
+};
 
 impl Archive<BufReader<File>> {
     /// `zipfile.ZipFile(path, "r")` : archive absente, illisible ou corrompue →
@@ -338,6 +362,17 @@ mod tests {
         assert_eq!(e.code, "archive_unreadable");
     }
 
+    /// Dossier temporaire supprimé à la sortie du test, assertion échouée comprise.
+    #[cfg(windows)]
+    struct TempDir(std::path::PathBuf);
+
+    #[cfg(windows)]
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// #580 : archive ouverte sans partage par un autre processus (violation de partage,
     /// `ERROR_SHARING_VIOLATION`) : `archive_io` ; absente ou dossier : `archive_unreadable`.
     #[cfg(windows)]
@@ -347,6 +382,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("t2f-archive-io-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        let _cleanup = TempDir(d.clone());
         let path = d.join("a.zip");
         std::fs::write(&path, b"PK").unwrap();
         let held = std::fs::OpenOptions::new()
@@ -361,7 +397,76 @@ mod tests {
         assert_eq!(e.code, "archive_unreadable");
         let e = Archive::open(&d).err().unwrap();
         assert_eq!(e.code, "archive_unreadable");
-        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #580 : `bad_path` (le chemin est en cause, `archive_unreadable`) ou refus du système
+    /// (`archive_io`), d'après les codes de l'OS.
+    #[test]
+    fn chemin_invalide_ou_refus_du_systeme() {
+        use std::io::Error;
+        // Chemin en cause : genres de std, nom invalide ou trop long compris.
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::NotADirectory,
+            std::io::ErrorKind::IsADirectory,
+            std::io::ErrorKind::InvalidFilename,
+        ] {
+            assert!(bad_path(&Error::from(kind)), "{kind:?}");
+        }
+        // Boucle de liens : code de l'OS en dur.
+        if let Some(code) = LINK_LOOP {
+            assert!(bad_path(&Error::from_raw_os_error(code)), "boucle {code}");
+        }
+        #[cfg(windows)]
+        {
+            // `ERROR_CANT_RESOLVE_FILENAME` : aussi un point d'analyse non résolu (dossier
+            // synchronisé, jonction vers un volume absent). L'archive est gardée.
+            let e = Error::from_raw_os_error(1921);
+            assert!(!bad_path(&e) && system_io(&e));
+            // `ERROR_INVALID_NAME`, `ERROR_BAD_PATHNAME`, `ERROR_FILENAME_EXCED_RANGE`.
+            for code in [123, 161, 206] {
+                assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
+            }
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            // `ELOOP`, `ENAMETOOLONG`.
+            for code in [62, 63] {
+                assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
+            }
+        }
+        #[cfg(all(
+            target_os = "linux",
+            not(any(
+                target_arch = "mips",
+                target_arch = "mips64",
+                target_arch = "sparc",
+                target_arch = "sparc64"
+            ))
+        ))]
+        {
+            // `ELOOP`, `ENAMETOOLONG`.
+            for code in [40, 36] {
+                assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
+            }
+        }
+        // Refus du système : jamais attribué au chemin (l'archive serait supprimée à tort).
+        // Accès refusé, violation de partage (Windows) ou `EIO` (Unix).
+        for code in [
+            if cfg!(windows) { 5 } else { 13 },
+            if cfg!(windows) { 32 } else { 5 },
+        ] {
+            assert!(!bad_path(&Error::from_raw_os_error(code)), "{code}");
+        }
+        // Erreur sans genre de chemin ni code : contenu ou construction du lecteur.
+        assert!(!bad_path(&Error::from(std::io::ErrorKind::UnexpectedEof)));
     }
 
     /// #580 : `read_cancellable` lit comme `read`, et s'arrête sur l'annulation.

@@ -206,9 +206,10 @@ fn run() -> ExitCode {
     }
     let input = Path::new(&args.input);
     if args.info {
-        return match telmi2flam::info::read_info(input) {
-            // `read_info` ne consulte pas le jeton : un Ctrl+C reçu pendant la lecture annule
-            // ici, comme le `KeyboardInterrupt` de Python.
+        return match telmi2flam::info::read_info_cancellable(input, &cancel::is_cancelled) {
+            // Le jeton est consulté pendant la lecture de `metadata.json` ; un Ctrl+C reçu
+            // pendant le reste (ouverture, JSON) annule ici, comme le `KeyboardInterrupt` de
+            // Python.
             Ok(_) | Err(_) if cancel::is_cancelled() => {
                 let e = telmi2flam::error::ConvError::cancelled();
                 events.fail(
