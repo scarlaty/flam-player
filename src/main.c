@@ -1445,12 +1445,41 @@ static char *path_acp_by_components(const wchar_t *w)
 /* SDL2main fournit argv en UTF-8 alors que tout le player (stat, fopen,
    FindFirstFileA, luaL_loadfile) utilise les API ANSI : un chemin accentue
    passe en argument etait introuvable. On reconvertit donc chaque argument
-   UTF-8 -> ANSI. Si un caractere n'existe pas dans la code page ANSI, les
-   composants concernes sont remplaces par leur nom court 8.3 (les autres,
-   dont le nom final d'un .plain.pk dont derive le dossier d'extraction,
-   sont gardes tels quels). */
-static void argv_utf8_to_acp(int argc, char *argv[])
+   UTF-8 -> ANSI dans un TABLEAU LOCAL : le tableau argv de SDL2main (et ses
+   chaines) reste intact, SDL2main le libere avec son propre allocateur (#648).
+   Si un caractere n'existe pas dans la code page ANSI, les composants concernes
+   sont remplaces par leur nom court 8.3, y compris le nom final : un
+   "Histoire<U+2713>.plain.pk" devient "HISTOI~1.PK". Cet argument est alors memorise
+   (g_pk_alias_arg) : main() le traite comme une archive .plain.pk, le dossier
+   d'extraction et des sauvegardes portant le nom court sans .pk ("HISTOI~1"). */
+static char **g_argv_conv = NULL;     /* tableau local (argc + 1 pointeurs) */
+static char **g_argv_owned = NULL;    /* chaines allouees ici, liberees a la sortie */
+static int g_argv_owned_n = 0;
+static const char *g_pk_alias_arg = NULL;
+
+static void argv_free_converted(void)
 {
+    for (int i = 0; i < g_argv_owned_n; i++) free(g_argv_owned[i]);
+    free(g_argv_owned);
+    free(g_argv_conv);
+    g_argv_owned = NULL;
+    g_argv_conv = NULL;
+    g_argv_owned_n = 0;
+}
+
+static char **argv_utf8_to_acp(int argc, char *argv[])
+{
+    if (argc < 1) return argv;
+    g_argv_conv = (char **)calloc((size_t)argc + 1, sizeof(char *));
+    g_argv_owned = (char **)calloc((size_t)argc, sizeof(char *));
+    if (!g_argv_conv || !g_argv_owned) {
+        argv_free_converted();
+        return argv;   /* memoire epuisee : arguments non convertis */
+    }
+    atexit(argv_free_converted);
+    for (int i = 0; i < argc; i++) g_argv_conv[i] = argv[i];
+    g_argv_conv[argc] = argv[argc];
+
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         int ascii = 1;
@@ -1465,18 +1494,31 @@ static void argv_utf8_to_acp(int argc, char *argv[])
         if (!w) continue;
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, a, -1, w, wn);
 
+        int exact = 1;
         char *s = wide_to_acp_exact(w);
-        if (!s) s = path_acp_by_components(w);
+        if (!s) { exact = 0; s = path_acp_by_components(w); }
+        int is_pk = 0;
+        if (s && !exact) {
+            size_t wl = wcslen(w);
+            is_pk = wl > 9 && _wcsicmp(w + wl - 9, L".plain.pk") == 0;
+        }
         free(w);
-        if (s) argv[i] = s;   /* jamais libere : vit jusqu'a la fin */
+        if (s) {
+            g_argv_conv[i] = s;
+            g_argv_owned[g_argv_owned_n++] = s;
+            if (is_pk) g_pk_alias_arg = s;
+        }
     }
+    return g_argv_conv;
 }
 #endif
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv_sdl[])
 {
+    /* argv_sdl appartient a SDL2main : ne jamais y ecrire (#648) */
+    char **argv = argv_sdl;
 #ifdef _WIN32
-    argv_utf8_to_acp(argc, argv);
+    argv = argv_utf8_to_acp(argc, argv_sdl);
 #endif
 
     /* Parser les arguments CLI en premier */
@@ -1555,7 +1597,13 @@ int main(int argc, char *argv[])
     int is_pk = 0;
     if (target_path) {
         size_t tlen = strlen(target_path);
-        if (tlen > 9 && ends_with_ci(target_path, ".plain.pk")) {
+        int pk_alias = 0;
+#ifdef _WIN32
+        /* nom hors page ANSI remplace par son nom court (Histoire.plain.pk -> HISTOI~1.PK) */
+        pk_alias = target_path == g_pk_alias_arg && tlen > 3 &&
+                   ends_with_ci(target_path, ".pk");
+#endif
+        if ((tlen > 9 && ends_with_ci(target_path, ".plain.pk")) || pk_alias) {
             is_pk = 1;
             is_story = 1;
         } else if (is_story_dir(target_path)) {

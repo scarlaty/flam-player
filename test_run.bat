@@ -22,7 +22,8 @@ REM               fenetre hote, sortie par stdin             [facultatif]
 REM               puis tests\e2e\e2e_pk_extract.py : extraction .plain.pk,
 REM               dossier .plain d'auteur non ecrase (#567)  [facultatif]
 REM               puis e2e_watchdog.py, e2e_sandbox.py (bac a sable Lua,
-REM               #575), e2e_audio_clock.py                  [facultatif]
+REM               #575), e2e_audio_clock.py, e2e_argv_unicode.py (arguments
+REM               non ASCII, #648)                           [facultatif]
 REM  Facultatif : saute si python ou flam-player.exe absent. Les etapes 5 et 6
 REM  lancent le binaire telmi2flam (cargo build -p telmi2flam --release, ou
 REM  FLAM_TELMI2FLAM) : le convertisseur Python est supprime (#140).
@@ -200,6 +201,12 @@ if "!HAVE_PY!"=="1" (
     echo EXIT_CODE=!AUC_RC!
     if not "!AUC_RC!"=="0" if not "!AUC_RC!"=="77" set "E2E_RC=!AUC_RC!"
     if "!AUC_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (horloge audio : SKIP)"
+    REM Arguments non ASCII : argv de SDL2main intact, nom hors page ANSI (#648)
+    "%PY%" "%ROOT%tests\e2e\e2e_argv_unicode.py" --build "%BUILD%"
+    set "ARU_RC=!ERRORLEVEL!"
+    echo EXIT_CODE=!ARU_RC!
+    if not "!ARU_RC!"=="0" if not "!ARU_RC!"=="77" set "E2E_RC=!ARU_RC!"
+    if "!ARU_RC!"=="77" if not "!E2E_RC!"=="SKIP" set "E2E_NOTE=!E2E_NOTE! (arguments non ASCII : SKIP)"
 ) else (
     echo [SKIP] python introuvable : definir FLAM_PYTHON
 )

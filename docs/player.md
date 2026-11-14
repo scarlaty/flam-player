@@ -297,6 +297,18 @@ ne fasse pas paniquer l'état Lua. Le test vérifie que la réserve est refusée
 (la réserve effectivement accordée à l'hôte) n'est pas testé. Le plancher de `--lua-mem` est de 8 Mo :
 un parcours complet d'une histoire convertie y tient (`tests/e2e/e2e_telmi.py`, cas B8).
 
+Arguments non ASCII (Windows) : SDL2main donne `argv` en UTF-8, le player le reconvertit en page de code
+ANSI dans un tableau local (le `argv` de SDL2main n'est jamais modifié). Un nom représentable dans la
+page ANSI (`Café.lua`, `Histoire été.plain.pk`) est repris tel quel. Un nom contenant un caractère absent
+de la page ANSI (`Histoire✓.plain.pk`) est remplacé par son nom court 8.3 (`HISTOI~1.PK`) : l'archive
+est reconnue comme `.plain.pk`, extraite dans `HISTOI~1` (nom court sans `.pk`) et ses sauvegardes
+vivent sous `saves/HISTOI~1`, pas sous le nom d'origine. Cela exige que les noms courts soient activés sur
+le volume ; sinon la cible est introuvable. Via le launcher (copie de travail vidée avant chaque lancement,
+un seul fichier à côté de `saves/`), le nom court est stable d'un lancement à l'autre, donc la progression
+aussi. Le launcher ne renomme volontairement pas la copie : la progression est rangée sous un nom dérivé
+du nom de la cible, un renommage ferait perdre celle des histoires déjà jouées.
+Test : `tests/e2e/e2e_argv_unicode.py`.
+
 Le navigateur détecte les dossiers `.plain` et les archives `.plain.pk`, affiche les vignettes et
 les titres, et offre un bouton « Choisir un dossier... » pour changer le répertoire de recherche.
 Les archives `.plain.pk` sont extraites automatiquement au premier lancement, dans le dossier
