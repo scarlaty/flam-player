@@ -300,6 +300,7 @@ static int lua_panic_msg(lua_State *L)
 static int sandbox_load(lua_State *L)
 {
     int n = lua_gettop(L);
+    (void)luaL_optstring(L, 3, NULL);   /* mode : nil ou chaine, erreur d'argument sinon */
     if (n < 3) {
         lua_settop(L, 3);      /* complete avec nil : chunkname, mode */
         n = 3;
@@ -1278,6 +1279,22 @@ static int is_story_dir(const char *path)
     return (stat(check, &st) == 0);
 }
 
+/* 1 si `s` se termine par `suffix`, sans tenir compte de la casse (ASCII) : le
+   launcher classe les archives sans casse (`Evil.Plain.Pk` est une histoire),
+   et le mode histoire (chemins confines) ne doit pas en dependre. */
+static int ends_with_ci(const char *s, const char *suffix)
+{
+    size_t sl = strlen(s), tl = strlen(suffix);
+    if (sl < tl) return 0;
+    for (size_t i = 0; i < tl; i++) {
+        unsigned char a = (unsigned char)s[sl - tl + i], b = (unsigned char)suffix[i];
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
 /**
  * Charge une histoire depuis un dossier .plain.
  * Configure automatiquement img/, sounds/, script/, save.
@@ -1538,11 +1555,17 @@ int main(int argc, char *argv[])
     int is_pk = 0;
     if (target_path) {
         size_t tlen = strlen(target_path);
-        if (tlen > 9 && strcmp(target_path + tlen - 9, ".plain.pk") == 0) {
+        if (tlen > 9 && ends_with_ci(target_path, ".plain.pk")) {
             is_pk = 1;
             is_story = 1;
         } else if (is_story_dir(target_path)) {
             is_story = 1;
+        } else if (!ends_with_ci(target_path, ".lua")) {
+            /* Script direct = chemins d'images et de sons non confines : reserve
+               aux fichiers .lua. Toute autre cible est refusee. */
+            fprintf(stderr, "Erreur: cible '%s' refusee : ni dossier d'histoire "
+                            "(main.lua), ni archive .plain.pk, ni script .lua\n", target_path);
+            return 2;
         }
     }
 

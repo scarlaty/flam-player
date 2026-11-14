@@ -28,6 +28,7 @@ Code de sortie : 0 OK, 1 echec, 77 prerequis absents (flam-player).
 """
 import argparse
 import os
+import zipfile
 import shutil
 import subprocess
 import sys
@@ -93,10 +94,10 @@ def snapshot(root):
     snap = {}
     for d, dirs, files in os.walk(root):
         rel = os.path.relpath(d, root).replace(BS, "/")
-        if rel == "saves" or rel.startswith("saves/"):
+        if rel in ("saves", "pk") or rel.startswith("saves/") or rel.startswith("pk/"):
             continue
         for n in dirs:
-            if rel == "." and n == "saves":
+            if rel == "." and n in ("saves", "pk"):
                 continue
             snap[(rel + "/" + n).lstrip("./")] = None
         for n in files:
@@ -144,7 +145,16 @@ class Env:
                     break
         self.lib = {"win32": "kernel32.dll", "darwin": "libSystem.dylib"}.get(sys.platform, "libc.so.6")
 
+    def nodrive(self, sep):
+        """Dossier temporaire sans lecteur, absolu sur le lecteur courant."""
+        p = self.root.replace(BS, "/")
+        if len(p) > 1 and p[1] == ":":
+            p = p[2:]
+        return p.replace("/", sep)
+
     def sub(self, code):
+        code = code.replace("@OUTDIR_NODRIVE@", lua_path(self.nodrive("/")))
+        code = code.replace("@OUTDIR_NODRIVE_BS@", "[==[" + self.nodrive(BS) + "]==]")
         for k, v in (("@OUTFILE@", self.outfile), ("@SENTINEL@", self.sentinel),
                      ("@OUTLUAC@", self.outluac), ("@OUTLUA@", self.outlua),
                      ("@OUTDIR@", self.root), ("@LIB@", self.lib)):
@@ -155,13 +165,22 @@ class Env:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
-def run(env, code, mode="story", extra=(), timeout=25):
+def run(env, code, mode="story", extra=(), timeout=25, name="direct.lua"):
     """Lance le player sur `code` ; retourne (sortie, code de sortie ou None, avant, apres)."""
     if mode == "story":
         write(os.path.join(env.story, "main.lua"), env.sub(code))
         target = env.story
+    elif mode == "pk":
+        # archive .plain.pk (entrees stockees) : `name` donne la casse de l'extension
+        target = os.path.join(env.root, "pk", name)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.rmtree(target[:-3], ignore_errors=True)
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("main.lua", env.sub(code))
+            z.writestr("img/a.lif", lif())
+            z.writestr("sounds/a.mp3", mp3())
     else:
-        target = os.path.join(env.root, "direct.lua")
+        target = os.path.join(env.root, name)
         write(target, env.sub(code))
     # etat initial identique pour chaque scenario (un script non confine peut avoir
     # supprime ou cree des fichiers pendant le scenario precedent)
@@ -359,6 +378,8 @@ img("INSIDE", "a.lif")
 img("DOTDOT", "../../outside.lif")
 img("DOTDOT_BS", "..\\..\\outside.lif")
 img("ABS", @OUTDIR@ .. "/outside.lif")
+img("ABS_NODRIVE", @OUTDIR_NODRIVE@ .. "/outside.lif")
+img("ABS_NODRIVE_BS", @OUTDIR_NODRIVE_BS@ .. "\\outside.lif")
 img("DEVICE", "NUL")
 local function snd(label, p)
   print("SND_" .. label .. " " .. tostring(audio.load(0, p)))
@@ -367,6 +388,8 @@ snd("INSIDE", "a.mp3")
 snd("DOTDOT", "../../outside.mp3")
 snd("DOTDOT_BS", "..\\..\\outside.mp3")
 snd("ABS", @OUTDIR@ .. "/outside.mp3")
+snd("ABS_NODRIVE", @OUTDIR_NODRIVE@ .. "/outside.mp3")
+snd("ABS_NODRIVE_BS", @OUTDIR_NODRIVE_BS@ .. "\\outside.mp3")
 snd("DEVICE", "NUL")
 print("DONE")
 '''
@@ -500,7 +523,11 @@ def main():
         check("OUTSIDE nil" in out and "BYTECODE_RAN" not in out and "OUTSIDE_RAN" not in out.replace("OUTSIDE nil", ""),
               "G : aucun code hors de l'histoire n'a tourne", out)
 
-        # H : require("../x") (histoire, histoire strict, script direct)
+        # H : require("../x") (histoire, histoire strict, script direct). NON-REGRESSION,
+        # pas une preuve : le chercheur de l'hote refusait deja ".." et les chemins absolus
+        # (les points sont de toute facon des separateurs pour le chercheur standard de
+        # Lua), et REQ_DEVICE comme IMG_DEVICE / SND_DEVICE n'ont pas d'effet observable
+        # avant la correction.
         for label, mode, extra in (("histoire", "story", ()), ("--strict", "story", ("--strict",)),
                                    ("script direct", "script", ())):
             out, rc, b, f = run(env, SC_REQUIRE, mode, extra)
@@ -515,7 +542,10 @@ def main():
             common(env, out, rc, b, f, "I assets (%s)" % label)
             check("IMG_INSIDE true" in out and "SND_INSIDE 0" in out,
                   "I assets (%s) : image et son du dossier de l'histoire charges" % label, out)
-            for k in ("DOTDOT", "DOTDOT_BS", "ABS", "DEVICE"):
+            # ABS_NODRIVE* : separateur de tete sans lecteur, probant quand le dossier
+            # temporaire est sur le lecteur courant (toujours vrai ici sous Windows)
+            # DEVICE : non-regression (le fichier NUL n'est de toute facon pas une image)
+            for k in ("DOTDOT", "DOTDOT_BS", "ABS", "ABS_NODRIVE", "ABS_NODRIVE_BS", "DEVICE"):
                 check(("IMG_%s false" % k) in out, "I assets (%s) : image %s refusee" % (label, k), out)
                 check(("SND_%s -1" % k) in out, "I assets (%s) : son %s refuse (-1)" % (label, k), out)
 
@@ -526,6 +556,28 @@ def main():
                        "LEGIT_GC number", "LEGIT_META x! true", "LEGIT_STR 5aaa22true",
                        "LEGIT_LOADED true", "LEGIT_IMG true", "LEGIT_AUDIO 0", "LEGIT_PCALL false"):
             check(needle in out, "J usage legitime : " + needle, out)
+
+        # L : le mode se deduit de la cible sans tenir compte de la casse : une archive
+        # Evil.Plain.Pk (le launcher la classe comme histoire) est CONFINEE, pas un script direct
+        for nm in ("Evil.Plain.Pk", "EVIL.PLAIN.PK", "evil.plain.pk"):
+            out, rc, b, f = run(env, SC_ASSETS, "pk", name=nm)
+            common(env, out, rc, b, f, "L archive %s" % nm)
+            check("IMG_INSIDE true" in out and "SND_INSIDE 0" in out,
+                  "L archive %s : histoire extraite et jouee (mode histoire)" % nm, out)
+            for k in ("DOTDOT", "ABS", "ABS_NODRIVE"):
+                check(("IMG_%s false" % k) in out and ("SND_%s -1" % k) in out,
+                      "L archive %s : image et son %s refuses (confinement)" % (nm, k), out)
+        # script direct : seule l'extension .lua (sans casse) est admise
+        out, rc, b, f = run(env, 'print("DONE")\n', "script", name="DIRECT.LUA")
+        check("DONE" in out.splitlines() and rc == 0, "L DIRECT.LUA : script direct accepte (extension sans casse)", out)
+        for nm in ("direct.txt", "direct", "evil.zip", "evil.plain.pk.txt"):
+            target = os.path.join(env.root, nm)
+            write(target, env.sub(SC_ASSETS))
+            p = subprocess.run([exe, "--stdin-control", target], capture_output=True, timeout=30, cwd=env.cwd,
+                               env=dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy"))
+            err = p.stderr.decode("utf-8", "replace") + p.stdout.decode("utf-8", "replace")
+            check(p.returncode == 2 and "refusee" in err and "IMG_" not in err,
+                  "L cible %r refusee (code %r), aucun script execute" % (nm, p.returncode), err)
 
         # K : --unsafe-libs
         out, rc, b, f = run(env, SC_UNSAFE, "story", ("--unsafe-libs",))

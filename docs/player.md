@@ -247,7 +247,7 @@ n'est deviné ; à essayer sur un appareil réel.
 | `loadfile`, `dofile` | `nil` (rapport §4.2 : « No dofile, no loadfile ») | `nil` | présents, lisent n'importe quel fichier, y compris du binaire |
 | `string.dump` | non documenté | `nil` (sans objet une fois `load` limité au texte) | présent |
 | chargeurs de l'hôte (`main.lua`, `require`, `load_lua_table` des sauvegardes) | n.a. | texte seulement (déjà le cas) | idem |
-| `lv.img_src.load`, `audio.load` | audio : `audio.load(1, "../../etc/library/list")` échoue sans fuite (rapport §4.3) ; images : non documenté | **mode histoire** (dossier `.plain` ou `.plain.pk`) : chemin absolu, `..`, lecteur `X:`, antislash de tête, noms de périphériques Windows (`CON`, `NUL`, `COM1`...) et composants terminés par un point ou une espace refusés comme un fichier absent (`nil` ou erreur en `--strict` pour une image ; `-1` pour un son). **Script `.lua` lancé directement** : chemins pris tels quels (les tests passent des chemins absolus) | idem |
+| `lv.img_src.load`, `audio.load` | audio : `audio.load(1, "../../etc/library/list")` échoue sans fuite (rapport §4.3) ; images : non documenté | **mode histoire** (dossier `.plain` ou `.plain.pk`) : chemin absolu, `..`, lecteur `X:`, antislash de tête, noms de périphériques Windows (`CON`, `NUL`, `COM1`...) et composants terminés par un point ou une espace refusés comme un fichier absent (`nil` ou erreur en `--strict` pour une image ; `-1` pour un son). **Script `.lua` lancé directement** : chemins pris tels quels (les tests passent des chemins absolus). Le mode se déduit de la cible, sans tenir compte de la casse (ASCII) : fichier se terminant par `.plain.pk` (`Evil.Plain.Pk` aussi, comme le launcher) ou dossier contenant `main.lua` = histoire (confinée) ; fichier se terminant par `.lua` = script direct ; toute autre cible est refusée (message sur stderr, code de sortie 2) | idem |
 | `coroutine`, `string`, `table`, `math`, `utf8`, `pcall`/`xpcall`, `select`, `rawget`/`rawset`/`rawequal`/`rawlen`, `next`, `pairs`, `tostring`... | `ipairs`, `tostring`, `pairs`, `string`, `math`, `table`, `math.random` cités (`lua-api.md` §1, §12) ; le reste non documenté | présents, inchangés | idem |
 | `getmetatable`, `setmetatable` | `setmetatable` utilisé par le runtime (`button-theme.lua`) ; `getmetatable` non documenté | présents, inchangés | idem |
 | `collectgarbage` | `"collect"` et `"count"` utilisés par le runtime ; les autres options non documentées | toutes les options présentes ; `"stop"` ne contourne pas `--lua-mem` | idem |
@@ -273,7 +273,7 @@ aligner ensuite le player sur la réponse.
 infinie ; le comportement de l'appareil est inconnu) ; le temps passé dans une fonction C (motif de
 `string.find` catastrophique) ; les défauts de mémoire de l'interpréteur (Lua 5.4.8) et des bindings
 `lv.*`/`audio.*` (les audits de l'appareil en ont trouvé, dont l'utilisation après libération) ; les
-liens symboliques et jonctions placés dans le dossier d'une histoire (l'extraction des `.plain.pk` les
+liens symboliques et jonctions placés dans le dossier d'une histoire (via le launcher, la copie de travail ignore liens et jonctions : le trou ne concerne que l'appel direct en ligne de commande sur un dossier ; l'extraction des `.plain.pk` les
 refuse, un dossier `.plain` d'auteur est joué tel quel) ; les scripts lancés directement (`flam-player
 script.lua`) pour les chemins d'images et de sons. `debug` mis à part, `--unsafe-libs` n'a aucune
 protection : c'est le comportement d'avant #575.

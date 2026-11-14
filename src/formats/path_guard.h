@@ -17,23 +17,44 @@
 #include <ctype.h>
 #include <string.h>
 
-/* 1 si le composant [c, c+n) est un nom de peripherique Windows reserve
-   (avec ou sans extension : "NUL.txt" designe aussi le peripherique). */
-static inline int path_guard_is_device_name(const char *c, size_t n)
+/* Comparaison sans casse (ASCII) du composant [a, a+alen) avec `b` (minuscules) */
+static inline int path_guard_ieq(const char *a, size_t alen, const char *b)
 {
+    if (strlen(b) != alen) return 0;
+    for (size_t i = 0; i < alen; i++) {
+        if (tolower((unsigned char)a[i]) != (unsigned char)b[i]) return 0;
+    }
+    return 1;
+}
+
+/* 1 si le composant [comp, comp+len) est un nom de peripherique Windows reserve :
+   CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM1-9, LPT1-9 (aussi avec un chiffre en
+   exposant 1, 2, 3 : octet Latin-1 0xB9, 0xB2, 0xB3, ou sa forme UTF-8 0xC2 puis cet
+   octet), avec ou sans extension ("NUL.txt" designe aussi le peripherique).
+   Liste unique, partagee avec pk_reader.c (pk_name_is_safe) : fopen recoit les
+   octets du nom tels quels (page de code ANSI), les deux formes sont couvertes. */
+static inline int path_guard_is_device_name(const char *comp, size_t len)
+{
+    static const char *const fixed[] = { "con", "prn", "aux", "nul", "conin$", "conout$" };
     size_t base = 0;
-    while (base < n && c[base] != '.') base++;
-    while (base > 0 && c[base - 1] == ' ') base--;
-    char up[5];
-    if (base == 3 || base == 4) {
-        for (size_t i = 0; i < base; i++) up[i] = (char)toupper((unsigned char)c[i]);
-        up[base] = '\0';
-        if (base == 3 && (!strcmp(up, "CON") || !strcmp(up, "PRN") ||
-                          !strcmp(up, "AUX") || !strcmp(up, "NUL")))
+    while (base < len && comp[base] != '.') base++;   /* le nom sans extension */
+    while (base > 0 && comp[base - 1] == ' ') base--;
+    for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
+        if (path_guard_ieq(comp, base, fixed[i])) return 1;
+    }
+    if (base < 4) return 0;
+    int c3 = tolower((unsigned char)comp[0]) == 'c' && tolower((unsigned char)comp[1]) == 'o' &&
+             tolower((unsigned char)comp[2]) == 'm';
+    int l3 = tolower((unsigned char)comp[0]) == 'l' && tolower((unsigned char)comp[1]) == 'p' &&
+             tolower((unsigned char)comp[2]) == 't';
+    if (c3 || l3) {
+        unsigned char d = (unsigned char)comp[3];
+        if (base == 4 && ((d >= '1' && d <= '9') || d == 0xB9 || d == 0xB2 || d == 0xB3))
             return 1;
-        if (base == 4 && (!strncmp(up, "COM", 3) || !strncmp(up, "LPT", 3)) &&
-            up[3] >= '1' && up[3] <= '9')
-            return 1;
+        if (base == 5 && d == 0xC2) {
+            unsigned char e = (unsigned char)comp[4];
+            if (e == 0xB9 || e == 0xB2 || e == 0xB3) return 1;
+        }
     }
     return 0;
 }
