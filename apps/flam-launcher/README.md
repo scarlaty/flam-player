@@ -653,14 +653,15 @@ réglage n'est ajouté.
   refusée à un dialogue de confirmation ou dont le dialogue est remplacé par celui d'une autre
   demande, l'envoi prévu est oublié et l'échec s'affiche comme d'habitude. « Réessayer » relance
   une installation simple, sans envoi.
-- **Même Flam qu'au clic** : l'envoi prévu retient la clé d'appareil du clic. Le libellé de
-  volume étant le même sur toutes les Flam, cette clé se réduit à la **lettre du lecteur**. Il
-  est abandonné pour de bon, même si une Flam revient sous la même lettre, dès que : la
-  scrutation voit une autre lettre **ou plus de Flam** ; ou le backend signale que la Flam a
-  changé pendant ou juste après un envoi (erreur `device_changed` ou champ `device_changed` du
-  rapport, #577), cas où la lettre peut être restée la même. L'histoire reste installée et une
-  ligne en échec de la file le dit (« … n'a pas été envoyée : la Flam a été débranchée ou a
-  changé pendant l'installation… ») ; l'envoi reste possible à la main.
+- **Même Flam qu'au clic** : l'envoi prévu retient la clé d'appareil du clic (`deviceKey.ts`) :
+  lettre du lecteur, libellé de volume (le même sur toutes les Flam) et **empreinte opaque de
+  l'appareil** rendue par `device_status` (voir « Empreinte de l'appareil » ci-dessous). Il est
+  abandonné pour de bon, même si la même Flam revient (même clé), dès que : la scrutation voit
+  une autre lettre, **une autre empreinte sous la même lettre**, ou plus de Flam ; ou le backend
+  signale que la Flam a changé avant, pendant ou juste après un envoi (erreur `device_changed`
+  ou champ `device_changed` du rapport, #577). L'histoire reste installée et une ligne en échec
+  de la file le dit (« … n'a pas été envoyée : la Flam a été débranchée ou a changé pendant
+  l'installation… ») ; l'envoi reste possible à la main.
 - **Scrutation suspendue : envoi à confirmer.** La Flam n'est pas scrutée fenêtre masquée
   (`document.hidden`, `visibilitychange`) ni pendant la lecture incrustée (`paused`). Si l'un de
   ces états a eu lieu entre le clic et la fin de l'installation, ou si la demande est faite à la
@@ -688,15 +689,70 @@ réglage n'est ajouté.
   « Annuler l'envoi » oublie aussi les envois prévus (les installations continuent).
 - **Rien n'est conservé** hors de la mémoire de la fenêtre : après une fermeture ou un
   rechargement, une installation reprise par le backend n'envoie rien.
-- **Limite restante** : le front ne peut pas reconnaître une autre Flam qui reprend la même
-  lettre de lecteur sans qu'une absence soit vue. Après les garde-fous ci-dessus, il reste
-  l'échange fait **entre deux relevés** (2 s sur « Ma Flam », 6 s ailleurs), fenêtre visible :
-  l'envoi prévu part alors sur la Flam branchée ; à partir de l'envoi, les garde-fous du backend
-  s'appliquent (`device_changed`). La fermer demande une empreinte opaque de l'appareil prise au
-  clic et vérifiée par `device_send_story` (suivi backend, hors de ce lot, consigné dans #609).
-  Le comportement de WebView2 pour une fenêtre réduite (`document.hidden` vrai ou non) n'a pas
-  été vérifié sur l'application réelle : si la fenêtre réduite n'est pas déclarée masquée, la
-  scrutation continue et une absence reste vue ; fiche M13, étape 10.
+- **Autre Flam reprenant la même lettre entre deux relevés** (2 s sur « Ma Flam », 6 s
+  ailleurs), fenêtre visible, sans absence vue : le front ne la voit pas à temps, mais l'envoi
+  prévu part avec l'**empreinte de la Flam du clic** ; le backend la compare à celle de la Flam
+  branchée et refuse (`device_changed`) avant toute écriture. La ligne passe en échec avec son
+  message (« la Flam branchée n'est plus celle affichée au moment de la demande… rien n'a été
+  écrit »), la file s'arrête, les autres envois prévus sont perdus.
+- **Limites restantes** : l'empreinte repose sur l'hypothèse que deux Flam différentes ont des
+  `.mdf` différents, **non confirmée sur deux appareils réels** ; si elle était fausse, deux Flam
+  de même `.mdf` ne seraient pas distinguées (comme avant l'empreinte, sans dégât de plus). Un
+  `.mdf` qui ne s'ouvre pas ou ne se lit pas à un relevé rend la Flam **non détectée**
+  (`detect.rs`, comme avant ce lot) : l'absence est vue, les envois prévus sont perdus et la
+  file s'arrête par la voie « Flam absente », sans rapport avec l'empreinte. L'empreinte n'est
+  absente d'une Flam détectée que si son `.mdf` dépasse 64 Kio (il n'est alors pas lu, et
+  l'écriture est refusée). Le comportement de WebView2 pour une fenêtre réduite (`document.hidden` vrai ou non) n'a pas été vérifié sur
+  l'application réelle : si la fenêtre réduite n'est pas déclarée masquée, la scrutation
+  continue et une absence reste vue ; fiche M13, étape 10.
+
+**Empreinte de l'appareil** (#609, `device/guard.rs`, `features/device/deviceKey.ts`) : pour
+qu'aucune écriture n'atteigne une autre Flam que celle affichée au moment du clic.
+
+- **Ce que c'est** : `device_status` rend, dans le résumé de la Flam, `fingerprint` : SHA-256
+  d'un préfixe, d'un **sel tiré au hasard à chaque lancement** du launcher et du SHA-256 de
+  `.mdf`, en hexadécimal. Elle ne révèle ni le numéro de série ni les clés, change à chaque
+  lancement (rien à rapprocher d'une session ou d'un PC à l'autre), n'est ni affichée, ni
+  journalisée, ni écrite sur disque, ni reprise dans un message d'erreur ou dans le diagnostic
+  copiable. `null` si `.mdf` n'a pas été lu (plus de 64 Kio ; aucune écriture n'est alors
+  possible). Le SHA-256 **nu** de `.mdf` n'est transmis à l'interface par aucune réponse (il
+  permettrait de reconnaître une Flam malgré le sel) : `mdf_sha256` de la détection n'est plus
+  sérialisé et la commande `device_detect`, sans appelant, est retirée. Il en reste une trace,
+  antérieure et conservée : le nom de la sauvegarde personnelle de `.mdf`
+  (`<volume>-<16 chiffres du SHA-256>.mdf`, dossier de données du launcher), sur le disque de
+  l'utilisateur seulement.
+- **Côté interface** : l'empreinte entre dans la clé d'appareil (`deviceKeyOf`). Une autre Flam
+  sous la même lettre est donc une autre clé : reprise au branchement refaite, liste relue,
+  dialogue des clés carrier fermé, choix carrier de session oublié, « Retirer du PC » retiré,
+  envois prévus perdus, file en attente annulée, confirmation de retrait et édition de l'ordre
+  refusées. L'empreinte transmise à une commande est celle de la clé **relevée au clic** : clic
+  « Envoyer » ou « Remplacer » (avant l'avertissement « expérimentale » et le choix des clés
+  carrier, qui peuvent rester ouverts), clic « Installer et envoyer » pour un envoi prévu,
+  ouverture de la confirmation pour un retrait, ouverture de l'édition pour l'ordre. Dans une
+  file de plusieurs histoires, chaque ligne garde l'empreinte de son clic.
+- **Côté backend** : `device_send_story`, `device_recover_transfers`, `device_remove_story` et
+  `device_reorder_stories` acceptent `expected` (facultatif), la Flam affichée au moment de la
+  demande : `{ fingerprint }`. Trois états (`ExpectedDevice`) : `expected` absent, aucune
+  comparaison (appels d'avant l'empreinte ; l'interface ne s'en sert que pour la reprise qui
+  suit un changement de Flam) ; empreinte fournie, la garde commune (`check_write`) la compare à
+  celle du `.mdf` qu'elle vient de lire, celui que retient le permis d'écriture ; `fingerprint`
+  `null` (Flam affichée sans empreinte, ou aucune Flam affichée), toujours refusé : une autre
+  Flam, lisible, qui reprendrait la lettre ne reçoit donc jamais l'écriture. Refus
+  `device_changed` **avant toute écriture** (ni nettoyage du dossier de travail, ni préparation,
+  ni reprise, ni corbeille).
+- **Commandes sans empreinte** : `device_eject` (n'écrit aucun fichier, doit rester possible
+  quand `.mdf` est illisible) ; `library_remove_sent` (n'écrit rien sur la Flam et compare déjà
+  le `.mdf` branché à celui de l'envoi) ; `device_carrier_forget` et `device_carrier_accept`
+  (écrivent sur le PC seulement) ; la reprise relancée après un envoi interrompu par un
+  changement de Flam (elle vaut pour la Flam branchée, quelle qu'elle soit) ; les lectures.
+- **Cas particuliers** : même Flam débranchée puis rebranchée : même empreinte, mais une absence
+  vue perd toujours les envois prévus (garde-fou inchangé) ; un envoi demandé à la main la vise
+  normalement. Redémarrage du launcher : nouveau sel, aucune empreinte n'est gardée d'une
+  session à l'autre (les envois prévus ne le sont pas non plus). Une seule fenêtre et un seul
+  processus (instance unique) : sel et verrou d'appareil communs. Flam 1.x en mode carrier : même
+  empreinte, tirée de `.mdf` ; elle est vérifiée avant que les clés carrier soient consultées.
+- **Hypothèse** : deux Flam différentes ont des `.mdf` différents (numéro de série, clés). Elle
+  n'est pas confirmée sur deux appareils réels (fiche M13, étape 13).
 
 **Ordre des histoires** (#233, `device::reorder`, `DeviceStoryOrder.tsx`) : « Modifier l'ordre »
 (proposé quand `list` est valide, `list.hidden` valide ou absent, la liste non tronquée et au

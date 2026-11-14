@@ -307,18 +307,41 @@ Mes histoires après l'envoi sur la Flam » désactivé au départ.
 12. _Facultatif, avec deux Flam_ (session D) : cliquer l'action, débrancher la Flam A et brancher
     la Flam B pendant l'installation, en laissant passer au moins 10 secondes entre les deux :
     rien n'est envoyé sur B. Refaire en échangeant les deux Flam le plus vite possible, fenêtre
-    visible, et noter le résultat : c'est la limite restante (une autre Flam reprend la même
-    lettre de lecteur entre deux relevés, sans absence vue ; toutes les Flam ont le même libellé
-    de volume). Refaire l'échange **pendant l'envoi** d'une première histoire alors qu'une
+    visible (une autre Flam reprend la même lettre de lecteur entre deux relevés, sans absence
+    vue ; toutes les Flam ont le même libellé de volume). Attendu depuis l'empreinte de
+    l'appareil : **rien n'est écrit sur B** ; soit l'envoi prévu passe à « Ne sera pas envoyée »
+    (le launcher a vu une autre empreinte), soit la ligne passe en échec avec « la Flam branchée
+    n'est plus celle affichée au moment de la demande… rien n'a été écrit ». Vérifier sur B que
+    `str/`, `etc/library/list` et `.flam-transfer/` sont inchangés. **Si l'histoire arrive sur
+    B**, c'est que les deux Flam ont le même `.mdf` : l'hypothèse de l'empreinte est fausse, à
+    rapporter. Refaire l'échange **pendant l'envoi** d'une première histoire alors qu'une
     seconde s'installe encore : l'envoi en cours est refusé (« Flam débranchée ou remplacée »)
     et la seconde passe à « Ne sera pas envoyée ».
+13. _Avec deux Flam_ (session D), **hypothèse de l'empreinte** : copier le `.mdf` de chacune des
+    deux Flam dans deux dossiers du PC (lecture seule sur les Flam) et comparer les deux fichiers
+    (taille, et `fc /b` ou un condensé). Attendu : ils diffèrent (numéro de série, clés). Noter
+    seulement « différents » ou « identiques », jamais leur contenu. Puis, Flam A affichée dans
+    « Ma Flam », ouvrir la confirmation « Retirer » d'une histoire présente sur les deux Flam,
+    échanger A et B le plus vite possible, confirmer : rien n'est retiré de B (message « la Flam
+    branchée n'est plus celle affichée… »), et « Ma Flam » se met à jour.
+14. **Même Flam rebranchée, relevés, redémarrage** : Flam affichée, cliquer « Envoyer sur la Flam »
+    sur une histoire installée, la débrancher et la rebrancher aussitôt pendant que
+    l'avertissement « expérimentale » est encore ouvert (réinitialiser l'avertissement si
+    besoin, sinon noter « non fait »), puis confirmer : l'envoi se fait sur cette même Flam.
+    Noter aussi, pendant une file de plusieurs envois, si des lignes passent à « Annulée » ou à
+    « Flam non détectée » sans que la Flam ait été touchée : un relevé où `.mdf` ne s'ouvre pas
+    rend la Flam non détectée (comportement antérieur à l'empreinte, qui n'y change rien) ; c'est
+    un défaut à rapporter. Fermer puis rouvrir le launcher, Flam restée branchée : elle est reconnue et un
+    envoi se fait normalement (aucune empreinte n'est gardée d'un lancement à l'autre).
 
 **Résultat attendu.** Étapes 1 à 11 conformes ; aucun envoi sans Flam inchangée et surveillée
-depuis le clic ; aucun fichier laissé dans `.flam-transfer/` après les étapes 4 à 6.
+depuis le clic ; aucun fichier laissé dans `.flam-transfer/` après les étapes 4 à 6 ; avec deux
+Flam, rien n'est jamais écrit sur celle qui n'était pas affichée au moment du clic.
 
 **Consigner dans #609.** Firmware de la Flam, résultat de chaque étape, ordre observé à
-l'étape 3, comportement de la fenêtre réduite à l'étape 10, résultat de l'étape 12 si elle est
-faite. **Durée** : 1 heure.
+l'étape 3, comportement de la fenêtre réduite à l'étape 10, résultat des étapes 12 à 14 si elles
+sont faites (dont « `.mdf` différents » ou « identiques » à l'étape 13). **Durée** : 1 heure
+(1 h 30 avec deux Flam).
 
 ---
 

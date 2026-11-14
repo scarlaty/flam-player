@@ -218,7 +218,6 @@ pub fn run() {
             device::carrier::device_carrier_accept,
             device::carrier::device_carrier_forget,
             device::transfer::device_carrier_preview,
-            device::detect::device_detect,
             device::diagnostic::device_diagnostic,
             device::remove::device_remove_story,
             device::reorder::device_reorder_stories,

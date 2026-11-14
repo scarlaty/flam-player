@@ -789,6 +789,61 @@ fn la_garde_du_firmware_refuse_sans_rien_toucher() {
     }
 }
 
+/// #609 : la Flam branchée n'est pas celle affichée à la demande du retrait (elle peut porter une
+/// histoire de même UUID) : refus `device_changed`, rien n'est touché (ni index, ni dossier, ni
+/// corbeille, ni reprise). Avec l'empreinte de la Flam branchée, le retrait se fait.
+#[test]
+fn une_autre_flam_que_celle_affichee_n_est_pas_touchee() {
+    use crate::device::guard::device_fingerprint;
+    use crate::device::guard::tests::{mdf_v2_known, snapshot};
+    use crate::device::guard::WriteRefused;
+    let seen = device_fingerprint(&mdf_v1_real()).as_str().to_string();
+    let device = Device::new();
+    fs::write(device.root().join(MDF_FILE), mdf_v2_known()).unwrap();
+    fs::write(device.root().join(LIBRARY_DIR).join("list.new"), b"x").unwrap();
+    // Reste d'un retrait interrompu, nommé comme le retrait les nomme : la purge de la
+    // corbeille, première écriture d'un retrait accepté, le supprimerait.
+    let leftover = format!("{A}-{}", "0".repeat(32));
+    assert!(is_trash_name(&leftover));
+    let leftover = device.root().join(TRASH_DIR).join(leftover);
+    fs::create_dir_all(&leftover).unwrap();
+    fs::write(leftover.join("ni"), b"ni").unwrap();
+    let before = snapshot(device.root());
+    let lock = DeviceLock::new();
+    // Flam affichée avec une autre empreinte, ou affichée sans empreinte : même refus.
+    for expected in [
+        ExpectedDevice::Fingerprint(seen),
+        ExpectedDevice::Unidentified,
+    ] {
+        let ctx = test_ctx().expecting(expected);
+        let err = remove_story(device.root(), &lock, B, true, &ctx).unwrap_err();
+        assert!(
+            matches!(err, RemoveError::Refused(WriteRefused::DeviceChanged)),
+            "{err}"
+        );
+        let refused: AppResult<()> = Err(err.into());
+        assert_eq!(refused.as_ref().unwrap_err().kind(), "device_changed");
+        // Rien n'a été touché : « Retirer du PC » d'un envoi fait sur la Flam d'origine reste.
+        assert!(!forgets_sent(&refused));
+        assert_eq!(snapshot(device.root()), before);
+        assert!(leftover.is_dir(), "corbeille non purgée");
+        assert_eq!(lock.current(), None);
+    }
+    // Tout autre refus, et le succès, font oublier l'envoi enregistré.
+    assert!(forgets_sent::<()>(&Err(RemoveError::NotConfirmed.into())));
+    assert!(forgets_sent(&Ok(())));
+
+    fs::remove_file(device.root().join(LIBRARY_DIR).join("list.new")).unwrap();
+    let own = device_fingerprint(&mdf_v2_known()).as_str().to_string();
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(own));
+    remove_story(device.root(), &lock, B, true, &ctx).unwrap();
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+    assert!(
+        !leftover.exists(),
+        "corbeille purgée par le retrait accepté"
+    );
+}
+
 /// 2.x : retrait autorisé sans confirmation (#326, comme Lunii.QT).
 #[test]
 fn retrait_2x_sans_confirmation() {

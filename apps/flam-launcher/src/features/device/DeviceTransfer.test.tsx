@@ -1,5 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
-import { firmwareV1, firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -57,6 +57,7 @@ function detected(): DeviceStatus {
       backup_failed: false,
       firmware: "2.4.2",
       firmware_status: firmwareV2(),
+      fingerprint: TEST_FINGERPRINT,
     },
   };
 }
@@ -327,6 +328,7 @@ it("remplace une histoire déjà sur la Flam, sur demande explicite", async () =
     root: "E:\\",
     uuid: C,
     replace: C,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   await resolveSend(C, { id: C, replaced: true });
   // Un envoi ordinaire ne demande jamais le remplacement.
@@ -335,6 +337,7 @@ it("remplace une histoire déjà sur la Flam, sur demande explicite", async () =
   expect(calls.filter((c) => c.cmd === "device_send_story")[1]?.args).toEqual({
     root: "E:\\",
     uuid: A,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   await resolveSend(A);
 });
@@ -512,6 +515,7 @@ it(
     expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
       root: "E:\\",
       uuid: A,
+      expected: { fingerprint: TEST_FINGERPRINT },
     });
     expect(within(panel).getByText("Histoire 1 sur 2")).toBeInTheDocument();
     expect(within(panel).getByText("En attente")).toBeInTheDocument();
@@ -948,6 +952,7 @@ it("retire une histoire de la Flam après confirmation", async () => {
     root: "E:\\",
     id: C,
     confirmed: true,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   expect(await screen.findByText("« Déjà là » retirée de la Flam.")).toBeInTheDocument();
   await screen.findByRole("heading", { name: "Histoires sur la Flam (0)" });
@@ -1181,6 +1186,7 @@ it("reprend les transferts une seule fois par branchement, avant de lire la Flam
   expect(count("device_recover_transfers")).toBe(1);
   expect(calls.find((c) => c.cmd === "device_recover_transfers")?.args).toEqual({
     root: "E:\\",
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   expect(names().indexOf("device_recover_transfers")).toBeLessThan(
     names().indexOf("device_list_stories"),
@@ -1271,6 +1277,7 @@ it("Flam 1.x : aucun envoi sans consentement ni choix des clés", async () => {
     uuid: A,
     carrier: { kind: "device", uuid: OFFICIAL },
     remember: true,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   await resolveSend(A, { id: A, carrier_readback: true, carrier_stored: true });
 
@@ -1282,6 +1289,7 @@ it("Flam 1.x : aucun envoi sans consentement ni choix des clés", async () => {
     uuid: B,
     carrier: { kind: "stored" },
     remember: false,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
@@ -1412,6 +1420,7 @@ it("Flam 1.x sans bt : clé saisie, aucun envoi tant qu'elle est invalide", asyn
     uuid: A,
     carrier: { kind: "entered", bt: bt.toLowerCase(), confirmed: true },
     remember: false,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   await resolveSend(A, { id: A, carrier_readback: true });
   // Clé saisie non conservée : redemandée à l'envoi suivant.
@@ -1608,6 +1617,7 @@ it("Flam 2.x : ni dialogue carrier ni bouton « Oublier les clés »", async () 
   expect(calls.find((c) => c.cmd === "device_send_story")?.args).toEqual({
     root: "E:\\",
     uuid: A,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   expect(count("device_carrier_state")).toBe(0);
 });
@@ -1723,6 +1733,7 @@ it("remplace une histoire de source dossier par l'UUID de la Flam (#309)", async
     root: "E:\\",
     uuid: B,
     replace: onFlam,
+    expected: { fingerprint: TEST_FINGERPRINT },
   });
   await resolveSend(B, { id: onFlam, replaced: true });
 });

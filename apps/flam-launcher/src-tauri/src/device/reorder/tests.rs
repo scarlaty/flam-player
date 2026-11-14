@@ -649,6 +649,46 @@ fn la_garde_du_firmware_refuse_sans_rien_ecrire() {
     }
 }
 
+/// #609 : la Flam branchée n'est pas celle dont l'ordre était affiché : refus `device_changed`,
+/// rien n'est écrit (ni index, ni reprise). Avec l'empreinte de la Flam branchée, l'ordre est
+/// écrit.
+#[test]
+fn une_autre_flam_que_celle_affichee_n_est_pas_reordonnee() {
+    use crate::device::guard::device_fingerprint;
+    use crate::device::guard::tests::{mdf_v2_known, snapshot};
+    let seen = device_fingerprint(&mdf_v1_real()).as_str().to_string();
+    let dev = Device::new();
+    fs::write(dev.root().join(MDF_FILE), mdf_v2_known()).unwrap();
+    dev.put("list.new", b"x");
+    let before = snapshot(dev.root());
+    let send = |expected: ExpectedDevice| {
+        reorder_stories(
+            dev.root(),
+            &DeviceLock::new(),
+            &order(&[B, A, C, D]),
+            &test_ctx().expecting(expected),
+        )
+    };
+    // Flam affichée avec une autre empreinte, ou affichée sans empreinte : même refus.
+    for expected in [
+        ExpectedDevice::Fingerprint(seen),
+        ExpectedDevice::Unidentified,
+    ] {
+        let err = send(expected).unwrap_err();
+        assert!(
+            matches!(err, ReorderError::Refused(WriteRefused::DeviceChanged)),
+            "{err}"
+        );
+        assert_eq!(crate::AppError::from(err).kind(), "device_changed");
+        assert_eq!(snapshot(dev.root()), before);
+    }
+
+    fs::remove_file(dev.path("list.new")).unwrap();
+    let own = device_fingerprint(&mdf_v2_known()).as_str().to_string();
+    send(ExpectedDevice::Fingerprint(own)).unwrap();
+    assert_eq!(dev.get("list").unwrap(), lines(&[B, A, C, D]));
+}
+
 /// #326 : sur une Flam 2.x, le réordonnancement n'attend aucune confirmation (comme Lunii.QT).
 #[test]
 fn reordonnancement_2x_sans_confirmation() {

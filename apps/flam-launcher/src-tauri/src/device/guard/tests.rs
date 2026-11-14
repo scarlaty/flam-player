@@ -685,3 +685,162 @@ fn chaque_ecriture_other_change_la_generation() {
     check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
     assert_eq!(ctx.session.with(key, |e| e.generation), before + 1);
 }
+
+/// `.mdf` d'une autre Flam (inventée) : même firmware, autre numéro de série.
+fn mdf_other_device() -> Vec<u8> {
+    let mut mdf = mdf_v2_known();
+    mdf[crate::device::crypto::MDF_SERIAL_OFFSET + 3] ^= 0x01;
+    mdf
+}
+
+/// #609 : l'empreinte de l'appareil est la même pour un même `.mdf` pendant tout le processus,
+/// change avec un seul octet de `.mdf`, dépend du sel, et ne laisse rien reconnaître du `.mdf`
+/// (ni ses champs, ni ses condensés sans sel) ; `Debug` ne l'affiche pas.
+#[test]
+fn l_empreinte_de_l_appareil_est_stable_distincte_et_opaque() {
+    let mdf = mdf_v2_known();
+    let print = device_fingerprint(&mdf);
+    assert_eq!(print, device_fingerprint(&mdf), "stable dans le processus");
+    assert_eq!(print, device_fingerprint(&mdf.clone()));
+    assert_ne!(print, device_fingerprint(&mdf_other_device()));
+    assert_ne!(print, device_fingerprint(&mdf_v1_real()));
+    assert_ne!(print, device_fingerprint(&[]));
+    let text = print.as_str();
+    assert_eq!(text.len(), 64);
+    assert!(text.bytes().all(|b| b.is_ascii_hexdigit()), "{text}");
+
+    // Rien de reconnaissable : aucune suite de 4 octets de `.mdf` (numéro de série, clé, IV,
+    // version…) en hexadécimal, ni le texte du numéro de série, ni un condensé sans sel.
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    for window in mdf.windows(4).filter(|w| w.iter().any(|&b| b != 0)) {
+        assert!(!text.contains(&hex(window)), "octets de .mdf dans {text}");
+    }
+    let serial = String::from_utf8(TEST_SERIAL_HEX.to_vec()).unwrap();
+    let digest: [u8; 32] = Sha256::digest(&mdf).into();
+    let mut unsalted = Sha256::new();
+    unsalted.update(b"flam-launcher/empreinte-appareil/v1/");
+    unsalted.update(digest);
+    for known in [
+        serial,
+        hex(&digest),
+        fingerprint(&mdf),
+        hex(&unsalted.finalize()),
+        hex(&key_v2()),
+    ] {
+        assert_ne!(text, known);
+        assert!(!text.contains(known.get(..16).unwrap_or(&known)), "{text}");
+    }
+
+    // Le sel compte : un autre sel (autre lancement) donne une autre empreinte pour le même
+    // `.mdf` ; celui du processus n'est pas une constante triviale.
+    assert_eq!(print, fingerprint_with(&FINGERPRINT_SALT, &digest));
+    assert_ne!(print, fingerprint_with(&[0u8; 32], &digest));
+    assert_ne!(
+        fingerprint_with(&[1u8; 32], &digest),
+        fingerprint_with(&[2u8; 32], &digest)
+    );
+    assert_ne!(*FINGERPRINT_SALT, [0u8; 32]);
+    assert_ne!(FINGERPRINT_SALT[..16], FINGERPRINT_SALT[16..]);
+
+    // Jamais dans une trace : `Debug` ne montre pas la valeur ; la réponse sérialisée, si.
+    assert!(!format!("{print:?}").contains(text));
+    assert_eq!(
+        serde_json::to_string(&print).unwrap(),
+        format!("\"{text}\"")
+    );
+}
+
+/// #609 : trois états de l'appareil attendu. Une Flam affichée **sans empreinte** (clé relevée
+/// alors que `.mdf` n'avait pas été lu) n'est jamais reconnue : refus `device_changed` sur toute
+/// Flam lisible, même la seule branchée, sans rien écrire. Un paramètre `expected` absent ne
+/// compare rien (appels d'avant l'empreinte) ; présent sans champ `fingerprint`, il refuse.
+#[test]
+fn une_flam_affichee_sans_empreinte_n_est_jamais_reconnue() {
+    let seen = |json: &str| ExpectedDevice::from_ipc(Some(serde_json::from_str(json).unwrap()));
+    assert!(ExpectedDevice::from_ipc(None) == ExpectedDevice::Unchecked);
+    assert!(ExpectedDevice::default() == ExpectedDevice::Unchecked);
+    assert!(seen(r#"{"fingerprint":null}"#) == ExpectedDevice::Unidentified);
+    assert!(seen("{}") == ExpectedDevice::Unidentified);
+    assert!(seen(r#"{"fingerprint":"abc"}"#) == ExpectedDevice::Fingerprint("abc".into()));
+
+    for mdf in [mdf_v2_known(), mdf_v1_real(), mdf_other_device()] {
+        let dev = device(&mdf);
+        for kind in [WriteKind::Send, WriteKind::Other] {
+            let ctx = test_ctx().expecting(ExpectedDevice::Unidentified);
+            assert_eq!(refused(dev.path(), &ctx, kind), WriteRefused::DeviceChanged);
+            // Même demande sans indication : permis, comme avant l'empreinte.
+            let ctx = test_ctx().expecting(ExpectedDevice::Unchecked);
+            check_write(dev.path(), &ctx, kind).unwrap();
+        }
+    }
+    // La Flam elle-même illisible reste refusée pour sa propre raison (`.mdf` absent ici).
+    let empty = tempfile::tempdir().unwrap();
+    let ctx = test_ctx().expecting(ExpectedDevice::Unidentified);
+    assert_eq!(
+        refused(empty.path(), &ctx, WriteKind::Send),
+        WriteRefused::DeviceNotFound
+    );
+}
+
+/// #609 : une empreinte attendue qui n'est pas celle de la Flam branchée fait refuser la garde
+/// (`device_changed`), avant tout autre contrôle, sans rien écrire ni toucher à la mémoire de
+/// session ; le message ne cite aucune empreinte. Empreinte juste, ou absente : comme avant.
+#[test]
+fn une_empreinte_attendue_differente_est_refusee_avant_tout() {
+    let seen = device_fingerprint(&mdf_v2_known());
+    // Autre Flam sous la même lettre : même firmware, autre numéro de série.
+    let dev = device(&mdf_other_device());
+    let session_key_now = session_key(dev.path(), &mdf_other_device());
+    for kind in [WriteKind::Send, WriteKind::Other] {
+        let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(seen.as_str().to_string()));
+        let generation = ctx.session.with(session_key_now.clone(), |e| e.generation);
+        let err = refused(dev.path(), &ctx, kind);
+        assert_eq!(err, WriteRefused::DeviceChanged);
+        assert!(err.to_string().contains("rien n'a été écrit"), "{err}");
+        assert!(!err.to_string().contains(seen.as_str()), "{err}");
+        assert_eq!(
+            serde_json::to_string(&err).unwrap(),
+            r#"{"kind":"device_changed"}"#
+        );
+        assert_eq!(
+            ctx.session.with(session_key_now.clone(), |e| e.generation),
+            generation,
+            "mémoire de session intacte"
+        );
+    }
+    // Ce refus passe avant ceux du firmware : l'autre Flam n'est pas même évaluée.
+    let unsupported = device(&mdf_with(KNOWN_HEADER, "main: 3.0.0-x"));
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(seen.as_str().to_string()));
+    assert_eq!(
+        refused(unsupported.path(), &ctx, WriteKind::Send),
+        WriteRefused::DeviceChanged
+    );
+    // Une valeur qui n'est pas une empreinte ne passe pas non plus.
+    for bogus in ["", "0", "null", "E:\\"] {
+        let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(bogus.to_string()));
+        assert_eq!(
+            refused(dev.path(), &ctx, WriteKind::Other),
+            WriteRefused::DeviceChanged
+        );
+    }
+
+    // Empreinte de la Flam branchée : permis, et son empreinte est celle transmise.
+    let own = device_fingerprint(&mdf_other_device());
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(own.as_str().to_string()));
+    let permit = check_write(dev.path(), &ctx, WriteKind::Send).unwrap();
+    assert_eq!(permit.fingerprint(), own);
+    assert!(permit.same_mdf(&mdf_other_device()));
+    assert_eq!(permit.family(), FirmwareFamily::V2);
+    // Sans empreinte attendue : aucune comparaison.
+    let permit = check_write(dev.path(), &test_ctx(), WriteKind::Send).unwrap();
+    assert_eq!(permit.fingerprint(), own);
+    let ctx = test_ctx().expecting(ExpectedDevice::Unchecked);
+    check_write(dev.path(), &ctx, WriteKind::Other).unwrap();
+    // Un firmware refusé reste refusé avec la bonne empreinte.
+    let print = device_fingerprint(&mdf_with(KNOWN_HEADER, "main: 3.0.0-x"));
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(print.as_str().to_string()));
+    assert!(matches!(
+        refused(unsupported.path(), &ctx, WriteKind::Send),
+        WriteRefused::UnsupportedFirmware { .. }
+    ));
+}

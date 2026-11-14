@@ -2764,3 +2764,95 @@ fn les_restes_d_un_arret_brutal_sont_nettoyes_au_prochain_envoi_si_le_dossier_es
         assert_eq!(crate::cache::is_owned(&work), owned);
     }
 }
+
+/// #609 : l'interface transmet l'empreinte de la Flam affichée au moment du clic. Une autre
+/// Flam sous la même lettre : refus `device_changed` avant toute écriture. Rien n'est créé,
+/// modifié ni supprimé sur la Flam branchée (ni la reprise d'un transfert interrompu, ni celle
+/// d'un index), ni dans le dossier de travail (restes anciens d'un arrêt brutal, qu'un envoi
+/// accepté supprimerait). Avec l'empreinte de la Flam branchée, l'envoi se fait comme avant.
+#[test]
+fn une_autre_flam_que_celle_du_clic_est_refusee_avant_toute_ecriture() {
+    use crate::device::guard::device_fingerprint;
+    let tmp = tempfile::tempdir().unwrap();
+    // Flam du clic (A), puis une autre (B) sous la même racine : autre numéro de série.
+    let mdf_a = mdf("2.4.2");
+    let mut mdf_b = mdf_a.clone();
+    mdf_b[MDF_SERIAL_OFFSET + 5] ^= 0x01;
+    let clicked = device_fingerprint(&mdf_a).as_str().to_string();
+    let root = device(tmp.path(), false);
+    write(&root.join(MDF_FILE), &mdf_b);
+    // Restes sur B : transfert interrompu, écriture d'index interrompue.
+    write(
+        &root.join(TRANSFER_DIR).join(format!("{NEW}.in")).join("x"),
+        b"x",
+    );
+    write(
+        &root
+            .join(TRANSFER_DIR)
+            .join(format!("{OTHER}.old"))
+            .join("y"),
+        b"y",
+    );
+    write(&root.join("etc/library/list.new"), b"x");
+    let pk = plain_pk(tmp.path());
+    let cache = tmp.path().join("cache");
+    let work = crate::cache::ensure_subdir(&cache, WORK_SUBDIR).unwrap();
+    let staging = work.join(".partiel-abandonne");
+    write(&staging.join("info"), b"x");
+    let aged = crate::device::prepare::LEFTOVER_MIN_AGE + std::time::Duration::from_secs(60);
+    crate::device::prepare::backdate(&staging, aged);
+
+    let send = |expected: ExpectedDevice, replace: Option<&str>| {
+        send_from_library_with(
+            &FaultyFs::new(),
+            &root,
+            &pk,
+            &work,
+            replace,
+            None,
+            &test_ctx().expecting(expected),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+    };
+    let (device_before, work_before) = (snapshot(&root), snapshot(&work));
+    // Flam du clic affichée avec son empreinte, ou affichée sans empreinte : même refus.
+    for (expected, replace) in [
+        (ExpectedDevice::Fingerprint(clicked.clone()), None),
+        (ExpectedDevice::Fingerprint(clicked.clone()), Some(NEW)),
+        (ExpectedDevice::Unidentified, None),
+    ] {
+        let err = send(expected, replace).unwrap_err();
+        assert!(
+            matches!(err, TransferError::Refused(WriteRefused::DeviceChanged)),
+            "{err:?}"
+        );
+        let message = crate::AppError::from(err);
+        assert_eq!(message.kind(), "device_changed");
+        assert!(message.to_string().contains("rien n'a été écrit"));
+        assert!(!message.to_string().contains(&clicked), "{message}");
+        assert_eq!(snapshot(&root), device_before, "Flam branchée intacte");
+        assert_eq!(snapshot(&work), work_before, "dossier de travail intact");
+    }
+    // La reprise au branchement reçoit la même empreinte : rien n'est repris sur B.
+    let lock = crate::device::lock::DeviceLock::new();
+    let guard = lock.try_begin(Operation::Transfer).unwrap();
+    let ctx = test_ctx().expecting(ExpectedDevice::Fingerprint(clicked.clone()));
+    let err = recover_device(&guard, &root, &ctx).unwrap_err();
+    assert_eq!(crate::AppError::from(err).kind(), "device_changed");
+    let ctx = test_ctx().expecting(ExpectedDevice::Unidentified);
+    let err = recover_device(&guard, &root, &ctx).unwrap_err();
+    assert_eq!(crate::AppError::from(err).kind(), "device_changed");
+    assert_eq!(snapshot(&root), device_before);
+    drop(guard);
+
+    // Empreinte de la Flam branchée : l'envoi se fait (reprise et nettoyage compris).
+    let own = device_fingerprint(&mdf_b).as_str().to_string();
+    std::fs::remove_file(root.join("etc/library/list.new")).unwrap();
+    let report = send(ExpectedDevice::Fingerprint(own), None).unwrap();
+    assert_eq!(report.id, NEW);
+    assert!(!report.device_changed);
+    assert_eq!(listed(&root), vec![id(OTHER), id(NEW)]);
+    assert!(!root.join(TRANSFER_DIR).exists(), "reprise faite");
+    assert!(!staging.exists(), "restes du dossier de travail supprimés");
+}

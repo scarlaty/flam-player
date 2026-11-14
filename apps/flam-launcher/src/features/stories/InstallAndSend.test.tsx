@@ -21,7 +21,7 @@ import type { StoryEntry } from "../../api/story";
 import { ToastProvider } from "../../components";
 import { PAGE_LEVEL_RULES, expectNoAxeViolations } from "../../test/axe";
 import { makeEntry } from "../../test/entries";
-import { firmwareV1, firmwareV2 } from "../../test/firmware";
+import { firmwareV1, firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { slowIt, tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { CompatProvider } from "../compat/CompatProvider";
 import { DeviceProvider } from "../device/DeviceProvider";
@@ -109,6 +109,7 @@ function detected(over: Partial<NonNullable<DeviceStatus["device"]>> = {}): Devi
       backup_failed: false,
       firmware: "2.4.2",
       firmware_status: firmwareV2(),
+      fingerprint: TEST_FINGERPRINT,
       ...over,
     },
   };
@@ -481,7 +482,11 @@ slowIt("installe, puis envoie sur la Flam du clic, une seule fois", async () => 
 
   await installDone(ours);
   await waitFor(() => expect(sent()).toEqual(["ours"]));
-  expect(callsOf("device_send_story")[0]?.args).toEqual({ root: "E:\\", uuid: "ours" });
+  expect(callsOf("device_send_story")[0]?.args).toEqual({
+    root: "E:\\",
+    uuid: "ours",
+    expected: { fingerprint: TEST_FINGERPRINT },
+  });
   await waitFor(() =>
     expect(within(queueRow("Les trois ours")).getByText("Envoyée")).toBeVisible(),
   );
@@ -1336,4 +1341,95 @@ it("envoi à confirmer envoyé : la ligne disparaît, le focus passe au titre du
   await act(async () => {
     release();
   });
+});
+
+// Empreinte de l'appareil (#609) : deux Flam différentes en `E:\`, sous le même nom « FLAM ».
+const FLAM_1 = "a1".repeat(32);
+const FLAM_2 = "b2".repeat(32);
+const OTHER_DEVICE =
+  "la Flam branchée n'est plus celle affichée au moment de la demande (fichier .mdf différent) : rien n'a été écrit ; vérifiez la Flam branchée, puis recommencez";
+
+it("autre Flam vue sous la même lettre et le même nom pendant l'installation : l'envoi prévu est perdu, rien n'est envoyé", async () => {
+  status = detected({ fingerprint: FLAM_1 });
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(planned()).not.toBeNull());
+
+  // Aucune absence n'est vue : seule l'empreinte dit que ce n'est plus la Flam du clic.
+  status = detected({ fingerprint: FLAM_2 });
+  await waitFor(() =>
+    expect(
+      within(planned() as HTMLElement).getByText("Ne sera pas envoyée"),
+    ).toBeVisible(),
+  );
+  await installDone(ours);
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText(CHANGED)).toBeVisible(),
+  );
+  await settle();
+  expect(sent()).toEqual([]);
+});
+
+it("autre Flam sous la même lettre entre deux relevés : l'envoi prévu part avec l'empreinte du clic, le backend le refuse, rien n'est écrit", async () => {
+  status = detected({ fingerprint: FLAM_1 });
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  fireEvent.click(await sendButton("Capi"));
+  await waitFor(() => expect(callsOf("install_start")).toHaveLength(2));
+  await settle();
+
+  // La seconde Flam prend la lettre juste avant la fin de l'installation : la scrutation n'a
+  // encore rien vu (relevés retenus), l'interface affiche toujours la Flam du clic. Le backend,
+  // lui, compare l'empreinte reçue à celle de la Flam branchée et refuse.
+  let release: () => void = () => undefined;
+  statusGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  status = detected({ fingerprint: FLAM_2 });
+  sendOutcomes.set("ours", { error: { kind: "device_changed", message: OTHER_DEVICE } });
+  try {
+    await installDone(ours);
+    await waitFor(() => expect(sent()).toEqual(["ours"]));
+  } finally {
+    // Un relevé retenu est partagé entre les montages : il est toujours relâché.
+    statusGate = null;
+    release();
+  }
+  // L'empreinte transmise est celle du clic « Télécharger et envoyer ».
+  expect(callsOf("device_send_story")[0]?.args).toEqual({
+    root: "E:\\",
+    uuid: "ours",
+    expected: { fingerprint: FLAM_1 },
+  });
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText(OTHER_DEVICE)).toBeVisible(),
+  );
+  expect(within(queueRow("Les trois ours")).getByText("Échec")).toBeVisible();
+  // L'autre envoi prévu ne partira plus seul, même une fois son histoire installée.
+  await installDone(capi);
+  await waitFor(() => expect(within(queueRow("Capi")).getByText(CHANGED)).toBeVisible());
+  await settle();
+  expect(sent()).toEqual(["ours"]);
+});
+
+it("même Flam débranchée puis rebranchée (même empreinte) pendant l'installation : l'envoi prévu reste perdu", async () => {
+  status = detected({ fingerprint: FLAM_1 });
+  await renderApp();
+  fireEvent.click(await sendButton("Les trois ours"));
+  await waitFor(() => expect(planned()).not.toBeNull());
+  status = absent;
+  await waitFor(() =>
+    expect(
+      within(planned() as HTMLElement).getByText("Ne sera pas envoyée"),
+    ).toBeVisible(),
+  );
+  // La même Flam revient : même clé, empreinte comprise. L'absence vue suffit.
+  status = detected({ fingerprint: FLAM_1 });
+  await settle();
+  await installDone(ours);
+  await waitFor(() =>
+    expect(within(queueRow("Les trois ours")).getByText(CHANGED)).toBeVisible(),
+  );
+  await settle();
+  expect(sent()).toEqual([]);
 });

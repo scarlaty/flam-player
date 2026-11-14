@@ -33,6 +33,25 @@ export interface DeviceSummary {
   firmware: string | null;
   /** État du firmware et de la garde des écritures (#317). Aucune clé ni numéro de série. */
   firmware_status: FirmwareStatus;
+  /**
+   * Empreinte opaque de cette Flam pour ce lancement du launcher (#609) : à renvoyer avec chaque
+   * demande d'écriture ({@link ExpectedDevice}), refusée ({@link DEVICE_CHANGED}) si la Flam
+   * branchée n'est plus celle-ci. `null` : `.mdf` n'a pas été lu (plus de 64 Kio). Elle ne dit
+   * rien du numéro de série ni des clés, change à chaque lancement, et n'est ni affichée, ni
+   * journalisée, ni conservée.
+   */
+  fingerprint: string | null;
+}
+
+/**
+ * Flam affichée au moment d'une demande d'écriture (miroir de `SeenDevice` dans
+ * `device/guard.rs`, paramètre `expected` des commandes d'écriture, #609). `fingerprint` est
+ * celle de {@link DeviceSummary} ; `null` : la Flam était affichée sans empreinte, ou aucune Flam
+ * ne l'était, et le backend refuse alors l'écriture sur toute Flam ({@link DEVICE_CHANGED}).
+ * Paramètre `expected` absent : aucune comparaison.
+ */
+export interface ExpectedDevice {
+  fingerprint: string | null;
 }
 
 /** Famille du firmware (miroir de `Family` dans `device/guard.rs`). */
@@ -63,7 +82,10 @@ export type Coherence =
     }
   | { kind: "no_evidence"; counts: CoherenceCounts };
 
-/** Refus d'écrire de la garde (miroir de `WriteRefused`). */
+/**
+ * Refus d'écrire de la garde (miroir de `WriteRefused`, sans `device_changed` : ce refus-là
+ * n'est jamais dans l'état affiché, il arrive comme erreur {@link DEVICE_CHANGED} d'une écriture).
+ */
 export type WriteRefused =
   | { kind: "device_not_found" }
   | { kind: "invalid_root" }
@@ -440,7 +462,9 @@ export const LUNII_NEEDS_V2 = "lunii_needs_v2";
 /**
  * `kind` d'un envoi refusé parce que la Flam a été débranchée ou remplacée pendant l'envoi
  * (miroir de `AppError::DeviceChanged`, #577) : une autre Flam a pu prendre la même lettre de
- * lecteur. Le message dit ce qui a été écrit ; la file d'envoi s'arrête.
+ * lecteur. Le message dit ce qui a été écrit ; la file d'envoi s'arrête. C'est aussi le `kind` de
+ * toute écriture (envoi, reprise, retrait, ordre) refusée avant d'avoir rien écrit parce que la
+ * Flam branchée n'est pas celle de l'empreinte transmise (#609).
  */
 export const DEVICE_CHANGED = "device_changed";
 
@@ -451,18 +475,21 @@ export const DEVICE_CHANGED = "device_changed";
  * {@link LUNII_NEEDS_V2} pour une histoire STUdio sur une Flam 1.x). `replace` : UUID de
  * l'histoire de la Flam à remplacer (même à version égale), l'ancienne n'étant retirée qu'une
  * fois la nouvelle en place ; refusé (`validation`) s'il ne désigne pas l'histoire de
- * l'archive.
+ * l'archive. `expected` : Flam affichée au moment du clic (#609) ; si la Flam branchée n'est pas
+ * celle-là, refus {@link DEVICE_CHANGED} avant toute écriture.
  */
 export function sendStoryToDevice(
   root: string,
   uuid: string,
   carrier?: CarrierSend,
   replace?: string,
+  expected?: ExpectedDevice,
 ): Promise<TransferReport> {
   const args: Record<string, unknown> = carrier
     ? { root, uuid, carrier: carrier.choice, remember: carrier.remember }
     : { root, uuid };
   if (replace) args.replace = replace;
+  if (expected) args.expected = expected;
   return invokeCommand<TransferReport>("device_send_story", args);
 }
 
@@ -472,6 +499,8 @@ export function sendStoryToDevice(
  * relue sur cette Flam (même Flam, listée, fichiers de l'envoi présents). Refusé si une
  * opération sur la Flam est en cours, si l'histoire n'est plus sur la Flam, est lue, en cours
  * d'installation ou a changé depuis l'envoi, ou si aucun envoi réussi n'est connu (`not_found`).
+ * Sans empreinte (#609) : rien n'est écrit sur la Flam, et le backend compare déjà le `.mdf` de
+ * la Flam branchée à celui de l'envoi.
  */
 export function removeSentFromLibrary(root: string, uuid: string): Promise<void> {
   return invokeCommand<void>("library_remove_sent", { root, uuid });
@@ -506,33 +535,65 @@ export function cancelDeviceTransfer(): Promise<boolean> {
   return invokeCommand<boolean>("device_cancel_transfer");
 }
 
-/** `device_recover_transfers` : reprise des transferts et index interrompus. */
-export function recoverDeviceTransfers(root: string): Promise<TransferRecovery> {
-  return invokeCommand<TransferRecovery>("device_recover_transfers", { root });
+/**
+ * `device_recover_transfers` : reprise des transferts et index interrompus. `expected` : Flam
+ * dont le branchement vient d'être vu (#609) ; une autre Flam à sa place : refus
+ * {@link DEVICE_CHANGED}, rien n'est repris. `null` : aucune comparaison, reprise de la Flam
+ * branchée quelle qu'elle soit (après un envoi interrompu par un changement de Flam).
+ */
+export function recoverDeviceTransfers(
+  root: string,
+  expected: ExpectedDevice | null,
+): Promise<TransferRecovery> {
+  return invokeCommand<TransferRecovery>(
+    "device_recover_transfers",
+    expected ? { root, expected } : { root },
+  );
 }
 
-/** `device_remove_story` : retire l'histoire `id` de la Flam ; `confirmed` doit être vrai. */
+/**
+ * `device_remove_story` : retire l'histoire `id` de la Flam ; `confirmed` doit être vrai.
+ * `expected` : Flam affichée à la demande du retrait (#609) ; une autre Flam à sa place : refus
+ * {@link DEVICE_CHANGED}, rien n'est touché.
+ */
 export function removeDeviceStory(
   root: string,
   id: string,
   confirmed: boolean,
+  expected: ExpectedDevice,
 ): Promise<RemoveReport> {
-  return invokeCommand<RemoveReport>("device_remove_story", { root, id, confirmed });
+  return invokeCommand<RemoveReport>("device_remove_story", {
+    root,
+    id,
+    confirmed,
+    expected,
+  });
 }
 
 /**
  * `device_reorder_stories` : réécrit l'index de la Flam de `root` dans l'ordre `order` (tous les
  * UUID de l'index, chacun une fois). `validation` si l'ordre ne correspond plus à l'index, si
- * l'index est abîmé ou si la Flam est occupée ; rien n'est alors écrit.
+ * l'index est abîmé ou si la Flam est occupée ; rien n'est alors écrit. `expected` : Flam dont
+ * l'ordre était affiché (#609) ; une autre Flam à sa place : refus {@link DEVICE_CHANGED}, rien
+ * n'est écrit.
  */
 export function reorderDeviceStories(
   root: string,
   order: string[],
+  expected: ExpectedDevice,
 ): Promise<ReorderReport> {
-  return invokeCommand<ReorderReport>("device_reorder_stories", { root, order });
+  return invokeCommand<ReorderReport>("device_reorder_stories", {
+    root,
+    order,
+    expected,
+  });
 }
 
-/** `device_eject` : éjecte la Flam ; l'échec de l'éjection logicielle est un `fallback`. */
+/**
+ * `device_eject` : éjecte la Flam ; l'échec de l'éjection logicielle est un `fallback`. Sans
+ * empreinte (#609) : l'éjection n'écrit aucun fichier, vaut pour la Flam branchée quelle qu'elle
+ * soit, et doit rester possible quand `.mdf` est illisible.
+ */
 export function ejectDevice(root: string): Promise<EjectOutcome> {
   return invokeCommand<EjectOutcome>("device_eject", { root });
 }

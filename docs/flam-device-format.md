@@ -330,6 +330,33 @@ Toute écriture (envoi, reprise au branchement, retrait, réordonnancement) pass
 Une taille autre que 126 octets ou un en-tête autre que `01 00` **ne refuse rien** : l'état de
 « Ma Flam » signale « fichier .mdf non standard ». Un VID/PID inattendu est journalisé.
 
+**Empreinte de l'appareil** (#609). Toutes les Flam portent le même nom de volume : sous une
+même lettre de lecteur, rien d'autre que `.mdf` ne les distingue. `device_status` rend donc une
+empreinte opaque de la Flam détectée (`fingerprint`, absente si `.mdf` n'a pas été lu : plus de
+64 Kio ; un `.mdf` qui ne s'ouvre pas rend la Flam non détectée) : SHA-256
+d'un préfixe, d'un sel tiré au hasard à chaque lancement du launcher et du SHA-256 de `.mdf`. Elle
+ne révèle ni le numéro de série ni les clés, n'est ni stable d'un lancement à l'autre, ni
+journalisée, ni écrite sur disque, ni reprise dans un message d'erreur ou dans le diagnostic.
+Le SHA-256 nu de `.mdf` n'est transmis à l'interface par aucune réponse ; il ne subsiste que dans
+le nom de la sauvegarde personnelle de `.mdf` (16 chiffres, dossier de données du launcher, sur le
+disque de l'utilisateur), choix antérieur conservé.
+L'interface renvoie l'empreinte avec chaque demande d'écriture (envoi, reprise au branchement,
+retrait, ordre), dans `expected` : celle de la Flam **affichée au moment du clic**. `check_write`
+la compare, avant tout autre contrôle, à celle du `.mdf` qu'il vient de lire, celui que retient le
+permis d'écriture (aucune fenêtre entre la comparaison et le permis) ; différente, refus
+`device_changed` sans rien écrire : ni nettoyage du dossier de travail, ni préparation, ni reprise,
+ni corbeille. Une Flam affichée **sans empreinte** (`expected` présent, `fingerprint` nul) n'est
+jamais reconnue : même refus, pour qu'une autre Flam, lisible, qui reprendrait la lettre ne
+reçoive pas l'écriture. Sans `expected` (appels d'avant l'empreinte, reprise qui suit un
+changement de Flam), rien n'est comparé. L'éjection n'en reçoit pas (elle n'écrit aucun fichier et
+doit rester possible quand `.mdf` est illisible), « Retirer du PC » non plus (rien n'est écrit sur
+la Flam, et le `.mdf` branché est déjà comparé à celui de l'envoi).
+
+**Hypothèse, non confirmée sur deux appareils réels** (§ 10) : deux Flam différentes ont des
+`.mdf` différents (numéro de série, clés). Si elle était fausse, l'empreinte serait la même pour
+les deux et ne distinguerait rien, sans dégât supplémentaire : les écritures se feraient comme
+avant elle. Les relectures de `.mdf` pendant l'envoi (§ 8.1, #577) reposent sur la même hypothèse.
+
 En **1.x**, rien d'autre : les clés restent celles du mode carrier, vérifiées à chaque envoi.
 
 En **2.x**, rien d'autre (#326). Un audit de conformité avec Lunii.QT (`o-daneel/Lunii.QT`,
@@ -354,6 +381,9 @@ Préalable : garde commune (§ 8.0), lecture de `.mdf` (au plus 64 Kio ; au-del�
 appareil (§ 6.3). Un `.mdf` absent donne « Flam introuvable » sans rien écrire. Ensuite
 (`send_with`) :
 
+0. **Flam du clic** (#609) : si l'interface a transmis l'empreinte de la Flam affichée au moment
+   du clic (§ 8.0), la garde refuse d'abord une Flam qui n'est pas celle-là (`device_changed`),
+   avant le nettoyage du dossier de travail, la préparation et la reprise : rien n'est écrit.
 1. **Vérifications, rien d'écrit** (hormis la fin d'opérations interrompues) : `.mdf` présent et
    **relu, identique à celui contrôlé par la garde** avant la préparation (#577 : sinon une autre
    Flam a pu prendre la même lettre de lecteur pendant la préparation ; refus, rien n'est écrit,
@@ -576,6 +606,7 @@ d'histoire officielle :
 | T7  | Synchronisation officielle : suppression des histoires non officielles, effet du masquage                                                                                                                                               | 8.3      | masquage préservé               |                                   |
 | T8  | Valeurs de `version` acceptées (1 à 4 relevées) ; firmwares 1.x et 2.x couverts ; version 3.x et suivantes (refusées par le code)                                                                                                       | 3.3, 6.1 | à mesurer                       |                                   |
 | T9  | Fichiers de travail de l'index (`list.new`, `.bak`, `.restore`, et `list.hidden.*`, copie `list.corrupt`) tolérés dans `etc/library/` ; fichier sonde `.flam-sonde-*` toléré                                                                                                      | 4, 5     | ignorés par le firmware         |                                   |
+| T10 | Deux Flam différentes ont des `.mdf` différents (numéro de série, clés) : hypothèse de l'empreinte de l'appareil (#609) et des relectures de `.mdf` pendant l'envoi (#577) ; à comparer sans publier leur contenu (fiche M13, étape 13) | 8.0, 8.1 | `.mdf` différents               |                                   |
 
 Mesures acquises : une Flam 1.15.14 (taille 126, en-tête `01 00`, version nue, index en LF, mode
 carrier). Aucune mesure 2.x. Points à faire relever par les testeurs 2.x (#316) : taille, en-tête

@@ -4,7 +4,10 @@
 //!
 //! 0. Garde commune ([`check_write`], #317) : racine détectée, `.mdf` lisible, firmware 1.x ou
 //!    2.x, clés 2.x lisibles et non triviales (sans confirmation, #326) ; sinon rien n'est écrit,
-//!    pas même une reprise. Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
+//!    pas même une reprise. Si l'interface a transmis l'empreinte de la Flam affichée au moment
+//!    de la demande (#609), la garde refuse d'abord une Flam qui n'est pas celle-là
+//!    (`device_changed`) : ni nettoyage du dossier de travail, ni préparation, ni reprise.
+//!    Clés ([`send_from_library`]) : lues dans `.mdf` en firmware 2.x ; en 1.x, couple
 //!    « carrier » d'une histoire officielle, après consentement et contrôle de cohérence avec la
 //!    Flam ([`carrier::resolve`], #234). Rien n'est écrit tant que ce n'est pas passé ; `info`
 //!    est relu après l'installation ([`carrier::readback`]).
@@ -81,6 +84,7 @@
 //! |--------------------------------|-----------------------------------------------|-------------------------------------------|
 //! | (Lunii) le refus du firmware 1.x | rien de modifié, reprise comprise           | aucune                                    |
 //! | (Lunii) une préparation refusée (pack invalide, trop gros) | rien de modifié sur la Flam | aucune                |
+//! | (refus) Flam différente de celle affichée à la demande (empreinte, #609) | rien de modifié, reprise et dossier de travail compris | aucune |
 //! | (refus) `.mdf` changé depuis la garde, à l'entrée de l'envoi | rien de modifié, reprise comprise | aucune             |
 //! | les vérifications              | rien de modifié                               | aucune                                    |
 //! | une copie partielle            | `<uuid>.in/` incomplet ; index, `str/` intacts | `<uuid>.in/` supprimé                     |
@@ -125,7 +129,8 @@ use super::crypto::{
 };
 use super::detect::{MDF_FILE, MDF_MAX_SIZE};
 use super::guard::{
-    check_write, VersionForm, WriteContext, WriteKind, WritePermit, WriteRefused, MDF_MIN_LEN,
+    check_write, ExpectedDevice, SeenDevice, VersionForm, WriteContext, WriteKind, WritePermit,
+    WriteRefused, MDF_MIN_LEN,
 };
 use super::index::{
     self, read_index, Consent, IndexError, IndexKind, IndexState, Recovery, StoryId, WriteOutcome,
@@ -362,10 +367,15 @@ impl From<TransferError> for AppError {
             }
             // Autre Flam sous la même lettre (#577) : `kind` propre, la file d'envoi du front
             // s'arrête au lieu d'envoyer la suite sur une Flam que l'utilisateur n'a pas choisie.
+            // De même si la Flam branchée n'est pas celle affichée au moment de la demande (#609,
+            // empreinte attendue différente : refus de la garde, rien n'a été écrit).
             TransferError::DeviceChanged
             | TransferError::DeviceChangedDuringSend
             | TransferError::DeviceChangedBeforeIndex
-            | TransferError::DeviceChangedAfterUpdate => AppError::DeviceChanged(err.to_string()),
+            | TransferError::DeviceChangedAfterUpdate
+            | TransferError::Refused(WriteRefused::DeviceChanged) => {
+                AppError::DeviceChanged(err.to_string())
+            }
             TransferError::DeviceNotFound
             | TransferError::InvalidId
             | TransferError::InvalidRoot
@@ -1555,6 +1565,10 @@ struct ProgressEvent<'a> {
 /// `replace` : UUID de l'histoire de la Flam à remplacer (refusé s'il ne désigne pas celle de
 /// l'archive ; absent : pas de remplacement). `carrier` : source des clés pour une Flam en
 /// firmware 1.x (mode carrier, consentement préalable obligatoire) ; `remember` : conserver le couple sur ce PC, chiffré (faux par défaut).
+/// `expected` : Flam affichée au moment du clic (`{ fingerprint }`, empreinte rendue par
+/// `device_status`, #609) ; si la Flam branchée n'est pas celle-là, ou si elle était affichée
+/// sans empreinte, refus `device_changed` avant toute écriture, y compris le nettoyage du
+/// dossier de travail et la reprise. Absent : aucune comparaison.
 ///
 /// Après un envoi réussi (#609), verrou de la Flam toujours tenu : l'histoire est retirée de
 /// « Mes histoires » si le réglage `remove_after_send` est actif, sinon « Retirer du PC » devient
@@ -1573,6 +1587,7 @@ pub async fn device_send_story(
     replace: Option<String>,
     carrier: Option<CarrierChoice>,
     remember: Option<bool>,
+    expected: Option<SeenDevice>,
 ) -> AppResult<TransferReport> {
     let (cache_root, consent, remove_after_send) = {
         let _guard = config.guard();
@@ -1605,7 +1620,8 @@ pub async fn device_send_story(
             }
         }
         let _clear = ClearCancel;
-        let ctx = WriteContext::current(Some(cache_root.clone()));
+        let ctx = WriteContext::current(Some(cache_root.clone()))
+            .expecting(ExpectedDevice::from_ipc(expected));
         let mut emit = |progress: Progress| {
             use tauri::Emitter;
             let _ = app.emit(
@@ -1760,11 +1776,16 @@ pub(crate) fn recover_device_with(
 }
 
 /// Reprise au branchement : transferts et index interrompus ([`recover_device`]). Refusée,
-/// comme toute écriture, si la garde du firmware refuse ([`check_write`]).
+/// comme toute écriture, si la garde du firmware refuse ([`check_write`]). `expected` :
+/// Flam que l'interface vient de voir se brancher (`{ fingerprint }`, #609) ; une autre Flam à sa
+/// place : refus `device_changed`, rien n'est repris. Absent : aucune comparaison (reprise de
+/// la Flam branchée quelle qu'elle soit, après un envoi interrompu par un changement de Flam :
+/// la reprise ne fait que terminer ou défaire les opérations du launcher trouvées sur place).
 #[tauri::command]
 pub async fn device_recover_transfers(
     config: State<'_, ConfigState>,
     root: String,
+    expected: Option<SeenDevice>,
 ) -> AppResult<TransferRecovery> {
     let cache_root = launcher_cache_root(&config);
     let error_cache_root = cache_root.clone();
@@ -1772,7 +1793,7 @@ pub async fn device_recover_transfers(
         let guard = DEVICE_LOCK
             .try_begin(Operation::Transfer)
             .map_err(TransferError::from)?;
-        let ctx = WriteContext::current(cache_root);
+        let ctx = WriteContext::current(cache_root).expecting(ExpectedDevice::from_ipc(expected));
         Ok(recover_device(&guard, Path::new(&root), &ctx)?)
     })
     .await?;

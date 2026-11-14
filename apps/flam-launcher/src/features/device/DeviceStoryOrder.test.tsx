@@ -1,5 +1,5 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
@@ -66,6 +66,7 @@ const status: DeviceStatus = {
     backup_failed: false,
     firmware: "2.4.2",
     firmware_status: firmwareV2(),
+    fingerprint: TEST_FINGERPRINT,
   },
 };
 
@@ -227,7 +228,11 @@ it(
     expect(saveButton()).not.toHaveAttribute("aria-disabled");
     fireEvent.click(saveButton());
     await waitFor(() => expect(reorderCalls()).toHaveLength(1));
-    expect(reorderCalls()[0]?.args).toEqual({ root: "E:\\", order: [B, C, A] });
+    expect(reorderCalls()[0]?.args).toEqual({
+      root: "E:\\",
+      order: [B, C, A],
+      expected: { fingerprint: TEST_FINGERPRINT },
+    });
     expect(
       await screen.findByText(/Ordre enregistré sur la Flam\. Redémarrez la Flam/),
     ).toBeInTheDocument();

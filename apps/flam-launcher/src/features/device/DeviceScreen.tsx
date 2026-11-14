@@ -55,6 +55,7 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
     retry,
     retryAnswered,
     device,
+    deviceKey,
     stories,
     recoveryNote,
     ejectNote,
@@ -145,7 +146,9 @@ export function DeviceScreen({ libraryPanel }: DeviceScreenProps) {
             <EjectButton />
             <ForgetCarrierKeysButton />
           </div>
-          <DeviceStoriesList key={`${device.root}|${device.volume_label}`} />
+          {/* Autre Flam, même sous la même lettre (#609) : la liste et ses dialogues repartent
+              de zéro. */}
+          <DeviceStoriesList key={deviceKey ?? ""} />
           {libraryPanel}
         </>
       )}

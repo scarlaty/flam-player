@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { DeviceStatus, DeviceStories, DeviceStory } from "../../api/device";
 import { ToastProvider } from "../../components";
-import { firmwareV2 } from "../../test/firmware";
+import { firmwareV2, TEST_FINGERPRINT } from "../../test/firmware";
 import { tolerateLoadInAsyncUtils } from "../../test/timeouts";
 import { DeviceProvider } from "./DeviceProvider";
 import { DeviceScreen } from "./DeviceScreen";
@@ -33,6 +33,7 @@ const status: DeviceStatus = {
     backup_failed: false,
     firmware: "2.4.2",
     firmware_status: firmwareV2(),
+    fingerprint: TEST_FINGERPRINT,
   },
 };
 
