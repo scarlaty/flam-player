@@ -103,6 +103,10 @@ impl From<ReorderError> for AppError {
     fn from(err: ReorderError) -> Self {
         match err {
             ReorderError::Index(_) => AppError::Io(io::Error::other(err.to_string())),
+            // Flam différente de celle dont l'ordre était affiché (#609) : rien n'a été écrit.
+            ReorderError::Refused(WriteRefused::DeviceChanged) => {
+                AppError::DeviceChanged(err.to_string())
+            }
             _ => AppError::Validation(err.to_string()),
         }
     }
@@ -238,17 +242,21 @@ fn reorder_with(
 }
 
 /// Réordonne les histoires de la Flam montée en `root`. `order` : tous les UUID de l'index
-/// `list`, dans l'ordre voulu (voir [`reorder_stories`]).
+/// `list`, dans l'ordre voulu (voir [`reorder_stories`]). `fingerprint` : empreinte de la Flam
+/// dont l'ordre était affiché à l'ouverture de l'édition (#609) ; une autre Flam à sa place :
+/// refus `device_changed`, rien n'est écrit, reprise d'index comprise. Absente : aucune
+/// comparaison.
 #[tauri::command]
 pub async fn device_reorder_stories(
     config: tauri::State<'_, crate::storage::ConfigState>,
     root: String,
     order: Vec<String>,
+    fingerprint: Option<String>,
 ) -> AppResult<ReorderReport> {
     let cache_root = super::transfer::launcher_cache_root(&config);
     blocking(move || -> AppResult<ReorderReport> {
         // Racine reçue de l'interface : contrôlée par la garde (lecteur détecté seulement).
-        let ctx = WriteContext::current(cache_root);
+        let ctx = WriteContext::current(cache_root).expecting(fingerprint);
         Ok(reorder_stories(
             Path::new(&root),
             &DEVICE_LOCK,

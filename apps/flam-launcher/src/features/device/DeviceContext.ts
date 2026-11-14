@@ -51,6 +51,12 @@ export interface QueueItem {
    * jusqu'à la fermeture de la liste.
    */
   planned?: boolean;
+  /**
+   * Flam affichée au moment du clic qui a demandé cet envoi (clé de `deviceKeyOf` ; pour un envoi
+   * prévu, celle du clic « Installer et envoyer »). Son empreinte accompagne l'envoi (#609) : une
+   * autre Flam sous la même lettre est refusée par le backend avant toute écriture.
+   */
+  deviceKey?: string | null;
 }
 
 /**
@@ -62,7 +68,11 @@ export interface PlannedSend {
   uuid: string;
   title: string;
   format: LibraryFormat;
-  /** Identité de la Flam au moment du clic (volume et libellé). */
+  /**
+   * Identité de la Flam au moment du clic (racine, libellé et empreinte opaque, voir
+   * `deviceKeyOf`) : l'envoi, quand il part, transmet cette empreinte-là, pas celle du relevé
+   * courant (#609).
+   */
   deviceKey: string;
   /**
    * `pending` : demandé, installation pas encore démarrée (confirmation en attente : rien n'est
@@ -209,15 +219,23 @@ export interface DeviceApi {
    * (`pcCopy` `kept` ou `failed`) ; elle reste sur la Flam. Le résultat est porté par `pcCopy`.
    */
   removeFromPc: (uuid: string) => Promise<void>;
-  /** Identité de la Flam détectée (volume et libellé), `null` sans Flam. */
+  /**
+   * Identité de la Flam détectée (racine, libellé et empreinte opaque, voir `deviceKeyOf`),
+   * `null` sans Flam. Une autre Flam sous la même lettre a une autre clé (#609).
+   */
   deviceKey: string | null;
+  /**
+   * Retire l'histoire de la Flam identifiée par `expectedKey` (clé affichée à l'ouverture de la
+   * confirmation) : refusé si la clé courante n'est plus celle-là, et par le backend
+   * (`device_changed`) si la Flam branchée n'a pas l'empreinte de cette clé (#609).
+   */
   removeFromDevice: (
     uuid: string,
     expectedKey: string | null,
   ) => Promise<{ cleanupPending: boolean }>;
   /**
    * Enregistre l'ordre des histoires visibles (tous les UUID de l'index) sur la Flam identifiée
-   * par `expectedKey`, puis relit la liste.
+   * par `expectedKey` (mêmes refus que `removeFromDevice`), puis relit la liste.
    */
   reorderOnDevice: (
     order: string[],

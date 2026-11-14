@@ -115,6 +115,11 @@ impl From<RemoveError> for AppError {
     fn from(err: RemoveError) -> Self {
         match err {
             RemoveError::NotFound(_) => AppError::NotFound(err.to_string()),
+            // Flam différente de celle affichée à la demande du retrait (#609) : même `kind` que
+            // pour un envoi, rien n'a été touché.
+            RemoveError::Refused(WriteRefused::DeviceChanged) => {
+                AppError::DeviceChanged(err.to_string())
+            }
             RemoveError::NotConfirmed
             | RemoveError::InvalidId
             | RemoveError::NotADevice
@@ -490,13 +495,17 @@ fn remove_with(
 }
 
 /// Retire une histoire de la Flam montée en `root`. `confirmed` : l'utilisateur a confirmé
-/// la suppression dans l'interface (sinon refus, rien n'est touché).
+/// la suppression dans l'interface (sinon refus, rien n'est touché). `fingerprint` : empreinte
+/// de la Flam affichée quand il a demandé le retrait (#609) ; une autre Flam à sa place (elle
+/// peut porter une histoire de même UUID) : refus `device_changed`, rien n'est touché, corbeille
+/// et reprise d'index comprises. Absente : aucune comparaison.
 #[tauri::command]
 pub async fn device_remove_story(
     config: tauri::State<'_, crate::storage::ConfigState>,
     root: String,
     id: String,
     confirmed: bool,
+    fingerprint: Option<String>,
 ) -> AppResult<RemoveReport> {
     let cache_root = super::transfer::launcher_cache_root(&config);
     // « Retirer du PC » ne vaut plus pour une histoire qu'on retire de la Flam (#609) : oublié
@@ -504,7 +513,7 @@ pub async fn device_remove_story(
     super::after_send::SENT.forget_story(&id);
     blocking(move || -> AppResult<RemoveReport> {
         // Racine reçue de l'interface : contrôlée par la garde (lecteur détecté seulement).
-        let ctx = WriteContext::current(cache_root);
+        let ctx = WriteContext::current(cache_root).expecting(fingerprint);
         Ok(remove_story(
             Path::new(&root),
             &DEVICE_LOCK,

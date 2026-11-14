@@ -22,7 +22,7 @@ use serde::Serialize;
 use tauri::State;
 
 use super::detect::{self, DetectedDevice, DeviceWarning, Environment, MdfError, Space};
-use super::guard::{self, FirmwareStatus, WriteContext};
+use super::guard::{self, DeviceFingerprint, FirmwareStatus, WriteContext};
 use super::index::{self, IndexKind, IndexState};
 use super::lock::DEVICE_LOCK;
 use crate::catalog::blocking;
@@ -63,6 +63,11 @@ pub struct DeviceSummary {
     /// État du firmware et de la garde des écritures (#317) : famille, disposition, état des
     /// clés, raison d'un refus d'écrire. Aucune clé, aucun numéro de série.
     pub firmware_status: FirmwareStatus,
+    /// Empreinte opaque de cette Flam pour ce lancement du launcher (#609,
+    /// [`guard::device_fingerprint`]) : l'interface la renvoie avec chaque demande d'écriture,
+    /// refusée si la Flam branchée n'est plus celle-ci. `None` si `.mdf` est illisible (aucune
+    /// écriture n'est alors possible). Ni numéro de série ni clé ne s'en déduisent.
+    pub fingerprint: Option<DeviceFingerprint>,
 }
 
 /// État de l'appareil (réponse de `device_status`).
@@ -177,6 +182,7 @@ fn summarize(
             .as_deref()
             .and_then(super::transfer::firmware_from_mdf),
         firmware_status,
+        fingerprint: device.mdf_bytes.as_deref().map(guard::device_fingerprint),
     }
 }
 
@@ -726,6 +732,8 @@ mod tests {
             [
                 "backup_failed",
                 "file_system",
+                // Empreinte opaque de l'appareil (#609).
+                "fingerprint",
                 "firmware",
                 "firmware_status",
                 "mdf_problem",
@@ -861,5 +869,55 @@ mod tests {
             let _ = list_stories(&environment, &HashMap::new());
         }
         assert_eq!(fingerprint(dev.path()), before);
+    }
+
+    /// #609 : l'état rend l'empreinte opaque de la Flam (celle que la garde des écritures
+    /// attend), stable d'un relevé à l'autre, différente pour une autre Flam, et absente si
+    /// `.mdf` n'a pas pu être lu. La réponse ne contient aucun condensé nu de `.mdf`.
+    #[test]
+    fn l_etat_rend_l_empreinte_de_l_appareil() {
+        let dev = fake_device();
+        let mdf = fs::read(dev.path().join(detect::MDF_FILE)).unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let environment = env(vec![dev.path().to_path_buf()]);
+        let read = || {
+            status(&environment, backups.path(), &test_ctx())
+                .device
+                .unwrap()
+        };
+        let device = read();
+        let print = device.fingerprint.clone().expect("empreinte présente");
+        assert_eq!(print, guard::device_fingerprint(&mdf));
+        assert_eq!(read().fingerprint, Some(print.clone()), "stable");
+        let json = serde_json::to_string(&device).unwrap();
+        assert!(
+            json.contains(&format!("\"fingerprint\":\"{}\"", print.as_str())),
+            "{json}"
+        );
+        assert!(
+            !json.contains(&format!("{:x}", Sha256::digest(&mdf))),
+            "{json}"
+        );
+        assert!(!format!("{device:?}").contains(print.as_str()));
+
+        // Autre Flam à la même racine : autre empreinte.
+        let mut other = mdf.clone();
+        other[60] ^= 0x01;
+        fs::write(dev.path().join(detect::MDF_FILE), &other).unwrap();
+        let changed = read().fingerprint.unwrap();
+        assert_ne!(changed, print);
+        assert_eq!(changed, guard::device_fingerprint(&other));
+
+        // `.mdf` démesuré, donc non lu : pas d'empreinte.
+        fs::write(
+            dev.path().join(detect::MDF_FILE),
+            vec![0u8; detect::MDF_MAX_SIZE as usize + 1],
+        )
+        .unwrap();
+        let unreadable = read();
+        assert_eq!(unreadable.fingerprint, None);
+        assert!(serde_json::to_string(&unreadable)
+            .unwrap()
+            .contains("\"fingerprint\":null"));
     }
 }

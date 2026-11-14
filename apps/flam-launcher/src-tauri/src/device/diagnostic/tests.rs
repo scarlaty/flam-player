@@ -180,7 +180,12 @@ fn secrets() -> Vec<(String, String)> {
         ("empreinte de .mdf", prefixed.finalize().to_vec()),
         (".mdf entier", mdf.clone()),
     ];
-    let mut out = Vec::new();
+    // Empreinte opaque de l'appareil rendue à l'interface (#609) : pas dans le diagnostic.
+    let device_print = guard::device_fingerprint(&mdf);
+    let mut out = vec![(
+        "empreinte de l'appareil".to_string(),
+        device_print.as_str().to_string(),
+    )];
     for (name, bytes) in binaries {
         let h = hex(&bytes);
         out.push((format!("{name} (hex minuscule)"), h.clone()));

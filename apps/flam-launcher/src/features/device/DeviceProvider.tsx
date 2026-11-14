@@ -37,6 +37,7 @@ import {
   type TransferProgressView,
 } from "./DeviceContext";
 import { CarrierDialog } from "./CarrierDialog";
+import { deviceKeyOf, fingerprintOfKey } from "./deviceKey";
 import { sendErrorMessage } from "./sendError";
 import { REASON_TEXT } from "./sendReasons";
 import { findOnDevice, sendBlock } from "./sendRules";
@@ -68,6 +69,12 @@ export interface DeviceProviderProps {
 
 /** `kind` des refus définitifs de `library_remove_sent` (les autres sont passagers). */
 const DEFINITIVE_REFUSALS: ReadonlySet<string> = new Set(["not_removable", "not_found"]);
+
+/**
+ * Demande d'envoi avec la Flam affichée au moment du clic (clé de `deviceKeyOf`, #609) : son
+ * empreinte accompagne l'envoi, que le backend refuse si une autre Flam est branchée.
+ */
+type KeyedSendRequest = SendRequest & { deviceKey: string | null };
 
 /** Même histoire de la Flam (UUID avec ou sans tirets, casse indifférente). */
 function sameStory(a: string | undefined, b: string): boolean {
@@ -116,7 +123,9 @@ export function DeviceProvider({
   });
   const device = status?.detected ? status.device : null;
   const root = device?.root ?? null;
-  const deviceKey = device ? `${device.root}\u0000${device.volume_label}` : null;
+  // Racine, nom de volume et empreinte opaque de la Flam (#609) : une autre Flam qui reprend la
+  // même lettre est une autre clé (voir `deviceKeyOf`, hypothèse comprise).
+  const deviceKey = deviceKeyOf(device);
   const known = status !== null;
   // Garde des écritures (#317) : l'état structuré du firmware décide, pas le texte des erreurs.
   const firmwareBlocked = firmwareWriteBlock(device) !== null;
@@ -176,7 +185,7 @@ export function DeviceProvider({
 
   // Mode carrier (Flam 1.x) : demande en attente du choix des clés (déclarée ici, la remise à
   // zéro ci-dessous la lit).
-  const [pendingCarrier, setPendingCarrier] = useState<SendRequest | null>(null);
+  const [pendingCarrier, setPendingCarrier] = useState<KeyedSendRequest | null>(null);
 
   // Nouvelle Flam, retour après une absence ou perte : l'état lié à la détection repart de zéro
   // (ajustement pendant le rendu, sans effet).
@@ -217,7 +226,8 @@ export function DeviceProvider({
       });
       return;
     }
-    recoverDeviceTransfers(root)
+    // Reprise de la Flam dont le branchement vient d'être vu, et d'aucune autre (#609).
+    recoverDeviceTransfers(root, fingerprintOfKey(key))
       .then((report) => {
         if (
           startedKey.current === key &&
@@ -448,11 +458,14 @@ export function DeviceProvider({
       // Flam débranchée ou remplacée pendant ou juste après l'envoi (#577).
       let changed = false;
       try {
+        // Empreinte de la Flam affichée au clic de cette histoire (#609), pas celle du relevé
+        // courant : une autre Flam sous la même lettre est refusée avant toute écriture.
         const sent = await sendStoryToDevice(
           rootNow,
           next.uuid,
           next.carrier,
           next.replace,
+          fingerprintOfKey(next.deviceKey),
         );
         waitingAtResult = snapshotWaiting();
         changed = sent.device_changed === true;
@@ -549,10 +562,10 @@ export function DeviceProvider({
           if (failure.kind === "validation") retry();
         }
       }
-      // Flam débranchée ou remplacée pendant ou juste après l'envoi (refus ou rapport
-      // `device_changed`, #577 : la clé d'appareil ne voit pas deux Flam de même libellé sous la
-      // même lettre), ou autre Flam détectée : la suite de la file n'est pas envoyée sur une Flam
-      // que l'utilisateur n'a pas choisie. Flam simplement absente : la file échoue plus haut
+      // Flam débranchée ou remplacée avant, pendant ou juste après l'envoi (refus ou rapport
+      // `device_changed`, #577 et #609 : le backend peut la voir changer entre deux relevés du
+      // front), ou autre Flam détectée : la suite de la file n'est pas envoyée sur une Flam que
+      // l'utilisateur n'a pas choisie. Flam simplement absente : la file échoue plus haut
       // (« Flam non détectée »).
       if (
         changed ||
@@ -561,14 +574,16 @@ export function DeviceProvider({
         cancelWaiting(waitingAtResult);
       }
       if (changed) {
-        // Le backend a vu la Flam changer (#577) alors que la clé d'appareil du front, réduite à
-        // la lettre du lecteur, peut être restée la même : aucun envoi prévu ne partira seul.
+        // Le backend a vu la Flam changer (#577, #609) alors que la clé d'appareil du front peut
+        // dater du relevé précédent : aucun envoi prévu ne partira seul.
         losePlans(() => true, true);
         // Copie temporaire, cache ou ancienne version peuvent rester sur la Flam branchée :
         // reprise tout de suite (elle supprime une copie inachevée, ne l'installe jamais), puis
-        // état relu.
+        // état relu. Sans empreinte attendue : c'est la Flam branchée, quelle qu'elle soit, qui
+        // est à nettoyer, et l'état affiché n'est peut-être plus le sien.
         const rootAfter = rootRef.current;
-        if (rootAfter) await recoverDeviceTransfers(rootAfter).catch(() => undefined);
+        if (rootAfter)
+          await recoverDeviceTransfers(rootAfter, null).catch(() => undefined);
         retry();
       }
       // Le `bt` saisi ne reste pas dans la file au-delà de l'envoi (fait, échoué ou annulé).
@@ -604,7 +619,7 @@ export function DeviceProvider({
   }, [setItemState, updateQueue, bumpReload, retry, cancelWaiting, losePlans]);
 
   const enqueue = useCallback(
-    (request: SendRequest & { carrier?: CarrierSend }) => {
+    (request: KeyedSendRequest & { carrier?: CarrierSend }) => {
       // Envoi demandé par l'utilisateur et réellement mis en file (dialogues passés) : l'envoi
       // prévu de la même histoire n'a plus d'objet. Il ne repartira pas seul, même si
       // l'histoire est ensuite retirée de la Flam. Tant qu'un dialogue d'envoi est ouvert ou
@@ -641,7 +656,7 @@ export function DeviceProvider({
 
   /** Flam 1.x : les clés carrier sont choisies (et l'avertissement accepté) avant l'envoi. */
   const proceed = useCallback(
-    (request: SendRequest) => {
+    (request: KeyedSendRequest) => {
       if (!needsCarrier(deviceRef.current)) {
         enqueue(request);
         return;
@@ -665,9 +680,20 @@ export function DeviceProvider({
     [],
   );
 
-  const requestSend = useCallback(
-    (request: SendRequest) => withSendWarning(() => proceed(request)),
+  /**
+   * Demande l'envoi sur la Flam de clé `key` : celle affichée au moment du clic, relevée avant
+   * l'avertissement « expérimentale » et le choix des clés carrier, qui peuvent rester ouverts
+   * pendant que la Flam change (#609).
+   */
+  const requestSendOn = useCallback(
+    (request: SendRequest, key: string | null) =>
+      withSendWarning(() => proceed({ ...request, deviceKey: key })),
     [withSendWarning, proceed],
+  );
+
+  const requestSend = useCallback(
+    (request: SendRequest) => requestSendOn(request, deviceKeyRef.current),
+    [requestSendOn],
   );
 
   function confirmAck() {
@@ -785,9 +811,10 @@ export function DeviceProvider({
   }, [libraryUuids, plans, updatePlans]);
 
   // Flam débranchée, remplacée ou rebranchée depuis le clic : l'envoi prévu ne partira pas, même
-  // si une Flam revient sous la même lettre (ce peut être une autre : le libellé de volume est le
-  // même sur toutes les Flam, la clé d'appareil se réduit à la lettre du lecteur, #577).
-  // L'utilisateur choisira lui-même avec « Envoyer ».
+  // si la même Flam revient (même clé, empreinte comprise) : une absence vue suffit à le perdre,
+  // comme avant l'empreinte (#577, #609). Une autre Flam qui reprend la lettre sans qu'aucune
+  // absence soit vue a une autre empreinte, donc une autre clé : perdu aussi. L'utilisateur
+  // choisira lui-même avec « Envoyer ».
   const plansKey = useRef(deviceKey);
   useEffect(() => {
     if (plansKey.current === deviceKey) return;
@@ -888,12 +915,12 @@ export function DeviceProvider({
         refusePlan(plan, text.planned.notSent(REASON_TEXT[block]));
       } else {
         dropPlannedSend(plan.uuid);
-        requestSend({
-          uuid: plan.uuid,
-          title: plan.title,
-          size: plan.size,
-          planned: true,
-        });
+        // Flam du clic d'origine (« Installer et envoyer »), pas celle du relevé courant : son
+        // empreinte accompagne l'envoi (#609).
+        requestSendOn(
+          { uuid: plan.uuid, title: plan.title, size: plan.size, planned: true },
+          plan.deviceKey,
+        );
       }
     });
     return () => {
@@ -914,7 +941,7 @@ export function DeviceProvider({
     exposedQueue,
     refusePlan,
     dropPlannedSend,
-    requestSend,
+    requestSendOn,
   ]);
 
   function confirmCarrier(carrier: CarrierSend) {
@@ -1090,14 +1117,25 @@ export function DeviceProvider({
       // l'issue du retrait (le backend l'oublie aussi, #609).
       clearPcCopy((item) => sameStory(item.deviceId, uuid));
       try {
-        const report = await removeDeviceStory(rootNow, uuid, true);
+        // Empreinte de la Flam affichée à l'ouverture de la confirmation (#609) : une autre Flam
+        // sous la même lettre peut porter une histoire de même UUID, elle n'est pas touchée.
+        const report = await removeDeviceStory(
+          rootNow,
+          uuid,
+          true,
+          fingerprintOfKey(expectedKey),
+        );
         bumpReload();
         return { cleanupPending: report.cleanup_pending };
+      } catch (caught) {
+        // Autre Flam branchée : l'état affiché n'est plus le sien, il est relu.
+        if (toAppError(caught).kind === DEVICE_CHANGED) retry();
+        throw caught;
       } finally {
         setRemoving(false);
       }
     },
-    [bumpReload, clearPcCopy, updatePlans],
+    [bumpReload, clearPcCopy, updatePlans, retry],
   );
 
   const reorderOnDevice = useCallback(
@@ -1106,16 +1144,23 @@ export function DeviceProvider({
       if (!rootNow || deviceKeyRef.current !== expectedKey)
         throw { kind: "not_found", message: text.errors.noDevice };
       try {
-        return await reorderDeviceStories(rootNow, order);
+        // Empreinte de la Flam dont l'ordre était affiché à l'ouverture de l'édition (#609).
+        return await reorderDeviceStories(rootNow, order, fingerprintOfKey(expectedKey));
+      } catch (caught) {
+        // Autre Flam branchée : l'état affiché n'est plus le sien, il est relu.
+        if (toAppError(caught).kind === DEVICE_CHANGED) retry();
+        throw caught;
       } finally {
         // Succès ou refus : la liste affichée suit l'index réel de la Flam.
         bumpReload();
       }
     },
-    [bumpReload],
+    [bumpReload, retry],
   );
 
   const [ejecting, setEjecting] = useState(false);
+  // Sans empreinte (#609) : l'éjection n'écrit aucun fichier, vaut pour la Flam branchée quelle
+  // qu'elle soit, et doit rester possible quand `.mdf` est illisible.
   const eject = useCallback(async () => {
     const rootNow = rootRef.current;
     if (!rootNow) return;

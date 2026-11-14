@@ -789,6 +789,38 @@ fn la_garde_du_firmware_refuse_sans_rien_toucher() {
     }
 }
 
+/// #609 : la Flam branchée n'est pas celle affichée à la demande du retrait (elle peut porter une
+/// histoire de même UUID) : refus `device_changed`, rien n'est touché (ni index, ni dossier, ni
+/// corbeille, ni reprise). Avec l'empreinte de la Flam branchée, le retrait se fait.
+#[test]
+fn une_autre_flam_que_celle_affichee_n_est_pas_touchee() {
+    use crate::device::guard::device_fingerprint;
+    use crate::device::guard::tests::{mdf_v2_known, snapshot};
+    use crate::device::guard::WriteRefused;
+    let seen = device_fingerprint(&mdf_v1_real()).as_str().to_string();
+    let device = Device::new();
+    fs::write(device.root().join(MDF_FILE), mdf_v2_known()).unwrap();
+    fs::write(device.root().join(LIBRARY_DIR).join("list.new"), b"x").unwrap();
+    fs::create_dir_all(device.root().join(TRASH_DIR).join("reste")).unwrap();
+    let before = snapshot(device.root());
+    let lock = DeviceLock::new();
+    let ctx = test_ctx().expecting(Some(seen));
+    let err = remove_story(device.root(), &lock, B, true, &ctx).unwrap_err();
+    assert!(
+        matches!(err, RemoveError::Refused(WriteRefused::DeviceChanged)),
+        "{err}"
+    );
+    assert_eq!(crate::AppError::from(err).kind(), "device_changed");
+    assert_eq!(snapshot(device.root()), before);
+    assert_eq!(lock.current(), None);
+
+    fs::remove_file(device.root().join(LIBRARY_DIR).join("list.new")).unwrap();
+    let own = device_fingerprint(&mdf_v2_known()).as_str().to_string();
+    let ctx = test_ctx().expecting(Some(own));
+    remove_story(device.root(), &lock, B, true, &ctx).unwrap();
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+}
+
 /// 2.x : retrait autorisé sans confirmation (#326, comme Lunii.QT).
 #[test]
 fn retrait_2x_sans_confirmation() {

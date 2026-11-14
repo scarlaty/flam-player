@@ -45,6 +45,23 @@
 //! L'état exposé à l'interface ([`FirmwareStatus`]) ne contient ni clé, ni `bt`, ni numéro de
 //! série, ni empreinte de `.mdf` : seulement la version, la taille, l'en-tête (2 octets), le
 //! VID/PID, des nombres d'histoires et les UUID des histoires en contradiction.
+//!
+//! # Empreinte de l'appareil (#609)
+//!
+//! Pour qu'une écriture n'atteigne jamais une autre Flam que celle affichée au moment de la
+//! demande (une autre Flam peut reprendre la même lettre de lecteur entre deux relevés de
+//! l'interface, et toutes portent le même nom de volume), `device_status` rend une
+//! [`DeviceFingerprint`] : valeur opaque dérivée du contenu de `.mdf` et d'un sel tiré au hasard
+//! à chaque lancement ([`device_fingerprint`]). L'interface la renvoie avec chaque demande
+//! d'écriture ([`WriteContext::expecting`]) ; [`check_write`] la compare à celle du `.mdf` qu'il
+//! vient de lire, celui-là même que retient le [`WritePermit`], et refuse
+//! ([`WriteRefused::DeviceChanged`]) avant toute écriture si elle diffère. Sans empreinte
+//! attendue, rien n'est comparé (comportement d'avant).
+//!
+//! **Hypothèse** : deux Flam différentes ont des `.mdf` différents (numéro de série, clés). Elle
+//! n'est pas confirmée sur deux appareils réels (voir [`WritePermit::same_mdf`]). Si elle était
+//! fausse, l'empreinte serait la même pour les deux et ne distinguerait rien, sans dégât
+//! supplémentaire : les écritures se feraient comme avant elle.
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
@@ -299,6 +316,61 @@ fn fingerprint(mdf: &[u8]) -> String {
         .collect()
 }
 
+// --- Empreinte de l'appareil (#609) ----------------------------------------------------------
+
+/// Sel de [`device_fingerprint`], tiré au hasard une fois par processus (deux UUID v4, soit
+/// 244 bits du générateur du système). Jamais écrit ni journalisé : l'empreinte n'est ni stable
+/// d'un lancement à l'autre, ni rapprochable d'une autre session ou d'un autre PC.
+static FINGERPRINT_SALT: LazyLock<[u8; 32]> = LazyLock::new(|| {
+    let mut salt = [0u8; 32];
+    salt[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    salt[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    salt
+});
+
+/// Empreinte opaque de la Flam pour l'interface (voir le module) : 64 chiffres hexadécimaux.
+/// Ne révèle ni le numéro de série ni les clés ; `Debug` ne l'affiche pas, pour qu'elle
+/// n'arrive ni dans le journal ni dans un message d'erreur.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct DeviceFingerprint(String);
+
+impl DeviceFingerprint {
+    /// Texte transmis à l'interface (et renvoyé par elle).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for DeviceFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeviceFingerprint(…)")
+    }
+}
+
+/// Empreinte d'un `.mdf` de SHA-256 `mdf_digest` avec le sel `salt` : SHA-256 d'un préfixe
+/// propre à cet usage, du sel puis du condensé. Sans le sel, rien ne permet de remonter au
+/// condensé, encore moins au contenu.
+fn fingerprint_with(salt: &[u8; 32], mdf_digest: &[u8; 32]) -> DeviceFingerprint {
+    let mut hasher = Sha256::new();
+    hasher.update(b"flam-launcher/empreinte-appareil/v1/");
+    hasher.update(salt);
+    hasher.update(mdf_digest);
+    DeviceFingerprint(
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
+}
+
+/// Empreinte de la Flam dont le `.mdf` vaut `mdf`, pour ce lancement du launcher (voir le
+/// module). Lecture pure. À ne calculer que pour un `.mdf` lu : sans lui, pas d'empreinte.
+pub fn device_fingerprint(mdf: &[u8]) -> DeviceFingerprint {
+    fingerprint_with(&FINGERPRINT_SALT, &Sha256::digest(mdf).into())
+}
+
 // --- Contexte et mémoire de session ---------------------------------------------------------
 
 /// Résultats de session (jamais écrits sur disque) : dernier contrôle de cohérence, par empreinte
@@ -349,6 +421,9 @@ pub struct WriteContext<'a> {
     detected_roots: OnceCell<Option<Vec<PathBuf>>>,
     cache_root: Option<PathBuf>,
     launcher: OnceCell<HashSet<String>>,
+    /// Empreinte de la Flam affichée au moment de la demande ([`Self::expecting`]) ; `None` :
+    /// aucune comparaison.
+    expected: Option<String>,
 }
 
 impl WriteContext<'static> {
@@ -360,6 +435,7 @@ impl WriteContext<'static> {
             detected_roots: OnceCell::new(),
             cache_root,
             launcher: OnceCell::new(),
+            expected: None,
         }
     }
 }
@@ -378,7 +454,16 @@ impl<'a> WriteContext<'a> {
             detected_roots: OnceCell::from(detected_roots),
             cache_root: None,
             launcher,
+            expected: None,
         }
+    }
+
+    /// Exige que la Flam de l'écriture soit celle d'empreinte `fingerprint` ([`DeviceFingerprint`]
+    /// rendue par `device_status` au moment de la demande de l'utilisateur) : [`check_write`]
+    /// refuse sinon ([`WriteRefused::DeviceChanged`]). `None` : aucune comparaison.
+    pub fn expecting(mut self, fingerprint: Option<String>) -> Self {
+        self.expected = fingerprint;
+        self
     }
 
     /// Racines détectées (énumérées au premier appel pour le contexte de l'application).
@@ -428,6 +513,11 @@ pub enum WriteRefused {
     KeysUnreadable { detail: String },
     #[error("clés de la Flam invalides dans .mdf (firmware {version} : clé ou IV vide) : rien n'a été écrit ; voir l'état du firmware dans « Ma Flam »")]
     KeysTrivial { version: String },
+    /// La Flam branchée n'est pas celle affichée au moment de la demande (#609 : empreinte
+    /// attendue différente, voir le module). Rendu par [`check_write`] seulement, jamais dans
+    /// l'état affiché ([`FirmwareStatus::write_block`]). Le message ne cite aucune empreinte.
+    #[error("la Flam branchée n'est plus celle affichée au moment de la demande (fichier .mdf différent) : rien n'a été écrit ; vérifiez la Flam branchée, puis recommencez")]
+    DeviceChanged,
 }
 
 /// Preuve que [`check_write`] a autorisé l'écriture. Seul ce module la construit.
@@ -453,6 +543,13 @@ impl WritePermit {
         <[u8; 32]>::from(Sha256::digest(mdf)) == self.mdf_digest
     }
 
+    /// Empreinte de la Flam du permis ([`device_fingerprint`] du `.mdf` contrôlé), calculée à
+    /// partir du condensé que le permis retient : c'est elle que [`check_write`] compare à
+    /// l'empreinte attendue, sans relire `.mdf`.
+    pub fn fingerprint(&self) -> DeviceFingerprint {
+        fingerprint_with(&FINGERPRINT_SALT, &self.mdf_digest)
+    }
+
     /// Vrai si le permis a été donné pour la Flam de `root`.
     pub fn covers(&self, root: &Path) -> bool {
         self.root
@@ -472,7 +569,8 @@ impl WritePermit {
 }
 
 /// État du firmware de la Flam (réponse sérialisée : aucune clé, aucun `bt`, aucun numéro de
-/// série, aucune empreinte).
+/// série, aucune empreinte ; l'empreinte opaque de l'appareil est à part, dans le résumé de
+/// `device_status`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FirmwareStatus {
     pub version: Option<String>,
@@ -634,6 +732,12 @@ fn check_root(root: &Path, ctx: &WriteContext<'_>) -> Result<(), WriteRefused> {
 /// **Point d'entrée unique** : autorise ou refuse une écriture `kind` sur la Flam de `root`
 /// (voir le module). N'écrit rien sur la Flam. À appeler sous le verrou de l'appareil, avant
 /// toute écriture, y compris une reprise.
+///
+/// Si le contexte porte une empreinte attendue ([`WriteContext::expecting`], #609), le permis
+/// n'est rendu que si son empreinte ([`WritePermit::fingerprint`], celle du `.mdf` lu ici, le
+/// seul que le permis retient : aucune fenêtre entre la comparaison et le permis) est celle-là ;
+/// sinon refus [`WriteRefused::DeviceChanged`], avant les autres contrôles et sans toucher à la
+/// mémoire de session.
 pub fn check_write(
     root: &Path,
     ctx: &WriteContext<'_>,
@@ -641,12 +745,26 @@ pub fn check_write(
 ) -> Result<WritePermit, WriteRefused> {
     check_root(root, ctx)?;
     let mdf = read_device_mdf(root)?;
+    // Permis provisoire : la famille n'est connue qu'après l'évaluation.
+    let mut permit = WritePermit {
+        family: FirmwareFamily::V2,
+        mdf_digest: Sha256::digest(&mdf[..]).into(),
+        root: Some(session_key(root, &[]).0),
+    };
+    if let Some(expected) = ctx.expected.as_deref() {
+        if permit.fingerprint().as_str() != expected {
+            tracing::warn!(
+                "écriture refusée : la Flam branchée n'est pas celle affichée au moment de la demande"
+            );
+            return Err(WriteRefused::DeviceChanged);
+        }
+    }
     let assessment = assess(root, &mdf, ctx, Mode::Write(kind));
     if let Some(reason) = assessment.refused {
         tracing::warn!(raison = %reason, "écriture sur la Flam refusée par la garde du firmware");
         return Err(reason);
     }
-    let family = match assessment.layout.family {
+    permit.family = match assessment.layout.family {
         Family::V1 => FirmwareFamily::V1,
         _ => FirmwareFamily::V2,
     };
@@ -656,11 +774,7 @@ pub fn check_write(
             "écriture sur une Flam à la disposition de .mdf non standard"
         );
     }
-    Ok(WritePermit {
-        family,
-        mdf_digest: Sha256::digest(&mdf[..]).into(),
-        root: Some(session_key(root, &[]).0),
-    })
+    Ok(permit)
 }
 
 fn status_of(a: Assessment) -> FirmwareStatus {
