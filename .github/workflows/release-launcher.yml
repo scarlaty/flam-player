@@ -11,7 +11,8 @@ name: release-launcher
 #     (build complet avec la version de l'étiquette d'exemple forcée), jamais de publication.
 #
 # Les releases `v0.x` du dépôt concernent le player : ce workflow n'y touche pas (il ne crée que des
-# releases `launcher-v*`, jamais « Latest » ; en pré-version si la version porte un suffixe).
+# releases `launcher-v*` : pré-version, jamais « Latest », si la version porte un suffixe ; version
+# normale marquée « Latest » sinon).
 #
 # Procédure complète : apps/flam-launcher/README.md, section « Publier une version ».
 # Les étapes de build reprennent celles de launcher.yml (même cache ffmpeg, mêmes actions épinglées) ;
@@ -408,14 +409,16 @@ jobs:
           # L'étiquette n'a pas été déplacée depuis le contrôle : elle désigne encore le commit construit.
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)"
           if [ "$tag_sha" != "$SHA" ]; then echo "::error::l'étiquette $TAG désigne $tag_sha, le build porte sur $SHA"; exit 1; fi
-          # Suffixe de pré-version (`-beta.1`) : pré-version GitHub ; sinon version normale.
+          # Suffixe de pré-version (`-beta.1`) : pré-version GitHub, jamais « Latest » ; sinon version
+          # normale, marquée « Latest ».
           prerelease=false
-          case "$VERSION" in *-*) prerelease=true ;; esac
+          latest=true
+          case "$VERSION" in *-*) prerelease=true; latest=false ;; esac
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --prerelease="$prerelease" \
-            --latest=false \
+            --latest="$latest" \
             --title "Flam Launcher $VERSION" \
             --notes-file "$notes" \
             "assets/Flam-Launcher_${VERSION}_x64-setup.exe" \

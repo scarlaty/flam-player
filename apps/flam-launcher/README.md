@@ -372,8 +372,9 @@ Workflow `.github/workflows/release-launcher.yml` (#319) : une étiquette `launc
 poussée sur un commit de `main` construit l'installateur NSIS (mêmes étapes que `launcher.yml`),
 calcule `SHA256SUMS.txt` et crée une release GitHub « Flam Launcher <version> » avec
 l'installateur, `SHA256SUMS.txt` et les notes de `release-notes/<version>.md` : une **pré-version**
-si la version porte un suffixe (`0.1.0-beta.1`), une version normale sinon (`0.1.0`), jamais marquée
-« Latest ». Les releases `v0.x` du dépôt concernent le player : elles ne sont pas touchées.
+si la version porte un suffixe (`0.1.0-beta.1`), jamais marquée « Latest » ; une version normale
+sinon (`0.1.0`), marquée « Latest ». Les releases `v0.x` du dépôt concernent le player : elles ne
+sont pas modifiées, mais perdent alors la marque « Latest ».
 
 Procédure (exemple : `0.1.0-beta.1`) :
 
