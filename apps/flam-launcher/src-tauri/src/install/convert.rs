@@ -105,11 +105,11 @@ impl IdleClock {
     }
 
     /// Une tranche s'est écoulée sans ligne, en `elapsed` mesurés. Rend vrai si le délai
-    /// d'inactivité est atteint. Une tranche plus longue que deux fois la durée nominale (veille,
+    /// d'inactivité est atteint. Une tranche en retard de plus de [`Self::pause_margin`] (veille,
     /// machine gelée) remet le compteur à zéro : le convertisseur n'a pas pu avancer pendant ce
     /// temps.
     fn quiet_slice(&mut self, elapsed: Duration) -> bool {
-        if elapsed > self.slice * 2 {
+        if elapsed > self.slice + self.pause_margin() {
             tracing::info!(
                 tranche_s = elapsed.as_secs(),
                 "conversion : reprise après une pause du système, délai d'inactivité remis à zéro"
@@ -119,6 +119,13 @@ impl IdleClock {
         }
         self.quiet += elapsed;
         self.quiet >= self.limit
+    }
+
+    /// Retard d'une tranche au-delà duquel elle est tenue pour une pause du système : une tranche
+    /// entière, et au moins 10 s, pour qu'un minuteur servi en retard sur une machine chargée
+    /// (tranches courtes des tests) ne soit pas pris pour une veille.
+    fn pause_margin(&self) -> Duration {
+        self.slice.max(Duration::from_secs(10))
     }
 }
 
@@ -1169,6 +1176,14 @@ b"
         let mut clock = IdleClock::new(IDLE_TIMEOUT);
         assert!(!clock.quiet_slice(IDLE_SLICE + IDLE_SLICE / 2));
         assert_eq!(clock.quiet, IDLE_SLICE + IDLE_SLICE / 2);
+
+        // Tranches courtes (délai de test de 3 s) : un minuteur servi 1,5 s en retard sur une
+        // machine chargée compte normalement, il n'est pas pris pour une veille.
+        let mut clock = IdleClock::new(Duration::from_secs(3));
+        let late = clock.slice + Duration::from_millis(1500);
+        assert!(!clock.quiet_slice(late));
+        assert_eq!(clock.quiet, late);
+        assert!(clock.quiet_slice(late), "délai atteint malgré le retard");
 
         // Délai court (tests) : tranches plus courtes.
         assert_eq!(
