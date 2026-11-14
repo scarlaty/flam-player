@@ -573,8 +573,17 @@ def main():
         for nm in ("direct.txt", "direct", "evil.zip", "evil.plain.pk.txt"):
             target = os.path.join(env.root, nm)
             write(target, env.sub(SC_ASSETS))
-            p = subprocess.run([exe, "--stdin-control", target], capture_output=True, timeout=30, cwd=env.cwd,
-                               env=dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy"))
+            # stdin ferme : le player ne peut pas rester en attente de l'entree heritee du lanceur.
+            # Un depassement de delai est un echec du scenario, pas une exception qui arrete la suite
+            # (subprocess.run tue alors le processus avant de lever TimeoutExpired).
+            try:
+                p = subprocess.run([exe, "--stdin-control", target], stdin=subprocess.DEVNULL,
+                                   capture_output=True, timeout=30, cwd=env.cwd,
+                                   env=dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy"))
+            except subprocess.TimeoutExpired as e:
+                err = ((e.stderr or b"") + (e.stdout or b"")).decode("utf-8", "replace")
+                check(False, "L cible %r refusee : le player ne s'est pas arrete en 30 s" % nm, err)
+                continue
             err = p.stderr.decode("utf-8", "replace") + p.stdout.decode("utf-8", "replace")
             check(p.returncode == 2 and "refusee" in err and "IMG_" not in err,
                   "L cible %r refusee (code %r), aucun script execute" % (nm, p.returncode), err)

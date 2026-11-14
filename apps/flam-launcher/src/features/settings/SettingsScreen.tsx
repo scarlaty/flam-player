@@ -76,6 +76,9 @@ export function SettingsScreen() {
   const requestsRef = useRef<Record<string, number>>({});
   // Enregistrement des chemins en cours (un second envoi du formulaire est ignoré).
   const pathsSavingRef = useRef(false);
+  // Dossier de cache effectif de la dernière relecture de la bibliothèque faite par cet écran ;
+  // `null` : aucune encore.
+  const libraryDirRef = useRef<string | null>(null);
 
   /** Relit le relevé du cache ; rend le relevé lu, ou `null` si la lecture a échoué. */
   const refreshUsage = useCallback(async (): Promise<CacheUsage | null> => {
@@ -157,6 +160,8 @@ export function SettingsScreen() {
     if (!view || pathsSavingRef.current || Object.values(errors).some(Boolean)) return;
     pathsSavingRef.current = true;
     setSaveError(null);
+    // Dossier de cache configuré avant l'enregistrement, pour savoir s'il change.
+    const before = saver.current();
     try {
       // Seuls les chemins sont envoyés : le reste vient de l'état confirmé, pas de l'affichage
       // (un thème ou une voix en cours d'enregistrement n'est ni écrasé ni anticipé).
@@ -169,8 +174,18 @@ export function SettingsScreen() {
       );
       applyView(next);
       void refreshUsage();
-      // Le dossier de cache a pu changer : la bibliothèque affichée n'est plus la bonne (#570).
-      void refreshInstalled();
+      // Le dossier de cache a changé : la bibliothèque affichée n'est plus la bonne (#570). Les
+      // autres enregistrements (chemin du player seul) ne la relisent pas (#652).
+      // Le dossier effectif est comparé à celui de la dernière relecture faite d'ici : l'état du
+      // formulaire n'est pas celui d'où la bibliothèque affichée a été lue (disque absent au
+      // démarrage, puis revenu). Aucune relecture faite d'ici : on relit.
+      if (
+        libraryDirRef.current !== next.resolved.cache_dir ||
+        before?.settings.cache_dir !== next.settings.cache_dir
+      ) {
+        libraryDirRef.current = next.resolved.cache_dir;
+        void refreshInstalled();
+      }
       toast.show({ message: t.settingsScreen.saved, tone: "success" });
     } catch (caught) {
       setSaveError(toAppError(caught));

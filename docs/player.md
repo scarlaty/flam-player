@@ -274,7 +274,7 @@ infinie ; le comportement de l'appareil est inconnu) ; le temps passé dans une 
 `string.find` catastrophique) ; les défauts de mémoire de l'interpréteur (Lua 5.4.8) et des bindings
 `lv.*`/`audio.*` (les audits de l'appareil en ont trouvé, dont l'utilisation après libération) ; les
 liens symboliques et jonctions placés dans le dossier d'une histoire (via le launcher, la copie de travail ignore liens et jonctions : le trou ne concerne que l'appel direct en ligne de commande sur un dossier ; l'extraction des `.plain.pk` les
-refuse, un dossier `.plain` d'auteur est joué tel quel) ; les scripts lancés directement (`flam-player
+refuse, mais en appel direct un dossier `.plain` d'auteur est joué tel quel) ; les scripts lancés directement (`flam-player
 script.lua`) pour les chemins d'images et de sons. `debug` mis à part, `--unsafe-libs` n'a aucune
 protection : c'est le comportement d'avant #575.
 
