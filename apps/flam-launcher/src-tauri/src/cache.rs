@@ -1114,6 +1114,12 @@ fn podcast_source_children_known(dir: &Path) -> bool {
 
 /// Fichier que l'explorateur de Windows (`desktop.ini`, `Thumbs.db`, casse indifférente) ou le
 /// Finder de macOS (`.DS_Store`) dépose dans un dossier ouvert.
+///
+/// Les fichiers AppleDouble `._<nom>` (posés par macOS sur un disque FAT ou exFAT) n'en font
+/// **pas** partie, à dessein (#591, #652) : les ignorer élargirait la preuve par le contenu, donc
+/// ce qui est marqué puis vidé en entier par « Vider le cache », à tout un motif de noms ; leur
+/// présence laisse le dossier non marqué (fuite de place, jamais de perte). À revoir seulement
+/// sur un cas réel.
 fn is_os_junk(name: &str) -> bool {
     name.eq_ignore_ascii_case("desktop.ini")
         || name.eq_ignore_ascii_case("Thumbs.db")
