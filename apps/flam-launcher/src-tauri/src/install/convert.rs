@@ -153,11 +153,12 @@ fn fixed_message(code: &str) -> String {
         // la cause a disparu. Le message ne sait pas d'où vient l'archive (téléchargée dans le
         // cache, ou fichier d'une source locale que « Vider le cache » ne touche pas) : la piste
         // du cache n'est donnée que pour une archive téléchargée, sans promettre le résultat
-        // (tout le cache est vidé, et seulement si `archives/` est marqué).
+        // (le vidage ne touche que les dossiers reconnus : l'archive seulement si `archives/` est
+        // marqué).
         "archive_io" => "la lecture de l'archive a été refusée par le système (antivirus, fichier \
              verrouillé, support retiré) ; rien n'a été supprimé, réessayez. Si l'archive a été \
-             téléchargée et que l'erreur persiste, « Vider le cache » (Réglages) vide tout le \
-             cache, archive comprise, pour la retélécharger"
+             téléchargée et que l'erreur persiste, « Vider le cache » (Paramètres) peut la \
+             supprimer pour la retélécharger"
             .into(),
         "not_telmi" => "l'archive n'est pas une histoire Telmi".into(),
         "invalid_content" => "le contenu de l'histoire est invalide".into(),
@@ -852,10 +853,12 @@ b"
             "{m}"
         );
         // Rien n'est supprimé ; la piste du cache ne vaut que pour une archive téléchargée (une
-        // archive locale n'est pas dans le cache) et dit que tout le cache est vidé.
+        // archive locale n'est pas dans le cache) et ne promet pas la suppression. « Paramètres »
+        // est le libellé de l'écran (`settings` de `src/i18n/fr.ts`).
         assert!(m.contains("rien n'a été supprimé"), "{m}");
         assert!(
-            m.contains("Si l'archive a été téléchargée") && m.contains("vide tout le cache"),
+            m.contains("Si l'archive a été téléchargée")
+                && m.contains("(Paramètres) peut la supprimer"),
             "{m}"
         );
         assert!(!m.contains("la retire"), "{m}");

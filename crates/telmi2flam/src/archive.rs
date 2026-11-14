@@ -115,12 +115,20 @@ fn bad_path(e: &std::io::Error) -> bool {
     ) || LINK_LOOP.is_some_and(|code| e.raw_os_error() == Some(code))
 }
 
-/// Code de l'OS de la boucle de liens symboliques : `ELOOP` 40 (Linux et Android, sauf MIPS et
-/// SPARC où il vaut 90 : la boucle y rend `archive_io`, archive gardée), `ELOOP` 62 (macOS, iOS
+/// Code de l'OS de la boucle de liens symboliques : `ELOOP` 40 (Linux et Android, hors MIPS et
+/// SPARC dont les numéros diffèrent : la boucle y rend `archive_io`, archive gardée), `ELOOP` 62 (macOS, iOS
 /// et BSD). Windows n'en a pas ici : `ERROR_CANT_RESOLVE_FILENAME` (1921) est aussi rendu pour
 /// un point d'analyse non résolu (dossier synchronisé dont le client est arrêté, jonction vers
 /// un volume absent), où l'archive est saine : elle est gardée (`archive_io`).
-const LINK_LOOP: Option<i32> = if cfg!(any(target_os = "linux", target_os = "android")) {
+const LINK_LOOP: Option<i32> = if cfg!(all(
+    any(target_os = "linux", target_os = "android"),
+    not(any(
+        target_arch = "mips",
+        target_arch = "mips64",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))
+)) {
     Some(40)
 } else if cfg!(any(
     target_os = "macos",
@@ -434,7 +442,15 @@ mod tests {
                 assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(all(
+            target_os = "linux",
+            not(any(
+                target_arch = "mips",
+                target_arch = "mips64",
+                target_arch = "sparc",
+                target_arch = "sparc64"
+            ))
+        ))]
         {
             // `ELOOP`, `ENAMETOOLONG`.
             for code in [40, 36] {
