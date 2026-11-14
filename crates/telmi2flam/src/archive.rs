@@ -107,13 +107,32 @@ pub struct Archive<R> {
 /// instable : seule la boucle de liens garde un code de l'OS en dur. Un système sans code connu
 /// ici rend `archive_io` (archive gardée) : jamais `archive_unreadable` (archive supprimée) sur
 /// une erreur qui pourrait venir du disque.
+///
+/// Règle de sûreté (#652) : ne jamais rendre `archive_unreadable` sur une erreur qui peut venir
+/// du support. Sous Windows, le genre `NotFound` de std réunit « fichier absent d'un dossier
+/// présent » (`ERROR_FILE_NOT_FOUND`, 2) et « volume, chemin ou partage absent »
+/// (`ERROR_PATH_NOT_FOUND` 3, `ERROR_INVALID_DRIVE` 15, `ERROR_BAD_NETPATH` 53,
+/// `ERROR_BAD_NET_NAME` 67 : clé USB retirée, partage tombé). Seul le code 2 met le chemin en
+/// cause ; tout autre code de l'OS de genre `NotFound` rend `archive_io` (liste d'admission :
+/// un code que std rangerait plus tard sous `NotFound` garde l'archive). Le code 3 est ambigu
+/// (dossier parent absent d'un volume présent, ou volume retiré) : dans le doute, l'archive est
+/// gardée. Unix : inchangé (`ENOENT` ne distingue pas les deux cas).
 fn bad_path(e: &std::io::Error) -> bool {
     use std::io::ErrorKind::{InvalidFilename, IsADirectory, NotADirectory, NotFound};
+    if cfg!(windows) && e.kind() == NotFound {
+        // Sans code de l'OS : erreur construite, pas un refus du support.
+        return e
+            .raw_os_error()
+            .is_none_or(|code| code == WINDOWS_FILE_NOT_FOUND);
+    }
     matches!(
         e.kind(),
         NotFound | NotADirectory | IsADirectory | InvalidFilename
     ) || LINK_LOOP.is_some_and(|code| e.raw_os_error() == Some(code))
 }
+
+/// `ERROR_FILE_NOT_FOUND` : le dossier existe, le fichier n'y est pas.
+const WINDOWS_FILE_NOT_FOUND: i32 = 2;
 
 /// Code de l'OS de la boucle de liens symboliques : `ELOOP` 40 (Linux et Android, hors MIPS et
 /// SPARC dont les numéros diffèrent : la boucle y rend `archive_io`, archive gardée), `ELOOP` 62 (macOS, iOS
@@ -158,7 +177,8 @@ impl Archive<BufReader<File>> {
         let file = File::open(path).map_err(|e| {
             // Chemin absent ou invalide (absent, composant qui n'est pas un dossier, nom
             // invalide, boucle de liens) : `archive_unreadable` ; refusée par le système
-            // (accès, verrou, support retiré) : `archive_io` (#580).
+            // (accès, verrou, support retiré) : `archive_io` (#580). Sous Windows, un
+            // volume, un dossier parent ou un partage absent est du second cas (#652).
             if !bad_path(&e) && system_io(&e) {
                 ConvError::archive_io(format!("{source} : {e}"))
             } else {
@@ -397,6 +417,12 @@ mod tests {
         assert_eq!(e.code, "archive_unreadable");
         let e = Archive::open(&d).err().unwrap();
         assert_eq!(e.code, "archive_unreadable");
+        // #652 : dossier parent absent (`ERROR_PATH_NOT_FOUND`, aussi rendu pour un volume
+        // retiré) : dans le doute le support est en cause, `archive_io`.
+        let e = Archive::open(&d.join("absent").join("a.zip"))
+            .err()
+            .unwrap();
+        assert_eq!((e.code, e.exit_code), ("archive_io", 3), "{e}");
     }
 
     /// #580 : `bad_path` (le chemin est en cause, `archive_unreadable`) ou refus du système
@@ -427,7 +453,21 @@ mod tests {
             for code in [123, 161, 206] {
                 assert!(bad_path(&Error::from_raw_os_error(code)), "{code}");
             }
+            // #652 : `ERROR_FILE_NOT_FOUND` (fichier absent d'un dossier présent) met le
+            // chemin en cause.
+            let e = Error::from_raw_os_error(2);
+            assert!(bad_path(&e), "2");
+            // `ERROR_PATH_NOT_FOUND`, `ERROR_INVALID_DRIVE`, `ERROR_BAD_NETPATH`,
+            // `ERROR_BAD_NET_NAME` : volume retiré ou partage tombé avant l'ouverture. Le
+            // support est en cause, l'archive est gardée (`archive_io`).
+            for code in [3, 15, 53, 67] {
+                let e = Error::from_raw_os_error(code);
+                assert!(!bad_path(&e) && system_io(&e), "{code}");
+            }
         }
+        // Unix : `ENOENT` reste un chemin en cause (les deux cas y sont indiscernables).
+        #[cfg(unix)]
+        assert!(bad_path(&Error::from_raw_os_error(2)));
         #[cfg(any(
             target_os = "macos",
             target_os = "ios",
