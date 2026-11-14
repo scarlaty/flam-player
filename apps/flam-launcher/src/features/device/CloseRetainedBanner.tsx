@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   cancelClose,
+  getCloseRetained,
   onCloseCleared,
   onCloseRetained,
   type WriteOperation,
@@ -10,8 +11,8 @@ import { t } from "../../i18n";
 
 /**
  * Bandeau non modal affiché quand le backend retient la fermeture de la fenêtre pendant une
- * écriture sur la Flam (#577). La fenêtre se ferme d'elle-même à la fin de l'écriture ; une
- * deuxième demande de fermeture ferme tout de suite ; « Ne pas fermer » lève la retenue (un clic
+ * écriture sur la Flam (#577). La fenêtre se ferme d'elle-même à la fin de l'opération en cours
+ * (les envois en attente ne partent pas) ; une deuxième demande de fermeture ferme tout de suite ; « Ne pas fermer » lève la retenue (un clic
  * par erreur sur la croix ne ferme pas l'application vingt minutes plus tard). Le bandeau
  * disparaît quand le backend signale la fin de la retenue.
  */
@@ -30,6 +31,12 @@ export function CloseRetainedBanner() {
       .catch(() => undefined);
     void onCloseCleared(() => setOperation(null))
       .then(keep)
+      .catch(() => undefined);
+    // Rattrapage : une retenue déjà en cours (événement émis avant le montage, écran de lecture).
+    void getCloseRetained()
+      .then((retained) => {
+        if (!disposed && retained) setOperation((current) => current ?? retained);
+      })
       .catch(() => undefined);
     return () => {
       disposed = true;

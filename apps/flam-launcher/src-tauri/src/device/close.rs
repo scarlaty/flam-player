@@ -7,14 +7,20 @@
 //!
 //! 1. première demande pendant une écriture : fermeture empêchée, événement
 //!    [`EVENT_CLOSE_RETAINED`] pour l'interface (bandeau non modal), et un fil attend la fin de
-//!    l'écriture pour refermer la fenêtre **de lui-même** : c'est ce que l'utilisateur a demandé
-//!    en cliquant. Aucun délai : un envoi peut durer plus de vingt minutes, rien ne le coupe sans
-//!    geste explicite ;
-//! 2. deuxième demande pendant l'écriture : l'utilisateur choisit de couper, la fermeture est
-//!    acceptée tout de suite (la reprise de la Flam, au prochain branchement, termine ou défait ce
-//!    qui était en cours) ;
-//! 3. « Ne pas fermer » ([`device_cancel_close`]) : la retenue est levée, le fil s'arrête, la
-//!    fenêtre ne se fermera pas à la fin de l'écriture ; événement [`EVENT_CLOSE_CLEARED`].
+//!    **cette** écriture pour refermer la fenêtre de lui-même : c'est ce que l'utilisateur a
+//!    demandé en cliquant. Aucun délai : un envoi peut durer plus de vingt minutes, rien ne le
+//!    coupe sans geste explicite. Le moment est déterministe : le verrou de l'appareil est
+//!    **scellé** à la libération de l'opération retenue ([`DeviceLock::seal_after`]), donc dans
+//!    une file de plusieurs envois, l'envoi suivant ne démarre pas (refus « la Flam est occupée
+//!    (la fermeture de l'application) ») et les envois en attente ne partent pas ;
+//! 2. deuxième demande pendant l'écriture, au moins [`DEBOUNCE`] après la première : l'utilisateur
+//!    choisit de couper, la fermeture est acceptée tout de suite (la reprise de la Flam, au
+//!    prochain branchement, termine ou défait ce qui était en cours). Une demande arrivée moins de
+//!    [`DEBOUNCE`] après la première (double clic) est retenue de la même façon, sans nouveau fil
+//!    ni nouvel événement ;
+//! 3. « Ne pas fermer » ([`device_cancel_close`]) : la retenue est levée, le verrou descellé, le
+//!    fil s'arrête, la fenêtre ne se fermera pas à la fin de l'écriture ; événement
+//!    [`EVENT_CLOSE_CLEARED`].
 //!
 //! Aucun chemin n'empêche définitivement de fermer : la décision ne dépend que de l'état du
 //! verrou et d'un drapeau « déjà retenue » ; si le fil d'attente meurt ou si le verrou n'est
@@ -36,9 +42,9 @@
 //! La logique ([`CloseGate`], [`wait_until_idle`]) ne dépend pas de Tauri ; seul
 //! [`on_close_requested`] la relie à la fenêtre.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -50,6 +56,8 @@ pub const EVENT_CLOSE_RETAINED: &str = "device://close-retained";
 /// Événement Tauri émis quand la retenue prend fin sans que l'application se ferme : écriture
 /// terminée, ou « Ne pas fermer ».
 pub const EVENT_CLOSE_CLEARED: &str = "device://close-cleared";
+/// Une deuxième demande arrivée moins de ce délai après la retenue (double clic) ne coupe pas.
+pub const DEBOUNCE: Duration = Duration::from_secs(2);
 /// Intervalle d'interrogation du verrou pendant la retenue.
 const POLL: Duration = Duration::from_millis(200);
 /// Attente maximale du verdict par [`device_close_verdict`] (le verdict est posé avant que
@@ -61,23 +69,34 @@ const VERDICT_WAIT: Duration = Duration::from_secs(2);
 pub enum CloseDecision {
     /// Fermer.
     Allow,
-    /// Ne pas fermer maintenant : une écriture de cette nature est en cours.
+    /// Première retenue : ne pas fermer, annoncer, attendre la fin de l'écriture.
     Retain(Operation),
+    /// Retenue déjà en cours, demande arrivée moins de [`DEBOUNCE`] après : ne pas fermer, rien
+    /// d'autre.
+    Held(Operation),
 }
 
-/// Fin de l'attente de [`wait_until_idle`].
+/// Fin de l'attente de [`wait_until_released`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waited {
-    /// Plus d'écriture en cours.
-    Idle,
+    /// L'opération retenue est terminée.
+    Released,
     /// Retenue levée entre-temps (« Ne pas fermer ») : ne rien fermer.
     Cancelled,
+}
+
+/// Retenue en cours : quand, quelle opération, quel numéro d'opération.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    at: Instant,
+    operation: Operation,
+    id: u64,
 }
 
 /// Mémoire d'une fermeture déjà retenue (une seule retenue par écriture) et dernier verdict.
 #[derive(Debug, Default)]
 pub struct CloseGate {
-    retained: AtomicBool,
+    held: Mutex<Option<Held>>,
     /// Change à chaque levée de la retenue : un fil d'attente d'une ancienne génération s'arrête.
     epoch: AtomicU64,
     verdict: Mutex<Option<CloseDecision>>,
@@ -89,26 +108,42 @@ pub static CLOSE_GATE: CloseGate = CloseGate::new();
 impl CloseGate {
     pub const fn new() -> Self {
         Self {
-            retained: AtomicBool::new(false),
+            held: Mutex::new(None),
             epoch: AtomicU64::new(0),
             verdict: Mutex::new(None),
         }
     }
 
-    /// Décide du sort d'une demande de fermeture. Sans écriture en cours : toujours `Allow`, et
-    /// la mémoire est remise à zéro. Pendant une écriture : `Retain` la première fois, `Allow`
-    /// ensuite (insistance de l'utilisateur).
-    pub fn decide(&self, lock: &DeviceLock) -> CloseDecision {
-        match lock.current().filter(|op| op.writes()) {
-            Some(op) => {
-                if self.retained.swap(true, Ordering::SeqCst) {
-                    CloseDecision::Allow
-                } else {
-                    CloseDecision::Retain(op)
-                }
-            }
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Held>> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Décide du sort d'une demande de fermeture faite à l'instant `now`. Sans écriture en cours :
+    /// toujours `Allow`, et la mémoire est remise à zéro. Pendant une écriture : `Retain` la
+    /// première fois (le verrou est scellé à la libération de cette opération), `Held` pour une
+    /// demande de moins de [`DEBOUNCE`] après, `Allow` ensuite (insistance de l'utilisateur, le
+    /// verrou est descellé).
+    pub fn decide(&self, lock: &DeviceLock, now: Instant) -> CloseDecision {
+        let mut held = self.held();
+        let Some((operation, id)) = lock.current_id().filter(|(op, _)| op.writes()) else {
+            *held = None;
+            return CloseDecision::Allow;
+        };
+        match *held {
             None => {
-                self.retained.store(false, Ordering::SeqCst);
+                *held = Some(Held {
+                    at: now,
+                    operation,
+                    id,
+                });
+                lock.seal_after(id);
+                CloseDecision::Retain(operation)
+            }
+            Some(first) if now.saturating_duration_since(first.at) < DEBOUNCE => {
+                CloseDecision::Held(first.operation)
+            }
+            Some(_) => {
+                lock.unseal();
                 CloseDecision::Allow
             }
         }
@@ -116,8 +151,8 @@ impl CloseGate {
 
     /// [`Self::decide`], et mémorise le verdict pour [`Self::take_verdict`] (gestionnaire de
     /// fermeture de l'interface).
-    pub fn request(&self, lock: &DeviceLock) -> CloseDecision {
-        let decision = self.decide(lock);
+    pub fn request(&self, lock: &DeviceLock, now: Instant) -> CloseDecision {
+        let decision = self.decide(lock, now);
         *self.verdict.lock().unwrap_or_else(PoisonError::into_inner) = Some(decision);
         decision
     }
@@ -135,27 +170,37 @@ impl CloseGate {
         self.epoch.load(Ordering::SeqCst)
     }
 
-    /// Lève la retenue (« Ne pas fermer ») : le fil d'attente s'arrête sans fermer, et une
-    /// nouvelle demande est de nouveau retenue la première fois. Rend vrai si une retenue était
-    /// en cours.
-    pub fn cancel(&self) -> bool {
-        self.epoch.fetch_add(1, Ordering::SeqCst);
-        self.retained.swap(false, Ordering::SeqCst)
+    /// Numéro de l'opération retenue, s'il y en a une.
+    pub fn held_id(&self) -> Option<u64> {
+        self.held().map(|held| held.id)
     }
 
-    /// Rend sa première retenue à la prochaine écriture (fin d'attente réussie).
-    pub fn reset(&self) {
-        self.retained.store(false, Ordering::SeqCst);
+    /// Opération dont la fermeture est retenue, s'il y en a une (l'interface l'interroge au
+    /// montage pour afficher le bandeau si l'événement a été manqué).
+    pub fn retained(&self) -> Option<Operation> {
+        self.held().map(|held| held.operation)
+    }
+
+    /// Lève la retenue (« Ne pas fermer ») : le fil d'attente s'arrête sans fermer, le verrou est
+    /// descellé, et une nouvelle demande est de nouveau retenue la première fois. Rend vrai si une
+    /// retenue était en cours.
+    pub fn cancel(&self, lock: &DeviceLock) -> bool {
+        let mut held = self.held();
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        lock.unseal();
+        held.take().is_some()
     }
 }
 
-/// Attend que `lock` n'ait plus d'écriture en cours, **sans délai maximal**, tant que la retenue
-/// de la génération `epoch` n'est pas levée ([`CloseGate::cancel`]). Interrogation toutes les
-/// `poll` (`sleep` injectable).
-pub fn wait_until_idle(
+/// Attend que l'opération `id` ne soit plus en cours sur `lock`, **sans délai maximal**, tant que
+/// la retenue de la génération `epoch` n'est pas levée ([`CloseGate::cancel`]). Interrogation
+/// toutes les `poll` (`sleep` injectable) ; le verrou étant scellé à la libération, la lenteur de
+/// l'interrogation ne laisse démarrer aucune autre opération.
+pub fn wait_until_released(
     lock: &DeviceLock,
     gate: &CloseGate,
     epoch: u64,
+    id: u64,
     poll: Duration,
     mut sleep: impl FnMut(Duration),
 ) -> Waited {
@@ -163,8 +208,8 @@ pub fn wait_until_idle(
         if gate.epoch() != epoch {
             return Waited::Cancelled;
         }
-        if lock.current().is_none_or(|op| !op.writes()) {
-            return Waited::Idle;
+        if lock.current_id().is_none_or(|(_, running)| running != id) {
+            return Waited::Released;
         }
         sleep(poll);
     }
@@ -180,8 +225,13 @@ struct Retained {
 /// Relie la logique à la fenêtre : à appeler pour `WindowEvent::CloseRequested`.
 pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
     use tauri::Emitter;
-    let CloseDecision::Retain(operation) = CLOSE_GATE.request(&DEVICE_LOCK) else {
-        return;
+    let operation = match CLOSE_GATE.request(&DEVICE_LOCK, Instant::now()) {
+        CloseDecision::Allow => return,
+        CloseDecision::Held(_) => {
+            api.prevent_close();
+            return;
+        }
+        CloseDecision::Retain(operation) => operation,
     };
     api.prevent_close();
     tracing::info!(
@@ -194,20 +244,30 @@ pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) 
             operation: operation.key(),
         },
     );
-    let epoch = CLOSE_GATE.epoch();
+    let (epoch, Some(id)) = (CLOSE_GATE.epoch(), CLOSE_GATE.held_id()) else {
+        return;
+    };
     let window = window.clone();
     std::thread::spawn(move || {
-        match wait_until_idle(&DEVICE_LOCK, &CLOSE_GATE, epoch, POLL, std::thread::sleep) {
-            Waited::Cancelled => {}
-            Waited::Idle => {
-                // Écriture terminée : la fermeture demandée a lieu. Une écriture démarrée avant
-                // elle serait retenue à son tour.
-                CLOSE_GATE.reset();
-                let _ = window.emit(EVENT_CLOSE_CLEARED, ());
-                if window.close().is_err() {
-                    tracing::warn!("fermeture de la fenêtre impossible après l'écriture");
-                }
-            }
+        let waited = wait_until_released(
+            &DEVICE_LOCK,
+            &CLOSE_GATE,
+            epoch,
+            id,
+            POLL,
+            std::thread::sleep,
+        );
+        if waited == Waited::Cancelled {
+            return;
+        }
+        // Course avec « Ne pas fermer » : la retenue est revérifiée juste avant de fermer.
+        if CLOSE_GATE.epoch() != epoch {
+            return;
+        }
+        if window.close().is_err() {
+            tracing::warn!("fermeture de la fenêtre impossible après l'écriture");
+            CLOSE_GATE.cancel(&DEVICE_LOCK);
+            let _ = window.emit(EVENT_CLOSE_CLEARED, ());
         }
     });
 }
@@ -237,7 +297,7 @@ fn verdict_wait(gate: &CloseGate, max: Duration, mut sleep: impl FnMut(Duration)
     loop {
         match gate.take_verdict() {
             Some(CloseDecision::Allow) => return "allow".into(),
-            Some(CloseDecision::Retain(_)) => return "retain".into(),
+            Some(CloseDecision::Retain(_) | CloseDecision::Held(_)) => return "retain".into(),
             None if waited >= max => return "retain".into(),
             None => {
                 sleep(step);
@@ -247,11 +307,19 @@ fn verdict_wait(gate: &CloseGate, max: Duration, mut sleep: impl FnMut(Duration)
     }
 }
 
+/// Opération dont la fermeture est retenue (`transfer`, `remove`, `reorder`), `None` sinon :
+/// l'interface l'interroge au montage pour afficher le bandeau si l'événement a été manqué
+/// (écran de lecture, rechargement).
+#[tauri::command]
+pub async fn device_close_retained() -> AppResult<Option<String>> {
+    Ok(CLOSE_GATE.retained().map(|op| op.key().to_string()))
+}
+
 /// « Ne pas fermer » : lève la retenue (voir le module). Rend vrai si une retenue était en cours.
 #[tauri::command]
 pub async fn device_cancel_close(app: tauri::AppHandle) -> AppResult<bool> {
     use tauri::Emitter;
-    let was = CLOSE_GATE.cancel();
+    let was = CLOSE_GATE.cancel(&DEVICE_LOCK);
     if was {
         let _ = app.emit(EVENT_CLOSE_CLEARED, ());
     }

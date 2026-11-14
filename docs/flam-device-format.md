@@ -599,14 +599,23 @@ plugin d'instance unique.
 retrait, un changement d'ordre ou une reprise couperait l'opération en plein milieu (tableaux de
 reprise ci-dessus). La première demande de fermeture pendant une telle écriture est donc
 **retenue** : l'événement `device://close-retained` (`{ operation }`) fait afficher un bandeau non
-modal (« Écriture sur la Flam en cours. La fenêtre se fermera à la fin… »), et un fil referme la
-fenêtre **de lui-même quand l'écriture est terminée** (c'est ce que l'utilisateur a demandé).
+modal (« La fenêtre se fermera à la fin de l'opération en cours. Les envois en attente ne
+partiront pas. Fermez à nouveau pour interrompre maintenant. »), et un fil referme la fenêtre
+**de lui-même quand l'opération retenue est terminée** (c'est ce que l'utilisateur a demandé).
+Le moment est déterministe : le verrou de l'appareil est **scellé** à la libération de cette
+opération (`DeviceLock::seal_after`), donc dans une file de plusieurs envois le suivant ne démarre
+pas (refus « la Flam est occupée (la fermeture de l'application) ») et les envois en attente ne
+partent pas ; la lenteur de l'interrogation du fil (200 ms) n'y change rien.
 **Aucun délai** : un envoi peut durer plus de vingt minutes, rien ne le coupe sans geste explicite.
-Une deuxième demande pendant l'écriture ferme tout de suite (choix de couper : la reprise au
-prochain branchement termine ou défait ce qui était en cours). Le bouton « Ne pas fermer »
+Une deuxième demande pendant l'écriture, au moins 2 s après la première, ferme tout de suite
+(choix de couper : la reprise au prochain branchement termine ou défait ce qui était en cours) ;
+une demande arrivée moins de 2 s après la première (double clic) est retenue de la même façon,
+sans nouvel événement. Le bouton « Ne pas fermer »
 (`device_cancel_close`) lève la retenue : la fenêtre ne se fermera pas à la fin de l'écriture
-(événement `device://close-cleared`, le bandeau disparaît ; il disparaît aussi à la fin de
-l'écriture). Aucun chemin n'empêche de fermer : la décision ne dépend que du verrou et d'un
+et descelle le verrou (événement `device://close-cleared`, le bandeau disparaît). Le bandeau est
+monté au-dessus de l'écran de lecture comme des autres écrans, et interroge au montage
+`device_close_retained` (opération dont la fermeture est retenue) pour s'afficher si l'événement a
+été manqué. Aucun chemin n'empêche de fermer : la décision ne dépend que du verrou et d'un
 drapeau « déjà retenue », la deuxième demande passe toujours (même si le fil d'attente meurt ou si
 le verrou n'est jamais relâché). L'aperçu des clés du mode carrier et « Retirer du PC » (lectures,
 `Operation::Read`) et l'éjection ne retiennent rien.
@@ -616,7 +625,9 @@ de fermeture (l'éditeur de pack vide son brouillon), Tauri empêche lui-même l
 gestionnaire de `@tauri-apps/api` détruit la fenêtre sauf s'il appelle `preventDefault()` : le
 gestionnaire JavaScript appelle donc toujours `preventDefault()`, fait son travail, demande le
 verdict mémorisé (`device_close_verdict`, `allow` ou `retain`) et ne détruit la fenêtre que si
-c'est `allow` ; sans verdict ou si la commande échoue hors application, il ferme comme avant.
+c'est `allow`. Sans verdict après 2 s, le backend rend `retain` : la fenêtre n'est pas détruite
+(un clic à refaire, jamais une écriture coupée). Seul l'échec de la commande elle-même (hors
+application, backend injoignable) fait fermer comme avant.
 
 Texte du bandeau selon l'opération, d'après ce que fait la reprise : envoi (la copie temporaire est
 supprimée au prochain branchement ou envoi, l'histoire n'est pas installée ; installée mais hors

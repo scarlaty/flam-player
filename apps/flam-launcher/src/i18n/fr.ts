@@ -122,7 +122,7 @@ export const fr = {
   },
   closeRetained: {
     title: "Écriture sur la Flam en cours",
-    body: "La fenêtre se fermera à la fin. Fermez à nouveau pour interrompre maintenant.",
+    body: "La fenêtre se fermera à la fin de l'opération en cours. Les envois en attente ne partiront pas. Fermez à nouveau pour interrompre maintenant.",
     // Ce que fait la reprise de la Flam au prochain branchement, selon l'opération coupée.
     resume: {
       transfer:

@@ -23,6 +23,9 @@ pub enum Operation {
     /// du PC » (#577). Tient le verrou (aucune écriture en parallèle) mais n'écrit rien sur
     /// l'appareil : ne retient pas la fermeture de la fenêtre.
     Read,
+    /// Fermeture de l'application en cours (#577) : le verrou est scellé après l'opération
+    /// retenue ([`DeviceLock::seal_after`]), aucune autre ne démarre avant la sortie.
+    Closing,
 }
 
 impl Operation {
@@ -30,7 +33,10 @@ impl Operation {
     /// laisserait un transfert ou un retrait inachevé, voir [`super::close`]). L'éjection n'écrit
     /// rien : elle est brève et la couper ne perd rien.
     pub fn writes(self) -> bool {
-        !matches!(self, Operation::Eject | Operation::Read)
+        !matches!(
+            self,
+            Operation::Eject | Operation::Read | Operation::Closing
+        )
     }
 
     /// Nom stable transmis à l'interface (événement et commande de [`super::close`]).
@@ -41,6 +47,7 @@ impl Operation {
             Operation::Reorder => "reorder",
             Operation::Eject => "eject",
             Operation::Read => "read",
+            Operation::Closing => "closing",
         }
     }
 
@@ -52,6 +59,7 @@ impl Operation {
             Operation::Reorder => "un réordonnancement",
             Operation::Eject => "une éjection",
             Operation::Read => "une lecture",
+            Operation::Closing => "la fermeture de l'application",
         }
     }
 }
@@ -61,10 +69,22 @@ impl Operation {
 #[error("la Flam est occupée ({}) : réessayez quand l'opération est terminée", .0.label())]
 pub struct Busy(pub Operation);
 
+/// État du verrou : opération en cours (avec son numéro), scellement pour la fermeture.
+#[derive(Debug, Default)]
+struct State {
+    current: Option<(Operation, u64)>,
+    /// Numéro de la prochaine opération.
+    next_id: u64,
+    /// À la libération de l'opération de ce numéro, le verrou est scellé.
+    seal_on: Option<u64>,
+    /// Aucune opération ne démarre plus ([`Operation::Closing`]).
+    sealed: bool,
+}
+
 /// Verrou non bloquant des opérations sur l'appareil.
 #[derive(Debug, Default)]
 pub struct DeviceLock {
-    current: Mutex<Option<Operation>>,
+    state: Mutex<State>,
 }
 
 /// Instance de l'application.
@@ -73,28 +93,68 @@ pub static DEVICE_LOCK: DeviceLock = DeviceLock::new();
 impl DeviceLock {
     pub const fn new() -> Self {
         Self {
-            current: Mutex::new(None),
+            state: Mutex::new(State {
+                current: None,
+                next_id: 0,
+                seal_on: None,
+                sealed: false,
+            }),
         }
     }
 
-    fn state(&self) -> MutexGuard<'_, Option<Operation>> {
+    fn state(&self) -> MutexGuard<'_, State> {
         // Un fil qui panique garde son `OpGuard`, libéré au déroulement : l'état reste juste.
-        self.current.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Prend le verrou pour `op`, ou refuse si une opération est déjà en cours.
+    /// Prend le verrou pour `op`, ou refuse si une opération est déjà en cours ou si le verrou est
+    /// scellé pour la fermeture.
     pub fn try_begin(&self, op: Operation) -> Result<OpGuard<'_>, Busy> {
         let mut state = self.state();
-        if let Some(running) = *state {
+        if let Some((running, _)) = state.current {
             return Err(Busy(running));
         }
-        *state = Some(op);
-        Ok(OpGuard { lock: self })
+        if state.sealed {
+            return Err(Busy(Operation::Closing));
+        }
+        let id = state.next_id;
+        state.next_id += 1;
+        state.current = Some((op, id));
+        Ok(OpGuard { lock: self, id })
     }
 
     /// Opération en cours, s'il y en a une.
     pub fn current(&self) -> Option<Operation> {
-        *self.state()
+        self.state().current.map(|(op, _)| op)
+    }
+
+    /// Opération en cours et son numéro (unique dans le processus).
+    pub fn current_id(&self) -> Option<(Operation, u64)> {
+        self.state().current
+    }
+
+    /// Fait sceller le verrou à la libération de l'opération `id` : aucune autre opération ne peut
+    /// démarrer entre cette libération et la fermeture, qui a lieu à un moment déterministe.
+    /// Scellé aussitôt si `id` n'est plus en cours.
+    pub fn seal_after(&self, id: u64) {
+        let mut state = self.state();
+        if state.current.is_some_and(|(_, running)| running == id) {
+            state.seal_on = Some(id);
+        } else {
+            state.sealed = true;
+        }
+    }
+
+    /// Lève le scellement (« Ne pas fermer », fermeture impossible, insistance de l'utilisateur).
+    pub fn unseal(&self) {
+        let mut state = self.state();
+        state.seal_on = None;
+        state.sealed = false;
+    }
+
+    /// Vrai si le verrou est scellé pour la fermeture.
+    pub fn is_sealed(&self) -> bool {
+        self.state().sealed
     }
 }
 
@@ -102,11 +162,17 @@ impl DeviceLock {
 #[derive(Debug)]
 pub struct OpGuard<'a> {
     lock: &'a DeviceLock,
+    id: u64,
 }
 
 impl Drop for OpGuard<'_> {
     fn drop(&mut self) {
-        *self.lock.state() = None;
+        let mut state = self.lock.state();
+        state.current = None;
+        if state.seal_on == Some(self.id) {
+            state.seal_on = None;
+            state.sealed = true;
+        }
     }
 }
 
@@ -126,6 +192,45 @@ mod tests {
         drop(guard);
         assert_eq!(lock.current(), None);
         assert!(lock.try_begin(Operation::Eject).is_ok());
+    }
+
+    #[test]
+    fn le_verrou_scelle_a_la_liberation_de_l_operation_retenue() {
+        let lock = DeviceLock::new();
+        let guard = lock.try_begin(Operation::Transfer).unwrap();
+        let (_, id) = lock.current_id().unwrap();
+        lock.seal_after(id);
+        assert!(!lock.is_sealed(), "pas avant la libération");
+        drop(guard);
+        // Aucune autre opération (envoi suivant d'une file) ne démarre avant la fermeture.
+        assert!(lock.is_sealed());
+        assert_eq!(
+            lock.try_begin(Operation::Transfer).unwrap_err(),
+            Busy(Operation::Closing)
+        );
+        lock.unseal();
+        assert!(lock.try_begin(Operation::Transfer).is_ok());
+    }
+
+    #[test]
+    fn seal_after_une_operation_deja_finie_scelle_aussitot() {
+        let lock = DeviceLock::new();
+        let guard = lock.try_begin(Operation::Remove).unwrap();
+        let (_, id) = lock.current_id().unwrap();
+        drop(guard);
+        lock.seal_after(id);
+        assert!(lock.is_sealed());
+    }
+
+    #[test]
+    fn les_numeros_d_operation_different() {
+        let lock = DeviceLock::new();
+        let first = lock.try_begin(Operation::Remove).unwrap();
+        let (_, a) = lock.current_id().unwrap();
+        drop(first);
+        let _second = lock.try_begin(Operation::Remove).unwrap();
+        let (_, b) = lock.current_id().unwrap();
+        assert_ne!(a, b);
     }
 
     #[test]

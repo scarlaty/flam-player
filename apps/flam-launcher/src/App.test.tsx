@@ -33,6 +33,9 @@ const embedded = {
   embedded: true,
 };
 
+/** Opération dont la fermeture est retenue au montage du bandeau (`null` : aucune). */
+let closeRetained: string | null = null;
+
 function mockBackend(playing: object | null = null, calls: string[] = []) {
   mockIPC(
     (cmd) => {
@@ -42,6 +45,8 @@ function mockBackend(playing: object | null = null, calls: string[] = []) {
           return playing;
         case "player_embed_layout":
           return null;
+        case "device_close_retained":
+          return closeRetained;
         case "app_info":
           return { name: "flam-launcher", version: "0.1.0" };
         case "settings_get":
@@ -71,6 +76,7 @@ function goTo(hash: string) {
 }
 
 afterEach(() => {
+  closeRetained = null;
   // Démonte avant d'effacer les simulations : les désabonnements appellent l'API d'événements.
   cleanup();
   clearMocks();
@@ -191,4 +197,23 @@ it("un player incrusté remplace l'application par l'écran Lecture jusqu'à sa 
     await screen.findByRole("heading", { level: 1, name: "Bienvenue" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("navigation", { name: "Navigation" })).toBeInTheDocument();
+});
+
+it("le bandeau de fermeture retenue reste visible sur l'écran Lecture (#577)", async () => {
+  class FakeResizeObserver {
+    observe() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  closeRetained = "transfer";
+  mockBackend(embedded);
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Les trois ours" }),
+  ).toBeInTheDocument();
+  const banner = await screen.findByRole("status");
+  expect(banner).toHaveTextContent(
+    "La fenêtre se fermera à la fin de l'opération en cours",
+  );
+  expect(screen.queryByRole("navigation")).toBeNull();
 });

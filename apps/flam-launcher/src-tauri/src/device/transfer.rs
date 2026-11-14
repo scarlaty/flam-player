@@ -272,6 +272,11 @@ pub enum TransferError {
     NotEnoughSpace { needed: u64, free: u64 },
     #[error("l'histoire {id} est déjà sur la Flam{}", hidden_note(.hidden))]
     AlreadyInstalled { id: StoryId, hidden: bool },
+    /// Un dossier `str.hidden/<uuid>/` existe mais l'UUID n'est dans aucun index (orphelin masqué,
+    /// par exemple après un échec entre l'écriture de `list.hidden` et le renommage) : refusé comme
+    /// une histoire masquée, avec la marche à suivre. Le remplacement n'est pas géré ici.
+    #[error("un dossier masqué de l'histoire {id} est présent sur la Flam mais figure dans aucun index : retirez d'abord cette histoire non listée depuis « Ma Flam », puis renvoyez-la ; rien n'a été écrit")]
+    HiddenOrphan { id: StoryId },
     /// « Remplacer » visait une autre histoire de la Flam que celle préparée (`uuid.bin`).
     #[error(
         "l'histoire préparée ({id}) n'est pas celle à remplacer sur la Flam : rien n'a été écrit"
@@ -392,6 +397,7 @@ impl From<TransferError> for AppError {
             | TransferError::InvalidRoot
             | TransferError::NotEnoughSpace { .. }
             | TransferError::AlreadyInstalled { .. }
+            | TransferError::HiddenOrphan { .. }
             | TransferError::ReplaceMismatch { .. }
             | TransferError::UnsupportedFirmware(_)
             | TransferError::KeyUnavailable(_)
@@ -815,8 +821,17 @@ pub(crate) fn send_with(
     if !matches!(hidden.state, IndexState::Valid | IndexState::Absent) {
         return Err(TransferError::IndexNeedsUser);
     }
-    if hidden.entries.contains(&id) || root.join(HIDDEN_STORIES_DIR).join(id.as_str()).exists() {
+    if hidden.entries.contains(&id) {
         return Err(TransferError::AlreadyInstalled { id, hidden: true });
+    }
+    // Dossier masqué hors des deux index : toujours refusé, mais avec un message qui dit quoi faire
+    // (l'orphelin est visible dans « Ma Flam » et s'y retire).
+    if root.join(HIDDEN_STORIES_DIR).join(id.as_str()).exists() {
+        return Err(if list.entries.contains(&id) {
+            TransferError::AlreadyInstalled { id, hidden: true }
+        } else {
+            TransferError::HiddenOrphan { id }
+        });
     }
     let target = root.join(STORIES_DIR).join(id.as_str());
     let listed = list.entries.contains(&id);

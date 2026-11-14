@@ -70,7 +70,14 @@ export function AppFrame({ route }: { route: Exclude<Route, "demo"> }) {
     wasEmbedded.current = embedded;
   }, [embedded]);
   if (session && embedded)
-    return <PlayerScreen session={session} onGone={() => forgetSession(session.pid)} />;
+    // Le bandeau de fermeture retenue (#577) reste visible pendant la lecture : un envoi peut être
+    // en cours quand l'utilisateur ferme la fenêtre.
+    return (
+      <>
+        <CloseRetainedBanner />
+        <PlayerScreen session={session} onGone={() => forgetSession(session.pid)} />
+      </>
+    );
   return (
     <AppShell
       navLabel={t.nav.label}

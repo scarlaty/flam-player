@@ -45,9 +45,11 @@ import { statusFetchCount, useDeviceStatus } from "./useDeviceStatus";
 
 const text = t.deviceTransfer;
 
-/** Intervalle des tentatives d'annulation tant que le transfert n'a pas pris le drapeau. */
 /** Nouvelle demande de la liste après un refus `device_changed` de la lecture (#577). */
 const LIST_RETRY_MS = 500;
+/** Nombre de nouvelles demandes après refus : ensuite la scrutation normale reprend la main. */
+const LIST_RETRIES = 3;
+/** Intervalle des tentatives d'annulation tant que le transfert n'a pas pris le drapeau. */
 const CANCEL_RETRY_MS = 200;
 const CANCEL_RETRIES = 15;
 
@@ -258,6 +260,13 @@ export function DeviceProvider({
   }, [known, deviceKey, root, writable, bumpReload]);
 
   const recovered = deviceKey !== null && recoveredKey === deviceKey;
+  // Nouvelles demandes de la liste après refus `device_changed`, par clé (#577).
+  const listRetries = useRef<{ key: string | null; count: number }>({
+    key: null,
+    count: 0,
+  });
+  // Retrait ou éjection en cours (reflet des états, lisible par la minuterie de relecture).
+  const deviceBusy = useRef(false);
 
   useEffect(() => {
     if (!recovered) return;
@@ -265,10 +274,13 @@ export function DeviceProvider({
     const gen = reload;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     // Liste de la Flam affichée seulement (racine et empreinte, #577) : avec deux Flam, jamais
-    // celle de la première.
-    listDeviceStories(root ?? undefined, expectedOfKey(deviceKey))
+    // celle de la première. Une Flam affichée sans empreinte (`.mdf` non lu) ne transmet pas de
+    // Flam attendue : lecture par la racine seule, comme avant (le backend refuserait toute Flam).
+    const expected = expectedOfKey(deviceKey);
+    listDeviceStories(root ?? undefined, expected.fingerprint ? expected : undefined)
       .then((report) => {
         if (!active) return;
+        listRetries.current = { key: deviceKey, count: 0 };
         setSettledReload(gen);
         setStories(
           report
@@ -285,9 +297,18 @@ export function DeviceProvider({
         if (error.kind === "device_changed") {
           // Une autre Flam a pris la place depuis le dernier relevé : pas une erreur à afficher,
           // l'état est relu (la clé changera et la liste sera relue) ; si elle ne change pas
-          // (lecture passagère de `.mdf`), la liste est redemandée un instant plus tard.
+          // (lecture passagère de `.mdf`), la liste est redemandée un instant plus tard, au plus
+          // `LIST_RETRIES` fois par clé, puis on laisse la scrutation reprendre la main (aucune
+          // boucle). Jamais pendant un envoi, un retrait ou une éjection.
           retry();
-          retryTimer = setTimeout(bumpReload, LIST_RETRY_MS);
+          const tries = listRetries.current;
+          const count = tries.key === deviceKey ? tries.count : 0;
+          if (count < LIST_RETRIES) {
+            listRetries.current = { key: deviceKey, count: count + 1 };
+            retryTimer = setTimeout(() => {
+              if (!running.current && !deviceBusy.current) bumpReload();
+            }, LIST_RETRY_MS);
+          }
           return;
         }
         setSettledReload(gen);
@@ -297,9 +318,7 @@ export function DeviceProvider({
       active = false;
       clearTimeout(retryTimer);
     };
-    // `root` suit `deviceKey` (même relevé) ; `retry` est stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recovered, deviceKey, reload, bumpReload]);
+  }, [recovered, deviceKey, root, reload, bumpReload, retry]);
 
   const reloadStories = useCallback(
     (options?: { quiet?: boolean }) => {
@@ -1176,6 +1195,9 @@ export function DeviceProvider({
   );
 
   const [ejecting, setEjecting] = useState(false);
+  useEffect(() => {
+    deviceBusy.current = removing || ejecting;
+  }, [removing, ejecting]);
   // Sans empreinte (#609) : l'éjection n'écrit aucun fichier, vaut pour la Flam branchée quelle
   // qu'elle soit, et doit rester possible quand `.mdf` est illisible.
   const eject = useCallback(async () => {

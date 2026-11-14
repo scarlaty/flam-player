@@ -542,3 +542,33 @@ it("refus device_changed de la liste : l'état est relu, aucune erreur alarmante
   ).toBeInTheDocument();
   expect(callsOf("device_list_stories").length).toBeGreaterThanOrEqual(2);
 });
+
+it("Flam affichée sans empreinte : la liste est lue par la racine seule et s'affiche, sans boucle (#577)", async () => {
+  status = detected(null);
+  plugged = FLAM_1;
+  render(<Harness />);
+  expect(
+    await screen.findByRole("heading", { name: "Histoires sur la Flam (2)" }),
+  ).toBeInTheDocument();
+  const lists = callsOf("device_list_stories");
+  expect(lists.length).toBeGreaterThan(0);
+  // Aucune Flam attendue transmise : le backend refuserait toute Flam sans empreinte.
+  for (const call of lists) expect(call.args).toEqual({ root: "E:\\" });
+  const count = lists.length;
+  await settle(1500);
+  expect(callsOf("device_list_stories")).toHaveLength(count);
+});
+
+it("refus device_changed persistant : nombre de demandes borné, plus de boucle ensuite (#577)", async () => {
+  listRefusals = 1000;
+  render(<Harness />);
+  await waitFor(() => expect(callsOf("device_list_stories").length).toBeGreaterThan(0));
+  // 3 nouvelles demandes espacées de 500 ms au plus, puis la scrutation seule.
+  await waitFor(() => expect(callsOf("device_list_stories")).toHaveLength(4), {
+    timeout: 4000,
+  });
+  await settle(1500);
+  expect(callsOf("device_list_stories")).toHaveLength(4);
+  expect(screen.queryByText(REFUSAL)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});

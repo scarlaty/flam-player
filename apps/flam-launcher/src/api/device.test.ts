@@ -4,7 +4,7 @@ import {
   cancelClose,
   cancelDeviceStoryDetails,
   getCloseVerdict,
-  getWriteInProgress,
+  getCloseRetained,
   getDeviceStatus,
   getDeviceStoryThumbnail,
   getDeviceStoryTitles,
@@ -73,15 +73,15 @@ it("appelle les commandes de fermeture retenue (#577)", async () => {
   mockIPC((cmd) => {
     calls.push(cmd);
     if (cmd === "device_close_verdict") return "retain";
-    if (cmd === "device_write_in_progress") return "transfer";
+    if (cmd === "device_close_retained") return "transfer";
     return true;
   });
   expect(await getCloseVerdict()).toBe("retain");
-  expect(await getWriteInProgress()).toBe("transfer");
+  expect(await getCloseRetained()).toBe("transfer");
   expect(await cancelClose()).toBe(true);
   expect(calls).toEqual([
     "device_close_verdict",
-    "device_write_in_progress",
+    "device_close_retained",
     "device_cancel_close",
   ]);
 });

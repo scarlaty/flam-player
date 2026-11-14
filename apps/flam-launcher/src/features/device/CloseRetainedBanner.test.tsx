@@ -10,12 +10,16 @@ import { CloseRetainedBanner } from "./CloseRetainedBanner";
 tolerateLoadInAsyncUtils();
 
 let calls: string[];
+/** Opération que `device_close_retained` rend (`null` : aucune retenue). */
+let retained: string | null;
 
 beforeEach(() => {
   calls = [];
+  retained = null;
   mockIPC(
     (cmd) => {
       calls.push(cmd);
+      if (cmd === "device_close_retained") return retained;
       return cmd === "device_cancel_close" ? true : null;
     },
     { shouldMockEvents: true },
@@ -50,7 +54,10 @@ it("annonce la retenue avec ce que fait la reprise de l'opération", async () =>
     expect(banner).toHaveTextContent(t.closeRetained.title);
     expect(banner).toHaveTextContent(t.closeRetained.body);
     expect(banner).toHaveTextContent(t.closeRetained.resume[operation]);
-    expect(banner).toHaveTextContent("La fenêtre se fermera à la fin");
+    expect(banner).toHaveTextContent(
+      "La fenêtre se fermera à la fin de l'opération en cours",
+    );
+    expect(banner).toHaveTextContent("Les envois en attente ne partiront pas");
     expect(banner).toHaveTextContent("Fermez à nouveau pour interrompre maintenant");
     if (operation === "transfer") await expectNoAxeViolations(document.body);
     unmount();
@@ -87,4 +94,11 @@ it("retire le bandeau même si la levée de la retenue échoue", async () => {
   await retain("reorder");
   fireEvent.click(screen.getByRole("button", { name: t.closeRetained.keep }));
   await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+});
+
+it("rattrape une retenue déjà en cours au montage (événement manqué)", async () => {
+  retained = "remove";
+  render(<CloseRetainedBanner />);
+  const banner = await screen.findByRole("status");
+  expect(banner).toHaveTextContent(t.closeRetained.resume.remove);
 });

@@ -630,11 +630,11 @@ export interface CloseRetained {
 }
 
 /**
- * `device_write_in_progress` : écriture en cours sur la Flam (`null` : aucune). Permet d'afficher
- * le bandeau si l'événement de retenue a été manqué.
+ * `device_close_retained` : opération dont la fermeture de la fenêtre est retenue (`null` :
+ * aucune). Interrogée au montage du bandeau pour l'afficher si l'événement a été manqué.
  */
-export function getWriteInProgress(): Promise<WriteOperation | null> {
-  return invokeCommand<WriteOperation | null>("device_write_in_progress");
+export function getCloseRetained(): Promise<WriteOperation | null> {
+  return invokeCommand<WriteOperation | null>("device_close_retained");
 }
 
 /**

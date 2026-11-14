@@ -682,11 +682,16 @@ fn deja_present_ou_masque() {
 
     let root = device(&tmp.path().join("b"), false);
     write(&root.join("str.hidden").join(NEW).join("info"), b"x");
+    let before = snapshot(&root);
     let err = send(&FaultyFs::new(), &root, &p, true).unwrap_err();
-    assert!(
-        matches!(err, TransferError::AlreadyInstalled { hidden: true, .. }),
-        "{err:?}"
-    );
+    // Dossier masqué présent mais dans aucun index (orphelin masqué, visible dans « Ma Flam ») :
+    // toujours refusé, avec la marche à suivre (#577).
+    assert!(matches!(err, TransferError::HiddenOrphan { .. }), "{err:?}");
+    assert!(err.to_string().contains("retirez d'abord"), "{err}");
+    assert!(err.to_string().contains("Ma Flam"), "{err}");
+    let app: AppError = err.into();
+    assert_eq!(app.kind(), "validation");
+    assert_eq!(snapshot(&root), before);
 }
 
 #[test]
