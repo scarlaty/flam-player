@@ -72,9 +72,8 @@ it("affiche le bandeau avec le nom de la sauvegarde puis l'acquitte", async () =
   expect(banner).toHaveTextContent("settings.json.20261015-101010.bak");
   // Le dossier de cache fait partie des réglages remis par défaut (#652).
   expect(banner).toHaveTextContent(
-    "Les réglages, dont le dossier de cache, sont revenus aux valeurs par défaut",
+    "Les réglages sont revenus aux valeurs par défaut. Si vous aviez choisi un autre dossier de cache, vos histoires installées y sont toujours",
   );
-  expect(banner).toHaveTextContent("emplacement par défaut");
   expect(banner).toHaveTextContent("L'ancien fichier est conservé");
   await expectNoAxeViolations(document.body, ["region", "page-has-heading-one"]);
 
@@ -109,6 +108,6 @@ it("dit que les sources sont revenues par défaut pour sources.json", () => {
   );
   act(() => screen.getByRole("button", { name: "signaler" }).click());
   const banner = screen.getByRole("status");
-  expect(banner).toHaveTextContent("Les sources sont revenues aux valeurs par défaut");
+  expect(banner).toHaveTextContent("seul le Telmi Store reste");
   expect(banner).not.toHaveTextContent("dossier de cache");
 });

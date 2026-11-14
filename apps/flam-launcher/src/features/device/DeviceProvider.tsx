@@ -388,11 +388,17 @@ export function DeviceProvider({
   );
 
   // Autre Flam branchée : « Retirer du PC » n'est plus proposé. Une absence passagère (détection
-  // manquée, puis la même Flam revient) ne le retire pas : le backend revérifie de toute façon
-  // que l'histoire est sur la même Flam, et sans Flam le clic est refusé (#652).
+  // manquée, puis la même Flam revient) ne le retire pas pour un envoi confirmé : le backend
+  // revérifie de toute façon que l'histoire est sur la même Flam, et un clic sans Flam est un
+  // refus passager. Écriture non confirmée : comportement prudent, le bouton est retiré dès
+  // l'absence (#652).
   const pcCopyKey = useRef(deviceKey);
   useEffect(() => {
-    if (deviceKey === null || pcCopyKey.current === deviceKey) return;
+    if (deviceKey === null) {
+      clearPcCopy((item) => item.pcCopyUnconfirmed === true);
+      return;
+    }
+    if (pcCopyKey.current === deviceKey) return;
     pcCopyKey.current = deviceKey;
     clearPcCopy(() => true);
   }, [deviceKey, clearPcCopy]);
@@ -1077,7 +1083,9 @@ export function DeviceProvider({
       if (running.current) return;
       const rootNow = rootRef.current;
       if (!rootNow) {
-        setPcCopy(uuid, "refused", text.panel.pcCopy.noDevice);
+        // Absence peut-être passagère : le bouton reste, avec le message (une autre Flam a déjà
+        // retiré le bouton avant ce clic).
+        setPcCopy(uuid, "failed", text.panel.pcCopy.noDevice);
         return;
       }
       setPcCopy(uuid, "removing");

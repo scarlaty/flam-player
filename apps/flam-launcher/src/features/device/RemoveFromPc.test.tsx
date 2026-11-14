@@ -362,6 +362,43 @@ it("détection manquée un instant puis la même Flam : « Retirer du PC » rest
   expect(await screen.findByText(REMOVED)).toBeVisible();
 });
 
+it("clic pendant l'absence de la Flam : refus passager, le bouton revient avec la Flam (#652)", async () => {
+  outcomes.set(A, { ok: { status: "kept" } });
+  renderPanel();
+  await send("Capi");
+  await screen.findByRole("button", { name: PC });
+  const same = status;
+  status = { detected: false, hint: null, device_count: 0, device: null };
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Retirer de la Flam" })).not.toBeNull(),
+  );
+  const seen = count("device_status");
+  await waitFor(() => expect(count("device_status")).toBeGreaterThan(seen + 1));
+  fireEvent.click(screen.getByRole("button", { name: PC }));
+  expect(
+    await screen.findByText(
+      "L'histoire est envoyée, mais n'a pas pu être retirée du PC : la Flam n'est plus détectée",
+    ),
+  ).toBeVisible();
+  expect(count("library_remove_sent")).toBe(0);
+  // La même Flam revient : le bouton est toujours là et le retrait réussit.
+  status = same;
+  const back = count("device_status");
+  await waitFor(() => expect(count("device_status")).toBeGreaterThan(back + 1));
+  expect(screen.getByRole("button", { name: PC })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: PC }));
+  expect(await screen.findByText(REMOVED)).toBeVisible();
+});
+
+it("écriture non confirmée : après une absence de la Flam, « Retirer du PC » est retiré (#652)", async () => {
+  outcomes.set(A, { ok: { status: "kept", unconfirmed: true } });
+  renderPanel();
+  await send("Capi");
+  await screen.findByRole("button", { name: PC });
+  status = { detected: false, hint: null, device_count: 0, device: null };
+  await waitFor(() => expect(screen.queryByRole("button", { name: PC })).toBeNull());
+});
+
 it("refus passager (lecture, installation, Flam occupée) : bouton reproposé avec le message", async () => {
   outcomes.set(A, { ok: { status: "kept" } });
   renderPanel();
