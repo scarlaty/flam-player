@@ -1533,8 +1533,14 @@ attente. Échec d'écriture du témoin à la migration : elle est rejouée au d�
 échec de sa réécriture au rattrapage : journalisé, la liste précédente est relue au démarrage
 suivant. Une version antérieure ignore ce témoin. Migration reportée : les refus du dossier par
 défaut ne sont pas inscrits (pas encore de témoin), mais il est réévalué à chaque démarrage du
-report et ses refus sont inscrits par la migration complète ; limite : si un nouveau dossier est
-enregistré pendant le report (témoin écrit vide), ils ne sont jamais rattrapés. La racine du cache peut être une jonction ou
+report et ses refus sont inscrits par la migration complète ; si un nouveau dossier est
+enregistré pendant le report, le témoin écrit à cette occasion inscrit en attente les
+sous-dossiers existants, non marqués, du dossier par défaut (rien n'est marqué à ce moment) : le
+rattrapage les évalue au démarrage suivant avec la preuve par le contenu. Des réglages illisibles
+(corrompus) au démarrage reportent aussi la migration, sans témoin ni mise de côté du fichier
+(c'est `settings_get` / `settings_set` qui s'en charge) : le dossier configuré est inconnu, la
+migration s'achève au démarrage où les réglages sont lisibles. Une racine désignée par deux
+chemins (jonction, lien, nom court) n'est pas jugée quittée par le rattrapage. La racine du cache peut être une jonction ou
 un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
 reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin
@@ -1545,7 +1551,14 @@ qu'elle est encore reportée, le témoin est écrit : seul le dossier configuré
 à jour est migré, jamais un dossier choisi ensuite. Les dossiers temporaires d'une création
 interrompue (`.flam-launcher-new-…`, vides ou ne contenant que le marqueur) sont supprimés au
 démarrage, après la migration, s'ils datent d'au moins une minute (une création en cours n'est
-jamais cassée). Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
+jamais cassée) ; il en va de même, dans le dossier de configuration, des fichiers temporaires
+d'une écriture interrompue des témoins (`.cache-markers.done.<pid>-<n>.tmp`, noms exacts,
+fichiers ordinaires seulement). Un temporaire orphelin de même nom (numéro de processus réutilisé)
+n'empêche pas la création : le numéro suivant est essayé, et l'échec de création d'un sous-dossier
+n'est journalisé qu'une fois par session. Limite connue : le renommage final de la création
+marquée peut remplacer un dossier **vide** créé par un tiers au même instant (rien n'est perdu) ;
+un dossier non vide l'en empêche et reste intact. Le retour au dossier par défaut (`cache_dir`
+absent) n'est pas contrôlé : ce dossier appartient à l'application. Un ancien cache du launcher choisi plus tard (`library/` contenant l'index
 `library.json`, fichier réel d'au plus 4 Mio lisible au schéma de la bibliothèque ; le `.lock`
 seul ne suffit pas) est accepté par `settings_set`, avant l'enregistrement des réglages :
 `library/` y est marqué (par l'index) ; `podcasts/`, `podcast-work/`, `play/` et `flam-transfer/` le sont sur la

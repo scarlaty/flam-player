@@ -72,7 +72,8 @@ fn purge_stale_thumbs(app: &tauri::AppHandle) {
 /// marqueurs (#570), ouverture de la porte de démarrage (`opener` détruit : les commandes en
 /// attente reprennent), lancement de la reprise de la file d'installation (`resume`, aussitôt :
 /// une installation lancée ensuite ne réécrit pas la file avant sa relecture), puis nettoyage des
-/// dossiers temporaires d'une création interrompue et purge des vignettes périmées (#37). Une
+/// dossiers temporaires d'une création interrompue (cache) et des écritures interrompues des
+/// témoins de migration (configuration), puis purge des vignettes périmées (#37). Une
 /// panique de la migration n'est rattrapée qu'en test et en développement : la version publiée
 /// compile en `panic = "abort"`, le processus s'arrête alors. Le garde `Drop` de `opener` ouvre
 /// aussi la porte si cette tâche n'est jamais exécutée.
@@ -89,6 +90,7 @@ fn startup_cache_tasks(
     drop(opener);
     resume();
     cache::remove_stale_tmp_configured(&app.state::<storage::ConfigState>(), &env);
+    cache::remove_stale_witness_tmp(config_dir);
     purge_stale_thumbs(app);
 }
 
