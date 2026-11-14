@@ -1485,6 +1485,7 @@ impl InstallService {
                         ffmpeg: tc.ffmpeg.as_deref(),
                         thumb_fit: tc.thumb_fit,
                         grace: self.0.opts.grace,
+                        idle: convert::IDLE_TIMEOUT,
                     },
                     cancel,
                     &mut on_step,

@@ -22,6 +22,10 @@
 //! - Aucune limite mémoire sur le job (décision D5) : seul `KILL_ON_JOB_CLOSE` est posé.
 //! - Aucun repli : un échec du convertisseur est rendu tel quel. `unsupported_format` (code 7,
 //!   décision D4) est une erreur finale, au message fixe et non technique ([`UNSUPPORTED_FORMAT`]).
+//! - Convertisseur figé (#652) : aucune ligne sur stdout pendant [`IDLE_TIMEOUT`] (ou processus
+//!   qui ne se termine pas dans ce délai après la fin de stdout) → arrêt comme une annulation
+//!   (demande polie, arrêt forcé, temporaires supprimés) et erreur [`STALLED_CODE`]. Ce code ne
+//!   met pas l'archive en cause : une archive téléchargée est gardée.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -39,6 +43,20 @@ use crate::{AppError, AppResult};
 
 /// Ligne JSON la plus longue lue (au-delà : tronquée, donc ignorée).
 const MAX_LINE: u64 = 1024 * 1024;
+
+/// Délai d'inactivité du convertisseur : sans aucune ligne sur stdout pendant ce temps, il est
+/// tenu pour figé et arrêté (#652). Fréquence réelle des lignes de `telmi2flam --progress-json`
+/// (`crates/telmi2flam/src/progress.rs`) : un événement `step` par image, son ou entrée écrite,
+/// espacés d'au moins 100 ms ; les plus longs silences d'une conversion vivante sont le
+/// rééchantillonnage d'un seul son par ffmpeg (borné à 120 s par fichier, `FFMPEG_TIMEOUT`),
+/// l'écriture d'une seule entrée et la synchronisation finale du `.plain.pk` (bornées par la
+/// vitesse du disque : 1 Gio à 1 Mo/s tient dans le délai). Vingt minutes laissent une marge de
+/// dix fois le pire silence de ffmpeg ; l'annulation reste possible à tout moment.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// Code d'erreur d'un convertisseur arrêté faute d'activité ([`IDLE_TIMEOUT`]). Stable : repris
+/// par l'interface. Absent de la liste des pannes qui mettent l'archive en cause.
+pub const STALLED_CODE: &str = "converter_stalled";
 
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
@@ -93,6 +111,8 @@ pub struct Conversion<'a> {
     pub thumb_fit: ThumbFit,
     /// Délai laissé au convertisseur après la demande d'arrêt polie avant l'arrêt forcé.
     pub grace: Duration,
+    /// Délai d'inactivité ([`IDLE_TIMEOUT`] dans l'application, injectable pour les tests).
+    pub idle: Duration,
 }
 
 /// Progression d'une phase (`images`, `audio`, `scripts`, `zip`).
@@ -165,6 +185,9 @@ fn fixed_message(code: &str) -> String {
         "missing_asset" => "une image ou un son de l'histoire est absent de l'archive".into(),
         "output_error" => "le fichier converti n'a pas pu être écrit".into(),
         "internal_error" => "erreur interne du convertisseur".into(),
+        STALLED_CODE => "le convertisseur ne répondait plus et a été arrêté ; rien n'a été \
+             supprimé, réessayez"
+            .into(),
         _ => "le convertisseur a signalé une erreur".into(),
     }
 }
@@ -390,6 +413,27 @@ fn remove_any(path: &Path) {
     }
 }
 
+/// Convertisseur figé ([`IDLE_TIMEOUT`]) : arrêté comme pour une annulation, erreur
+/// [`STALLED_CODE`].
+async fn stalled(
+    child: &mut Child,
+    job: Option<&Job>,
+    stdin: &mut Option<ChildStdin>,
+    req: &Conversion<'_>,
+    stderr_task: &tokio::task::JoinHandle<u64>,
+) -> AppError {
+    tracing::warn!(
+        delai_s = req.idle.as_secs(),
+        "convertisseur sans activité : arrêté"
+    );
+    stop(child, job, stdin, req).await;
+    stderr_task.abort();
+    AppError::Conversion {
+        code: STALLED_CODE.into(),
+        message: fixed_message(STALLED_CODE),
+    }
+}
+
 /// Erreur rapportée par l'événement `error` du convertisseur : seul le code est retenu (le
 /// `message` n'est jamais lu, #475).
 struct Reported {
@@ -486,12 +530,15 @@ pub async fn convert(
         line.clear();
         let mut limited = (&mut reader).take(MAX_LINE);
         let read = tokio::select! {
-            r = limited.read_until(b'\n', &mut line) => r,
+            r = tokio::time::timeout(req.idle, limited.read_until(b'\n', &mut line)) => r,
             _ = cancelled(cancel) => {
                 stop(&mut child, job.as_ref(), &mut stdin, req).await;
                 stderr_task.abort();
                 return Err(AppError::Cancelled);
             }
+        };
+        let Ok(read) = read else {
+            return Err(stalled(&mut child, job.as_ref(), &mut stdin, req, &stderr_task).await);
         };
         match read {
             Ok(0) | Err(_) => break,
@@ -544,7 +591,12 @@ pub async fn convert(
         }
     }
     let status = tokio::select! {
-        s = child.wait() => s?,
+        s = tokio::time::timeout(req.idle, child.wait()) => match s {
+            Ok(s) => s?,
+            Err(_) => {
+                return Err(stalled(&mut child, job.as_ref(), &mut stdin, req, &stderr_task).await);
+            }
+        },
         _ = cancelled(cancel) => {
             stop(&mut child, job.as_ref(), &mut stdin, req).await;
             stderr_task.abort();
@@ -640,6 +692,7 @@ b"
                 ffmpeg: None,
                 thumb_fit: fit,
                 grace: Duration::from_secs(1),
+                idle: IDLE_TIMEOUT,
             };
             let expected: Vec<OsString> = [
                 "in.zip",
@@ -683,6 +736,7 @@ b"
                 ffmpeg: None,
                 thumb_fit: ThumbFit::default(),
                 grace: Duration::from_secs(1),
+                idle: IDLE_TIMEOUT,
             },
             &mut rx,
             &mut |_| {},
@@ -760,6 +814,7 @@ b"
                 ffmpeg: None,
                 thumb_fit: ThumbFit::default(),
                 grace,
+                idle: IDLE_TIMEOUT,
             };
             let canceller = async {
                 let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -794,6 +849,7 @@ b"
                     ffmpeg: None,
                     thumb_fit: ThumbFit::default(),
                     grace: Duration::from_secs(5),
+                    idle: IDLE_TIMEOUT,
                 },
                 &mut rx,
                 &mut |_| {},
@@ -931,6 +987,7 @@ b"
                 ffmpeg: None,
                 thumb_fit: ThumbFit::Bandes,
                 grace: Duration::from_secs(5),
+                idle: IDLE_TIMEOUT,
             },
             &mut rx,
             &mut |step| phases.push(step.phase.clone()),
@@ -975,6 +1032,78 @@ b"
         assert!(took >= grace, "arrêt en {took:?}, avant le délai de grâce");
         assert!(took < Duration::from_secs(15), "arrêt en {took:?}");
         assert!(banc.staging_is_empty(), ".part supprimé par le launcher");
+    }
+
+    /// #652 : convertisseur figé (aucune ligne, sourd à l'annulation) : arrêté après le délai
+    /// d'inactivité, erreur `converter_stalled`, temporaires supprimés, archive non mise en cause.
+    #[tokio::test]
+    async fn convertisseur_fige_arrete_apres_le_delai_d_inactivite() {
+        let Some(banc) = Banc::new("stubborn") else {
+            eprintln!("Python introuvable : test ignoré");
+            return;
+        };
+        let (_tx, mut rx) = watch::channel(false);
+        let idle = Duration::from_secs(3);
+        let started = std::time::Instant::now();
+        let result = convert(
+            &Conversion {
+                engine: banc.engine(),
+                input: &banc.input,
+                output: &banc.output,
+                ffmpeg: None,
+                thumb_fit: ThumbFit::default(),
+                grace: Duration::from_millis(500),
+                idle,
+            },
+            &mut rx,
+            &mut |_| {},
+        )
+        .await;
+        let took = started.elapsed();
+        let Err(AppError::Conversion { code, message }) = result else {
+            panic!("{result:?}");
+        };
+        assert_eq!(code, STALLED_CODE);
+        assert_eq!(message, fixed_message(STALLED_CODE));
+        assert!(took >= idle, "arrêté en {took:?}, avant le délai");
+        assert!(took < Duration::from_secs(20), "arrêté en {took:?}");
+        assert!(banc.staging_is_empty(), ".part supprimé");
+        assert!(banc.input.is_file(), "archive d'entrée intacte");
+    }
+
+    /// #652 : une conversion plus longue que le délai d'inactivité mais qui émet des lignes
+    /// régulièrement n'est pas arrêtée (le délai repart à chaque ligne).
+    #[tokio::test]
+    async fn conversion_vivante_plus_longue_que_le_delai_non_arretee() {
+        let Some(banc) = Banc::new("ticks") else {
+            eprintln!("Python introuvable : test ignoré");
+            return;
+        };
+        let (_tx, mut rx) = watch::channel(false);
+        let idle = Duration::from_secs(3);
+        let started = std::time::Instant::now();
+        let mut steps = 0usize;
+        let converted = convert(
+            &Conversion {
+                engine: banc.engine(),
+                input: &banc.input,
+                output: &banc.output,
+                ffmpeg: None,
+                thumb_fit: ThumbFit::default(),
+                grace: Duration::from_secs(5),
+                idle,
+            },
+            &mut rx,
+            &mut |_| steps += 1,
+        )
+        .await;
+        assert!(converted.is_ok(), "{converted:?}");
+        assert!(
+            started.elapsed() > idle,
+            "conversion plus courte que le délai"
+        );
+        assert!(steps >= 20, "{steps} étapes");
+        assert!(banc.output.is_file());
     }
 
     /// Vérification réelle avec le convertisseur livré (issues #71, #136). Ignorée par défaut :
@@ -1039,6 +1168,7 @@ b"
                     ffmpeg: None,
                     thumb_fit: ThumbFit::default(),
                     grace: Duration::from_secs(5),
+                    idle: IDLE_TIMEOUT,
                 },
                 &mut rx,
                 &mut |_| steps += 1,
@@ -1076,6 +1206,7 @@ b"
                     ffmpeg: None,
                     thumb_fit: ThumbFit::default(),
                     grace,
+                    idle: IDLE_TIMEOUT,
                 },
                 &mut rx,
                 &mut |step| {
@@ -1126,8 +1257,8 @@ b"
 /// `slow` (annulation polie), `stubborn` (sourd à l'annulation), `tree` (sourd, avec un
 /// sous-processus), `err:<code>:<sortie>` (événement `error` puis sortie), `abort` (code 101
 /// sans événement `error`), `silent` (code 0 sans `done`), `nostart` (code 1 sans événement
-/// `start`). En mode `versioned`, les options reçues sont écrites dans `args.txt`, deux dossiers
-/// au-dessus de la sortie.
+/// `start`), `ticks` (une étape toutes les 0,2 s pendant 6 s, puis succès). En mode `versioned`,
+/// les options reçues sont écrites dans `args.txt`, deux dossiers au-dessus de la sortie.
 #[cfg(test)]
 pub(crate) mod fake {
     use std::io::Write as _;
@@ -1227,6 +1358,10 @@ if mode in ("slow", "stubborn", "tree"):
     for _ in range(600):
         time.sleep(0.05)
     sys.exit(0)
+if mode == "ticks":
+    for i in range(30):
+        ev(event="step", phase="audio", done=i, total=30)
+        time.sleep(0.2)
 if mode == "versioned":
     open(os.path.join(os.path.dirname(out), "..", "..", "args.txt"), "w").write(" ".join(args))
 for phase in ["images", "audio", "scripts", "zip"]:
