@@ -353,3 +353,26 @@ it("le focus initial saute un élément masqué (#581)", () => {
   );
   expect(screen.getByRole("button", { name: "Visible" })).toHaveFocus();
 });
+
+it("avec deux dialogues empilés, Échap ne ferme que celui du dessus (#652)", () => {
+  function Stack() {
+    const [lower, setLower] = useState(true);
+    const [upper, setUpper] = useState(true);
+    return (
+      <>
+        <Dialog open={lower} onClose={() => setLower(false)} title="Dessous" />
+        <Dialog open={upper} onClose={() => setUpper(false)} title="Dessus" />
+      </>
+    );
+  }
+  render(<Stack />);
+  expect(screen.getByRole("dialog", { name: "Dessus" })).toBeInTheDocument();
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Dessus" })).not.toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "Dessous" })).toBeInTheDocument();
+
+  // Un second Échap ferme alors le dialogue resté dessous.
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Dessous" })).not.toBeInTheDocument();
+});

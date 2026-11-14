@@ -32,7 +32,7 @@ export function RecoveryBanners() {
             </Button>
           }
         >
-          <p>{t.recovery.body(recovery.backup)}</p>
+          <p>{t.recovery.body(recovery.file, recovery.backup)}</p>
           {failed === recovery.file && <p role="alert">{t.recovery.ackFailed}</p>}
         </Banner>
       ))}

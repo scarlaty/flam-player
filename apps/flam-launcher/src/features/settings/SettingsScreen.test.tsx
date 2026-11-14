@@ -46,6 +46,7 @@ let mp3Bytes: number;
 let calls: { cmd: string; args: Record<string, any> }[];
 let failures: Record<string, { kind: string; message: string }>;
 // Réponses différées de `settings_set` (résolues/rejetées par le test, dans l'ordre des appels).
+let resolvedOverride: SettingsView["resolved"] | null;
 let pendingSets: { resolve: () => void; reject: () => void }[] | null;
 // Réponse différée de `cache_clear` (résolue par le test), `null` : réponse immédiate.
 let pendingClear: { resolve: () => void } | null;
@@ -63,6 +64,7 @@ beforeEach(() => {
   calls = [];
   failures = {};
   pendingSets = null;
+  resolvedOverride = null;
   pendingClear = null;
   pickExecutable.mockReset();
   pickFolder.mockReset();
@@ -88,7 +90,11 @@ beforeEach(() => {
             });
           });
         }
-        view = { ...view, settings: payload.settings };
+        view = {
+          ...view,
+          settings: payload.settings,
+          resolved: resolvedOverride ?? view.resolved,
+        };
         return view;
       case "app_info":
         return { name: "flam-launcher", version: "0.1.0" };
@@ -387,6 +393,66 @@ it("rétablit le remplissage précédent si l'enregistrement échoue", async () 
   expect(screen.getByRole("radio", { name: /Flou/ })).toBeChecked();
 });
 
+it("relit les histoires installées au premier enregistrement, même sans changement (disque revenu)", async () => {
+  await renderScreen();
+  fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+  expect(await screen.findByText("Paramètres enregistrés")).toBeInTheDocument();
+  expect(refreshInstalled).toHaveBeenCalledTimes(1);
+});
+
+it("ne relit plus les histoires installées tant que le dossier de cache ne change pas", async () => {
+  view = makeView({
+    settings: { ...makeView().settings, cache_dir: "D:\\MonCache" },
+  });
+  await renderScreen();
+  const save = () => fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+  save();
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(1));
+  await waitFor(() => expect(refreshInstalled).toHaveBeenCalledTimes(1));
+
+  // Seul le chemin du player change : le cache reste le même.
+  fireEvent.change(screen.getByRole("textbox", { name: "Chemin de flam-player" }), {
+    target: { value: "C:\\autre\\flam-player.exe" },
+  });
+  save();
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(2));
+  await waitFor(() =>
+    expect(screen.getAllByText("Paramètres enregistrés")).toHaveLength(2),
+  );
+  expect(refreshInstalled).toHaveBeenCalledTimes(1);
+});
+
+it("relit les histoires installées quand seul le dossier effectif change", async () => {
+  await renderScreen();
+  const save = () => fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+  save();
+  await waitFor(() => expect(refreshInstalled).toHaveBeenCalledTimes(1));
+  // Le dossier configuré reste vide, mais le dossier effectif change (ex. disque revenu).
+  resolvedOverride = { player_path: "C:\\app\\flam-player.exe", cache_dir: "E:\\cache" };
+  save();
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(2));
+  await waitFor(() => expect(refreshInstalled).toHaveBeenCalledTimes(2));
+});
+
+it("relit les histoires installées au retour au dossier par défaut", async () => {
+  view = makeView({
+    settings: { ...makeView().settings, cache_dir: "D:\\MonCache" },
+  });
+  await renderScreen();
+  const save = () => fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+  save();
+  await waitFor(() => expect(refreshInstalled).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(screen.getByRole("textbox", { name: "Dossier de cache" }), {
+    target: { value: "" },
+  });
+  save();
+  await waitFor(() => expect(callsOf("settings_set")).toHaveLength(2));
+  await waitFor(() => expect(refreshInstalled).toHaveBeenCalledTimes(2));
+  expect(callsOf("settings_set")[1]?.args.settings.cache_dir).toBeNull();
+});
+
 it("vide le cache seulement après confirmation (focus sur Annuler)", async () => {
   await renderScreen();
   fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
@@ -394,7 +460,7 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
   expect(within(dialog).getByRole("button", { name: "Annuler" })).toHaveFocus();
   expect(dialog).toHaveAccessibleDescription(
-    /histoires installées seront supprimées.*archives, catalogs, library, thumbs.*C:\\cache.*2 Ko/,
+    /histoires installées seront retirées de ce PC.*archives, catalogs, library, thumbs.*C:\\cache.*2 Ko/,
   );
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
@@ -413,7 +479,7 @@ it("vide le cache seulement après confirmation (focus sur Annuler)", async () =
   expect(screen.getByRole("button", { name: "Vider le cache" })).toBeDisabled();
 });
 
-it("n'annonce la suppression des histoires que si la bibliothèque est vidée (#591)", async () => {
+it("n'annonce le retrait des histoires installées que si la bibliothèque est vidée (#591)", async () => {
   usageSubdirs = ["archives", "thumbs"];
   await renderScreen();
   fireEvent.click(screen.getByRole("button", { name: "Vider le cache" }));
@@ -434,7 +500,7 @@ it("relit le relevé à l'ouverture de la confirmation : library recréée entre
 
   const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
   expect(dialog).toHaveAccessibleDescription(
-    /histoires installées seront supprimées.*archives, library, thumbs/,
+    /histoires installées seront retirées de ce PC.*archives, library, thumbs/,
   );
 });
 
@@ -446,7 +512,7 @@ it("annonce la suppression des histoires si le relevé ne peut pas être relu (#
 
   const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
   expect(dialog).toHaveAccessibleDescription(
-    /^Les histoires installées seront supprimées.*Seuls les dossiers créés par Flam Launcher seront vidés dans « C:\\cache »/,
+    /^Les histoires installées seront retirées de ce PC.*Seuls les dossiers créés par Flam Launcher seront vidés dans « C:\\cache »/,
   );
   expect(dialog).not.toHaveAccessibleDescription(/archives, thumbs/);
 });
@@ -458,7 +524,7 @@ it("n'affiche pas de liste vide « () » quand aucun sous-dossier n'est marqué 
 
   const dialog = await screen.findByRole("alertdialog", { name: "Vider le cache ?" });
   expect(dialog).toHaveAccessibleDescription(
-    /^Aucun dossier créé par Flam Launcher n'est à vider dans « C:\\cache »\. Rien ne sera supprimé\.$/,
+    /^Aucun dossier créé par Flam Launcher n'est à vider dans « C:\\cache »\. Rien ne sera vidé\.$/,
   );
 });
 

@@ -54,6 +54,13 @@ function firstReachable(zone: Element | null | undefined, panel: HTMLElement) {
   );
 }
 
+/** Vrai si `panel` est le dernier panneau de dialogue du document (le dialogue du dessus). */
+function isTopmost(panel: HTMLElement | null): boolean {
+  if (!panel) return false;
+  const panels = document.querySelectorAll(".fl-dialog");
+  return panels[panels.length - 1] === panel;
+}
+
 /**
  * Boucle Tab et Maj+Tab dans `panel` (les éléments masqués sont ignorés ; Ctrl, Alt et Méta+Tab
  * restent au navigateur ou au système). Seul le dialogue le plus récent (dernier panneau du
@@ -62,8 +69,7 @@ function firstReachable(zone: Element | null | undefined, panel: HTMLElement) {
  */
 function trapTab(event: globalThis.KeyboardEvent, panel: HTMLElement | null) {
   if (!panel || event.ctrlKey || event.altKey || event.metaKey) return;
-  const panels = document.querySelectorAll(".fl-dialog");
-  if (panels[panels.length - 1] !== panel) return;
+  if (!isTopmost(panel)) return;
   // Premier et dernier atteignables, cherchés depuis chaque bout (sans tout évaluer).
   const candidates = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
   const reachable = (element: HTMLElement) => isReachable(element, panel);
@@ -90,7 +96,8 @@ function trapTab(event: globalThis.KeyboardEvent, panel: HTMLElement | null) {
  * - Focus à l'ouverture : `initialFocus`, sinon premier élément actif du contenu, puis
  *   des actions, sinon le panneau lui-même ; rendu à l'élément d'origine à la fermeture.
  * - Tab et Maj+Tab bouclent dans le panneau, focus tombé sur `body` compris.
- * - Échap ferme, écouté sur tout le document tant que le dialogue est ouvert.
+ * - Échap ferme, écouté sur tout le document tant que le dialogue est ouvert ; avec des
+ *   dialogues empilés, seul le plus récent se ferme.
  * - Le défilement de la page est bloqué tant que le dialogue est ouvert.
  */
 export function Dialog({
@@ -137,6 +144,9 @@ export function Dialog({
     if (!open) return;
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
+        // Chaque dialogue ouvert écoute le document : seul le plus récent (dernier panneau du
+        // document) se ferme, les dialogues empilés dessous restent ouverts (#652).
+        if (!isTopmost(panelRef.current)) return;
         event.stopPropagation();
         onCloseRef.current();
       } else if (event.key === "Tab") {
