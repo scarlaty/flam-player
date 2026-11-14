@@ -7,21 +7,32 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+### Corrigé
+
+- Une archive placée sur une clé ou un partage retiré avant la conversion est gardée, et non mise
+  en cause.
+
 ## [0.1.0] - 2026-11-14
 
-Première version qui n'est plus une pré-version. Changements depuis `launcher-v0.1.0-beta.6`. Ces
-nouveautés ont été vérifiées par des tests automatiques, pas encore essayées sur une Flam réelle.
+Première version qui n'est plus une pré-version. Changements depuis `launcher-v0.1.0-beta.6`.
+« Télécharger et envoyer », la reconnaissance de la Flam branchée, les contrôles de la Flam pendant
+un retrait ou un changement d'ordre et la fermeture retenue pendant un envoi ont été vérifiés par
+des tests automatiques, pas encore sur une Flam réelle ; l'envoi, le retrait et l'éjection
+eux-mêmes ont été essayés sur une Flam en firmware 1.x avec la version précédente.
 
 ### Ajouté
 
 - **« Télécharger et envoyer »** (ou « Installer et envoyer » pour un dossier local) : depuis une
   source d'histoires, un seul bouton installe l'histoire puis l'envoie sur la Flam branchée. Si le
   launcher n'a pas pu surveiller la Flam pendant toute l'installation, l'histoire est marquée
-  « Installée, envoi à confirmer » et l'envoi se fait d'un clic.
+  « Installée, envoi à confirmer » : l'envoi ne part pas tout seul, il se fait d'un clic après
+  avoir vérifié que la bonne Flam est branchée.
 - **Contrôle de la Flam branchée** : le launcher reconnaît la Flam affichée au moment du clic, puis
   la recontrôle avant d'écrire, avant de valider l'envoi et pendant un retrait ou un changement
   d'ordre. Si une autre Flam a été branchée entre-temps, l'opération s'arrête et les envois en
-  attente sont annulés.
+  attente sont annulés : rien n'est installé ni retiré sur l'autre Flam et sa liste d'histoires
+  n'est pas modifiée. Une copie temporaire peut y rester ; elle est supprimée au prochain
+  branchement ou au prochain envoi.
 
 ### Modifié
 
@@ -42,8 +53,9 @@ nouveautés ont été vérifiées par des tests automatiques, pas encore essayé
 
 - « Vider le cache » ne fige plus l'application : si un téléchargement ou une conversion occupe le
   cache, le vidage est refusé après quelques secondes, avec un message.
-- Réglages illisibles au démarrage : le launcher ne touche plus aux dossiers de cache (un autre
-  dossier de cache choisi auparavant n'est plus vidé par « Vider le cache »).
+- Réglages illisibles au démarrage : le launcher ne touche plus aux dossiers de cache. Un autre
+  dossier de cache choisi auparavant n'est alors plus vidé par « Vider le cache » : le supprimer à
+  la main ou le choisir de nouveau dans les Paramètres.
 - Une histoire en cours de suppression ne peut plus être envoyée en même temps ; la fenêtre de
   confirmation peut être refermée pendant la suppression, qui continue.
 - Une archive téléchargée n'est plus supprimée quand Windows refuse de la lire (antivirus, fichier
