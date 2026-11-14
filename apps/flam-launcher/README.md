@@ -1537,10 +1537,21 @@ report et ses refus sont inscrits par la migration complète ; si un nouveau dos
 enregistré pendant le report, le témoin écrit à cette occasion inscrit en attente les
 sous-dossiers existants, non marqués, du dossier par défaut (rien n'est marqué à ce moment) : le
 rattrapage les évalue au démarrage suivant avec la preuve par le contenu. Des réglages illisibles
-(corrompus) au démarrage reportent aussi la migration, sans témoin ni mise de côté du fichier
-(c'est `settings_get` / `settings_set` qui s'en charge) : le dossier configuré est inconnu, la
-migration s'achève au démarrage où les réglages sont lisibles. Une racine désignée par deux
-chemins (jonction, lien, nom court) n'est pas jugée quittée par le rattrapage. La racine du cache peut être une jonction ou
+(corrompus) au démarrage reportent aussi la migration, sans témoin (le dossier configuré est
+inconnu) ; la migration elle-même ne touche pas au fichier, mais au même démarrage, juste après,
+les tâches de démarrage (nettoyage des temporaires, qui lit les réglages par
+`SettingsStore::load`) le mettent de côté en `settings.json.<horodatage>.bak` et écrivent les
+réglages par défaut. Au démarrage suivant, la migration porte donc sur le dossier par défaut et
+le témoin est écrit : le dossier configuré dans le fichier corrompu n'est jamais migré (fuite de
+place, jamais de perte), sauf si l'utilisateur restaure à la main le `.bak` avant ce démarrage
+suivant. Le rattrapage rattache une racine en attente aux racines courantes d'abord par les
+chemins, sans accès au disque (une entrée du dossier par défaut est reconnue sans attendre un
+dossier effectif sur un partage hors ligne) ; en dernier recours seulement, une racine désignée
+par un autre chemin (jonction, lien, nom court) est reconnue par sa forme canonique, à condition
+que cette forme ait été enregistrée dans le témoin à l'inscription et soit restée la même (un
+lecteur réseau, une jonction ou un `subst` redirigé depuis n'étend pas le rattrapage à un dossier
+choisi ensuite) ; un témoin écrit par une version antérieure, sans cette forme, ne vaut que par
+les chemins. `flam-transfer/` est réévalué après les autres sous-dossiers. La racine du cache peut être une jonction ou
 un lien ; un sous-dossier en lien n'est jamais marqué. La migration est faite hors du fil de la
 fenêtre : celle-ci s'affiche aussitôt, et toute commande (verrou de configuration) ainsi que la
 reprise de la file d'installation attendent sa fin (`storage::StartupGate`) ; une fois le témoin
@@ -1552,7 +1563,8 @@ qu'elle est encore reportée, le témoin est écrit : seul le dossier configuré
 interrompue (`.flam-launcher-new-…`, vides ou ne contenant que le marqueur) sont supprimés au
 démarrage, après la migration, s'ils datent d'au moins une minute (une création en cours n'est
 jamais cassée) ; il en va de même, dans le dossier de configuration, des fichiers temporaires
-d'une écriture interrompue des témoins (`.cache-markers.done.<pid>-<n>.tmp`, noms exacts,
+d'une écriture interrompue des témoins (`.cache-markers.done.<pid>-<n>.tmp` et
+`.cache-markers-transfer.done.<pid>-<n>.tmp`, noms exacts,
 fichiers ordinaires seulement). Un temporaire orphelin de même nom (numéro de processus réutilisé)
 n'empêche pas la création : le numéro suivant est essayé, et l'échec de création d'un sous-dossier
 n'est journalisé qu'une fois par session. Limite connue : le renommage final de la création
