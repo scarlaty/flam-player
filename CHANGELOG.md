@@ -7,6 +7,11 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+## [0.1.1] - 2026-11-17
+
+Version corrective. Une histoire Telmi déjà installée doit être supprimée puis réinstallée pour
+recevoir la correction du menu retour.
+
 ### Corrigé
 
 - Une archive placée sur une clé ou un partage retiré avant la conversion est gardée, et non mise
