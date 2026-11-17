@@ -37,26 +37,6 @@ local passCount = 0
 local passSeen = {}
 local MAX_PASS = 1000
 local MAX_REPEAT = 30
--- Noeud quitte par le bouton retour (transition home) : { id, kind, index }.
--- Pose par les callbacks de retour, effacee des qu'une scene ou un choix est
--- affiche (resetPass). Tant qu'elle est posee, la chaine de noeuds de passage
--- est une "sortie par Home" : une action vide en bout de chaine (convention
--- TELMI backAction -> backStage -> backChildAction vide = quitter l'histoire)
--- ramene au menu Start SANS effacer la progression.
-local homeOrigin = nil
-local function resetPass()
-    passCount = 0
-    passSeen = {}
-    homeOrigin = nil
-end
-local function passKey(id)
-    local k = tostring(id)
-    if state.inv then
-        for i = 1, #state.inv do k = k .. "|" .. tostring(state.inv[i].value) end
-    end
-    return k
-end
-
 -- ---------------------------------------------------------------------------
 -- Controles TELMI d'une scene (stages[id].ctrl = control.{ok,home,autoplay})
 -- ---------------------------------------------------------------------------
@@ -65,6 +45,115 @@ end
 local LEGACY_CTRL = { ok = true, home = false, autoplay = true }
 local function ctrlOf(st)
     return (st and st.ctrl) or LEGACY_CTRL
+end
+-- Noeud de passage : pas d'audio ET (autoplay, ou rien a afficher). Spec
+-- TELMI : autoplay sans audio => ok execute immediatement. Une scene image
+-- sans audio NON autoplay est affichee et attend OK.
+local function isPassage(st)
+    return (not st.audio) and (ctrlOf(st).autoplay or not st.image) and true or false
+end
+
+
+-- Noeud de JEU quitte par le bouton retour (transition home) : { id, kind, index }.
+-- Pose au 1er appui sur retour depuis un noeud de jeu ; garde tant que le
+-- joueur reste dans le "menu retour" de l'histoire (convention TELMI
+-- backAction -> backStage -> backChildAction, avec ses options "Reprendre le
+-- jeu ?", "Quitter le jeu ?", indices...). Effacee des que le joueur s'arrete
+-- de nouveau sur un noeud de jeu (gameNodes).
+-- Tant qu'elle est posee, une action vide ou une OPTION de choix sans suite
+-- (ok=nil, "Quitter le jeu ?") n'est PAS une fin d'histoire mais "Quitter" :
+-- retour au menu Start SANS effacer la progression ni l'inventaire
+-- (leaveStory), la reprise ramene sur ce noeud.
+-- Persistee dans `state` (state.home_origin) : une reprise ou une relance
+-- pendant que le menu retour est affiche (veille, menu M) la retrouve.
+local function resetPass()
+    passCount = 0
+    passSeen = {}
+end
+local function getHomeOrigin() return state.home_origin end
+local function setHomeOrigin(o) state.home_origin = o end
+
+-- Noeuds de jeu : atteignables depuis l'action de depart en suivant les
+-- transitions ok et les entrees d'action (conditions ignorees), JAMAIS les
+-- transitions home. Le reste (menu retour, indices) n'est atteint que par le
+-- bouton retour. Les scenes de PASSAGE contenues dans une action cible d'une
+-- transition home (backStage de backAction) sont l'entree du menu retour :
+-- elles ne sont pas parcourues, meme quand une scene de jeu y mene par ok
+-- (scene "info" qui renvoie au menu, backStage repris dans une autre action).
+-- Les scenes de l'action de depart ne sont jamais bloquees. Une cible home
+-- qui joue une scene (hub) reste un noeud de jeu. Calcule une fois, O(noeuds).
+local gameNodes = nil
+local function computeGameNodes()
+    local startAction = N.start and N.start.action
+    local startStages = {}
+    for _, e in ipairs(N.actions[startAction] or {}) do
+        if e.stage ~= nil then startStages[e.stage] = true end
+    end
+    local blocked, homeTargets = {}, {}
+    for _, st in pairs(N.stages) do
+        local h = st.home and st.home.action
+        if h ~= nil then homeTargets[h] = true end
+    end
+    for h in pairs(homeTargets) do
+        for _, e in ipairs(N.actions[h] or {}) do
+            local sid = e.stage
+            local st = sid ~= nil and N.stages[sid]
+            if st and not startStages[sid] and isPassage(st) then blocked[sid] = true end
+        end
+    end
+    local seen = { s = {}, a = {} }
+    local todo = {}
+    if startAction ~= nil then todo[1] = startAction end
+    while #todo > 0 do
+        local aid = table.remove(todo)
+        if aid ~= nil and not seen.a[aid] then
+            seen.a[aid] = true
+            for _, e in ipairs(N.actions[aid] or {}) do
+                local sid = e.stage
+                if sid ~= nil and not seen.s[sid] and not blocked[sid] then
+                    seen.s[sid] = true
+                    local st = N.stages[sid]
+                    if st and st.ok and st.ok.action ~= nil then todo[#todo + 1] = st.ok.action end
+                end
+            end
+        end
+    end
+    return seen
+end
+local function isGameNode(kind, id)
+    if not gameNodes then gameNodes = computeGameNodes() end
+    return gameNodes[kind][id] == true
+end
+-- Le joueur s'arrete sur un noeud (scene affichee ou choix) : s'il s'agit d'un
+-- noeud de jeu, le contexte "menu retour" est termine. Jamais appele pour un
+-- noeud de passage (backStage peut etre aussi atteint par ok depuis le jeu).
+local function enterNode(kind, id)
+    if getHomeOrigin() and isGameNode(kind, id) then setHomeOrigin(nil) end
+end
+-- Appui sur retour depuis le noeud { id, kind, index } : seul un appui depuis
+-- un noeud de jeu fixe l'origine ; un appui dans le menu retour la garde.
+local function markHome(origin)
+    if getHomeOrigin() == nil and isGameNode(origin.kind, origin.id) then
+        setHomeOrigin(origin)
+    end
+end
+-- Reprise : origine sauvee gardee seulement si elle designe un noeud de jeu
+-- existant ET que le noeud repris n'est pas un noeud de jeu (menu retour).
+local function validateHomeOrigin(kind, id)
+    local o = getHomeOrigin()
+    if type(o) ~= "table" or (kind and isGameNode(kind, id))
+        or not ((o.kind == "s" and N.stages[o.id]) or (o.kind == "a" and N.actions[o.id]))
+        or not isGameNode(o.kind, o.id) then
+        setHomeOrigin(nil)
+    end
+end
+
+local function passKey(id)
+    local k = tostring(id)
+    if state.inv then
+        for i = 1, #state.inv do k = k .. "|" .. tostring(state.inv[i].value) end
+    end
+    return k
 end
 
 -- Transition home d'une scene (ctrl.home ET home defini), sinon nil : le retour
@@ -137,6 +226,35 @@ local function initInventory()
     end
 end
 
+-- Reprise : inventaire relu de la sauvegarde. Garde-fou si la sauvegarde ne
+-- l'a pas rendu tel quel (absent, cles devenues texte, taille differente
+-- apres une mise a jour du pack) : sans lui, applyStageItems ignorerait en
+-- silence tout objet ramasse ensuite (slot nil).
+local function ensureInventory()
+    if not (N.inventory and #N.inventory > 0) then return end
+    local inv = state.inv
+    if type(inv) ~= "table" then
+        print("story.lua: inventaire sauve absent, reinitialise")
+        initInventory()
+        return
+    end
+    -- Fusion slot par slot : un slot illisible ou ajoute par une mise a jour du
+    -- pack prend sa valeur initiale, les objets deja ramasses sont gardes.
+    local fixed = {}
+    for i, def in ipairs(N.inventory) do
+        local slot = inv[i]
+        if slot == nil then slot = inv[tostring(i)] end
+        local v = type(slot) == "table" and tonumber(slot.value) or nil
+        if v == nil then
+            print("story.lua: objet " .. i .. " absent de la sauvegarde, valeur initiale")
+            fixed[i] = { value = def.init or 0, max = def.max or 0 }
+        else
+            fixed[i] = { value = v, max = def.max or tonumber(slot.max) or 0 }
+        end
+    end
+    state.inv = fixed
+end
+
 local function applyStageItems(stage)
     if not stage then return end
     if stage.reset then initInventory() end
@@ -207,6 +325,7 @@ end
 function endStory(reason)
     print("story.lua: fin d'histoire : " .. (reason or "fin normale"))
     resetPass()
+    setHomeOrigin(nil)
     Global.progression.resetProgress()   -- chaps = {}
     state.current_fun = nil
     state.currentBranchName = nil
@@ -220,13 +339,15 @@ function endStory(reason)
     back_callback()
 end
 
--- Sortie par Home vers une action vide (backChildAction) : retour au menu Start
--- avec la progression de la derniere scene jouee (menu "Reprendre"). La chaine
--- de passage (backStage) a deplace la position sauvee : on la restaure sur le
--- noeud quitte. Contrairement a endStory, rien n'est remis a zero.
+-- Sortie depuis le menu retour (action vide, ou option sans suite ok=nil type
+-- "Quitter le jeu ?") : retour au menu Start avec la progression du noeud de
+-- jeu quitte (menu "Reprendre"). Le menu retour a deplace la position sauvee :
+-- on la restaure sur ce noeud. Contrairement a endStory, rien n'est remis a
+-- zero (inventaire compris).
 function leaveStory(origin)
-    print("story.lua: sortie par Home (action vide) : retour au menu Start")
+    print("story.lua: sortie par le menu retour : retour au menu Start")
     resetPass()
+    setHomeOrigin(nil)
     Global.progression.setProgression({ currentFunction = origin.id, branch = BRANCH })
     setKind(origin.kind, origin.index)
     Global.progression.restoreBackBehavior()
@@ -243,10 +364,8 @@ function enterStage(id, isResume)
     if not st then endStory("stage inconnu " .. tostring(id)); return end
     if not isResume then applyStageItems(st) end
     local ctrl = ctrlOf(st)
-    -- Noeud de passage : pas d'audio ET (autoplay, ou rien a afficher). Spec
-    -- TELMI : autoplay sans audio => ok execute immediatement. Une scene image
-    -- sans audio NON autoplay est affichee et attend OK (plus bas).
-    local passage = (not st.audio) and (ctrl.autoplay or not st.image)
+    -- Noeud de passage (isPassage) : enchaine sans lecteur audio (plus bas).
+    local passage = isPassage(st)
     if st.audio then
         -- scene avec audio = un VRAI chapitre (contenu ecoute) => alimente .prog
         saveProgress(id, st.image, st.audio)
@@ -283,6 +402,7 @@ function enterStage(id, isResume)
         return
     end
     resetPass()
+    enterNode("s", id)
     -- Home TELMI (X/Y) = bouton retour : transition home si ctrl.home, sinon
     -- menu Start (pose par setProgression ci-dessus). Reste DANS l'histoire :
     -- ce n'est pas la sortie goto_library du Bug C.
@@ -295,7 +415,7 @@ function enterStage(id, isResume)
             if state.visited_funs and state.visited_funs[id] then
                 state.visited_funs[id].seekposition = nil
             end
-            homeOrigin = { id = id, kind = "s" }
+            markHome({ id = id, kind = "s" })
             followTransition(home)
         end)
     end
@@ -331,6 +451,7 @@ function showChoice(list, actionId, sel, selIndex)
     Global.progression.setProgression({ currentFunction = actionId, branch = BRANCH })
     setKind("a", selIndex)
     resetPass()   -- un choix attend l'utilisateur : fin de la chaine de passage
+    enterNode("a", actionId)
     local choices = {}
     for i, e in ipairs(list) do
         local opt = N.stages[e.stage] or {}
@@ -350,6 +471,14 @@ function showChoice(list, actionId, sel, selIndex)
                 chosen = true
                 resetPass()
                 applyStageItems(opt)
+                -- Option sans suite (ok=null) choisie dans le menu retour
+                -- ("Quitter le jeu ?") : retour au menu Start en gardant
+                -- progression et inventaire. Une SCENE sans suite reste une
+                -- vraie fin (endStory), meme atteinte par une transition home.
+                if opt.ok == nil and getHomeOrigin() then
+                    leaveStory(getHomeOrigin())
+                    return
+                end
                 followTransition(opt.ok)
             end,
         }
@@ -376,7 +505,7 @@ function showChoice(list, actionId, sel, selIndex)
             local h = homes[focused]
             if h then
                 resetPass()
-                homeOrigin = { id = actionId, kind = "a", index = selIndex }
+                markHome({ id = actionId, kind = "a", index = selIndex })
                 followTransition(h)
             elseif Global.progression.backButtonBehavior then
                 Global.progression.backButtonBehavior()   -- menu Start
@@ -405,8 +534,8 @@ end
 function followTransition(trans)
     if not trans then endStory(); return end   -- ok=null : fin d'histoire
     local list = N.actions[trans.action]
-    if list and #list == 0 and homeOrigin then
-        leaveStory(homeOrigin)   -- backChildAction vide atteinte par Home
+    if list and #list == 0 and getHomeOrigin() then
+        leaveStory(getHomeOrigin())   -- backChildAction vide atteinte par Home
         return
     end
     if not list or #list == 0 then
@@ -473,9 +602,14 @@ end
 function play(name)
     resetPass()
     if name == "__start" then
+        setHomeOrigin(nil)
         initInventory()           -- nouveau depart : inventaire neuf
         followTransition(N.start)
-    elseif N.stages[name] then
+        return
+    end
+    ensureInventory()
+    validateHomeOrigin(N.stages[name] and "s" or "a", name)
+    if N.stages[name] then
         enterStage(name, true)    -- reprise sur une scene (items deja appliques)
     elseif N.actions[name] then
         enterAction(name, nil, true)   -- reprise sur un choix (memes filtres)
@@ -497,6 +631,9 @@ end
 function story.resume()
     local id, kind = state.current_fun, state.current_kind
     resetPass()
+    if id ~= nil then ensureInventory() end
+    -- Reprise sur le menu retour (veille, menu M) : origine sauvee gardee.
+    validateHomeOrigin(id ~= nil and (kind or (N.stages[id] and "s" or "a")) or nil, id)
     if id == nil then
         -- redemarrage (plus bas)
     elseif kind == "s" and N.stages[id] then
