@@ -2,8 +2,9 @@
 //! paquet entier aux sorties figées de l'ancien convertisseur Python (`package_parity.rs`,
 //! `mp3_stream.rs`, `ffmpeg.rs`, `progress_parity.rs`).
 //!
-//! Le runtime (`tools/telmi2flam/runtime`) est copié tel quel dans chaque paquet : les
-//! références figées portent donc son contenu au gel. Quand un fichier du runtime évolue
+//! Le runtime (`tools/telmi2flam/runtime`) et le moteur (`engine/story.lua`, copié dans
+//! `script/story.lua`) sont copiés tels quels dans chaque paquet : les références figées
+//! portent donc leur contenu au gel. Quand un fichier du runtime évolue
 //! volontairement, les références ne sont pas régénérées (PORT-RUST.md §4.5) : le fichier
 //! figure dans [`UPDATED`] avec son contenu au gel, et avant comparaison l'entrée produite,
 //! vérifiée identique au runtime embarqué, reprend ce contenu. Tout le reste du paquet (noms,

@@ -99,8 +99,10 @@ _LIF_STEPS = (8, 4, 8)
 # une ligne par evolution, avec son issue ; meme liste que `UPDATED` des tests Rust
 # (crates/telmi2flam/tests/common/mod.rs). Les references ne sont pas regenerees : une entree
 # de ce nom est ramenee a son etat au gel seulement si la reference porte exactement l'etat
-# au gel ET le candidat exactement le runtime du depot (`runtime/`) ; tout autre contenu,
-# d'un cote ou de l'autre, reste un ecart.
+# au gel ET le candidat exactement le runtime du depot (`runtime/`, ou `RUNTIME_SOURCES` pour un
+# fichier hors `runtime/`) ; tout autre contenu, d'un cote ou de l'autre, reste un ecart.
+# Angle mort assume : `compare` ou `campaign` entre un binaire d'avant et un binaire d'apres
+# l'evolution ne voient pas l'ecart sur ces fichiers (le moteur se teste par tests/engine).
 RUNTIME_DIR = os.path.join(HERE, "runtime")
 RUNTIME_UPDATES = {
     # #620 : le carrousel ne retient plus que les sources des vignettes affichees

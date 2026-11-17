@@ -690,7 +690,10 @@ avant de comparer le paquet entier (entrées et `.plain.pk` à l'octet près) ; 
 runtime du dépôt. `test_parity.py` vérifie que les deux listes concordent ; un fichier redevenu
 identique au gel doit quitter la liste (les tests échouent sinon). Première entrée : le
 carrousel (#620). Le moteur `engine/story.lua`, copié dans `script/story.lua`, suit la même
-règle (#659) : sa source est donnée par `RUNTIME_SOURCES` de `parity.py`.
+règle (#659) : pour lui, le « runtime du dépôt » est `engine/story.lua`, donné par
+`RUNTIME_SOURCES` de `parity.py`. Angle mort assumé : `parity.py compare` ou `campaign` entre un
+binaire d'avant et un binaire d'après l'évolution ne signalent pas l'écart sur ces fichiers ; le
+moteur se vérifie par ses propres tests (`tests/engine/`).
 
 ## 5. Plan de bascule
 
