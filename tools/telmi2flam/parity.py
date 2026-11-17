@@ -106,7 +106,21 @@ RUNTIME_UPDATES = {
     # #620 : le carrousel ne retient plus que les sources des vignettes affichees
     "script/carousel_1_0_0.lua":
         (16961, "839f3f0fa4c56d8c94696caffd3fcfa551575f55ad67007d546f54082e6bd8c8"),
+    # #659 : "Quitter" du menu retour Telmi ramene au menu Start sans rien effacer
+    "script/story.lua":
+        (23263, "af101eb44ed50a0212212d36ce68038a0b9c0ea827b4d0a9bcb9775db8e48826"),
 }
+# Fichiers copies dans le paquet hors de `runtime/` : nom dans le paquet -> source du depot.
+RUNTIME_SOURCES = {
+    "script/story.lua": os.path.join(HERE, "engine", "story.lua"),
+}
+
+
+def runtime_source(name):
+    """Chemin, dans le depot, du fichier `name` du paquet copie tel quel."""
+    return RUNTIME_SOURCES.get(name) or os.path.join(RUNTIME_DIR, *name.split("/"))
+
+
 _runtime_now_cache = {}
 
 
@@ -425,7 +439,7 @@ def is_delegation(candidate, tags=()):
 def _runtime_now(name):
     """(taille, SHA-256) du fichier `name` du runtime du depot."""
     if name not in _runtime_now_cache:
-        with open(os.path.join(RUNTIME_DIR, *name.split("/")), "rb") as f:
+        with open(runtime_source(name), "rb") as f:
             data = f.read()
         _runtime_now_cache[name] = (len(data), _sha(data))
     return _runtime_now_cache[name]

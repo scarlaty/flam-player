@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use telmi2flam::package::Data;
-use telmi2flam::runtime::RUNTIME;
+use telmi2flam::runtime::{RUNTIME, STORY_LUA};
 
 /// Fichiers du runtime modifiés depuis le gel : nom dans le paquet et contenu au gel (copie
 /// sous `tests/data/runtime_frozen`). Liste fermée, une ligne par évolution, avec son issue.
@@ -22,10 +22,19 @@ pub const UPDATED: &[(&str, &[u8])] = &[
         "script/carousel_1_0_0.lua",
         include_bytes!("../data/runtime_frozen/script/carousel_1_0_0.lua"),
     ),
+    // #659 : « Quitter » du menu retour Telmi ramène au menu Start sans rien effacer.
+    (
+        "script/story.lua",
+        include_bytes!("../data/runtime_frozen/script/story.lua"),
+    ),
 ];
 
-/// Contenu embarqué dans le binaire (copie de travail de `runtime/`).
+/// Contenu embarqué dans le binaire (copie de travail de `runtime/`, ou moteur
+/// `engine/story.lua` copié dans `script/story.lua`).
 fn shipped(name: &str) -> &'static [u8] {
+    if name == "script/story.lua" {
+        return STORY_LUA;
+    }
     RUNTIME
         .iter()
         .find(|f| f.name == name)

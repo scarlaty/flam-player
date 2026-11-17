@@ -441,7 +441,7 @@ class TestRuntimeUpdates(unittest.TestCase):
     def files(self, name):
         with open(os.path.join(RUNTIME_FROZEN, *name.split("/")), "rb") as f:
             old = f.read()
-        with open(os.path.join(parity.RUNTIME_DIR, *name.split("/")), "rb") as f:
+        with open(parity.runtime_source(name), "rb") as f:
             now = f.read()
         return old, now
 

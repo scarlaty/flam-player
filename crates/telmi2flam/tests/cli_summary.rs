@@ -44,7 +44,7 @@ fn full_summary() -> String {
     format!(
         "OK -> o.plain.pk\nOK -> o.plain{sep}\n  titre   : T\n  stages  : 1 | actions : 1\n  \
          images  : 6 | audio : 1 | mp3map : 1\n  lib     : 34 scripts framework | 25 assets UI\n  \
-         choix   : selecteur 'carousel'\n  taille  : 0.6 Mo\n"
+         choix   : selecteur 'carousel'\n  taille  : 0.7 Mo\n"
     )
 }
 
