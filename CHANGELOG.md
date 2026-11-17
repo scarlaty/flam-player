@@ -7,13 +7,18 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+## [0.1.1] - 2026-11-17
+
+Version corrective. Changements depuis `launcher-v0.1.0`. Une histoire Telmi déjà installée doit
+être supprimée puis réinstallée pour recevoir la correction du menu retour.
+
 ### Corrigé
 
 - Une archive placée sur une clé ou un partage retiré avant la conversion est gardée, et non mise
   en cause.
 - Histoires Telmi : « Quitter le jeu ? » du menu retour propre à l'histoire (ex. « Le trésor de
-  Calico Jack ») ramène au menu de l'histoire sans effacer la progression ni l'inventaire ; une
-  vraie fin d'histoire remet toujours tout à zéro.
+  Calico Jack ») ramène au menu d'accueil de l'histoire sur la Flam sans effacer la progression
+  ni l'inventaire ; une vraie fin d'histoire remet toujours tout à zéro.
 
 ## [0.1.0] - 2026-11-14
 
@@ -241,7 +246,8 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   programme intégré. Python 3 reste utile uniquement aux outils de campagne et de parité du
   dépôt (`tools/telmi2flam/`, sans Pillow), pas aux utilisateurs.
 
-[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0...HEAD
+[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.1...HEAD
+[0.1.1]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0...launcher-v0.1.1
 [0.1.0]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.6...launcher-v0.1.0
 [0.1.0-beta.6]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.5...launcher-v0.1.0-beta.6
 [0.1.0-beta.5]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.4...launcher-v0.1.0-beta.5
