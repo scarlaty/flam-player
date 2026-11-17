@@ -11,6 +11,9 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 - Une archive placée sur une clé ou un partage retiré avant la conversion est gardée, et non mise
   en cause.
+- Histoires Telmi : « Quitter le jeu ? » du menu retour propre à l'histoire (ex. « Le trésor de
+  Calico Jack ») ramène au menu de l'histoire sans effacer la progression ni l'inventaire ; une
+  vraie fin d'histoire remet toujours tout à zéro.
 
 ## [0.1.0] - 2026-11-14
 

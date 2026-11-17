@@ -260,6 +260,198 @@ state.current_fun = "s999"; state.currentBranchName = "story"; state.visited_fun
 ok, err = pcall(LoadCurrentFunction)
 check("Reprise noeud inconnu -> redemarrage", ok and lastModule.name == "audio-player", err)
 
+-- ---------------------------------------------------------------------------
+-- Menu retour TELMI (backAction -> backStage -> backChildAction NON vide) :
+-- "Quitter le jeu ?" (ok=nil) garde progression et inventaire (Calico Jack)
+-- ---------------------------------------------------------------------------
+local HOME = { action = "backAction", index = 0 }
+local CTRL = { ok = true, home = true, autoplay = true }
+local CTRLW = { ok = true, home = true, autoplay = false }
+local function nodesMenu()
+    return { inventory = { { name = "boussole", init = 0, max = 1 } }, start = { action = "a0" },
+        stages = {
+            s0 = { audio = "s0.mp3", ctrl = CTRL, home = HOME, ok = { action = "hub" } },
+            take = { audio = "take.mp3", ctrl = CTRLW, home = HOME, items = { { type = 2, item = 0, number = 1 } },
+                     ok = { action = "hub" } },
+            look = { audio = "look.mp3", ctrl = CTRLW, home = HOME, ok = { action = "end" } },
+            fin = { audio = "fin.mp3", ctrl = CTRL, home = HOME },
+            backStage = { ctrl = { ok = true, home = false, autoplay = true }, home = HOME,
+                          ok = { action = "backChildAction" } },
+            resume = { audio = "resume.mp3", ctrl = CTRLW, home = HOME, ok = { action = "hub" } },
+            hint = { audio = "hint.mp3", ctrl = CTRLW, home = HOME, ok = { action = "hints" } },
+            hintScene = { audio = "hint1.mp3", ctrl = CTRL, home = HOME, ok = { action = "backAction" } },
+            quit = { audio = "quit.mp3", ctrl = CTRLW, home = HOME },
+        },
+        actions = { a0 = { { stage = "s0" } }, hub = { { stage = "take" }, { stage = "look" } },
+                    ["end"] = { { stage = "fin" } }, hints = { { stage = "hintScene" } },
+                    backAction = { { stage = "backStage" } },
+                    backChildAction = { { stage = "hint" }, { stage = "resume" }, { stage = "quit" } } },
+        totalChapters = 5 }
+end
+local function opt(audio)
+    for _, c in ipairs(lastModule.args.choices) do if c.audio == audio then return c end end
+    error("option " .. audio .. " absente")
+end
+local function toHubWithItem(nodes)
+    boot(nodes); menuPick(); audioEnd()          -- s0 -> hub
+    opt("take.mp3").cb()                         -- option take (boussole=1) -> hub
+end
+local nm2 = nodesMenu()
+toHubWithItem(nm2)
+check("MENU objet ramasse", state.inv[1].value == 1 and lastModule.name == "carousel")
+back_callback()
+check("MENU retour -> menu interne", lastModule.name == "carousel" and #lastModule.args.choices == 3)
+opt("quit.mp3").cb()
+check("MENU Quitter -> menu Start Reprendre", lastModule.name == "list-choice"
+      and menuLabel() == "Reprendre l'histoire", menuLabel())
+check("MENU Quitter garde l'inventaire", state.inv and state.inv[1].value == 1)
+check("MENU Quitter : position restauree sur le hub", state.current_fun == "hub" and state.current_kind == "a",
+      tostring(state.current_fun))
+check("MENU Quitter sans goto_library", #log == 0, table.concat(log, ","))
+boot(nm2, true); menuPick()
+check("MENU reprise sur le hub avec l'objet", lastModule.name == "carousel" and state.inv[1].value == 1)
+-- indice (scene audio du menu) puis Quitter : origine de jeu conservee
+toHubWithItem(nm2)
+back_callback(); opt("hint.mp3").cb()               -- option indice -> scene hint1
+check("MENU indice joue une scene", lastModule.name == "audio-player" and lastModule.args.audio_path == "hint1.mp3")
+audioEnd()                                          -- hint1 -> backAction -> menu
+check("MENU indice -> retour au menu interne", lastModule.name == "carousel" and #lastModule.args.choices == 3)
+opt("quit.mp3").cb()
+check("MENU indice puis Quitter : Reprendre + objet", menuLabel() == "Reprendre l'histoire"
+      and state.inv[1].value == 1 and state.current_fun == "hub", tostring(state.current_fun))
+-- retour au jeu par "Reprendre le jeu" : une vraie fin efface de nouveau tout
+toHubWithItem(nm2)
+back_callback(); opt("resume.mp3").cb()              -- Reprendre le jeu -> hub
+check("MENU Reprendre -> hub", lastModule.name == "carousel" and #lastModule.args.choices == 2)
+opt("look.mp3").cb()                                 -- look -> end -> scene fin
+audioEnd()                                           -- fin (ok=nil) : vraie fin
+check("MENU vraie fin apres Reprendre : remise a zero", menuLabel() == "Demarrer l'histoire"
+      and state.inv == nil, menuLabel())
+-- vraie fin sans passer par le menu : inchangee
+boot(nm2); menuPick(); audioEnd()
+opt("look.mp3").cb(); audioEnd()
+check("MENU vraie fin directe : remise a zero", menuLabel() == "Demarrer l'histoire" and state.inv == nil)
+
+-- scene finale atteinte par une transition home (pas une option de menu) :
+-- reste une vraie fin (test_explore test_sous_menu_sorti_par_home)
+boot({ inventory = { { name = "x", init = 0 } }, start = { action = "a0" },
+       stages = { s0 = { audio = "s0.mp3", ctrl = CTRL, ok = { action = "m" } },
+                  c1 = { audio = "c1.mp3", ctrl = CTRLW, home = { action = "ah" }, ok = { action = "m" } },
+                  c2 = { audio = "c2.mp3", ctrl = CTRLW, home = { action = "ah" }, ok = { action = "m" } },
+                  h = { audio = "h.mp3", ctrl = CTRL } },
+       actions = { a0 = { { stage = "s0" } }, m = { { stage = "c1" }, { stage = "c2" } }, ah = { { stage = "h" } } },
+       totalChapters = 4 })
+menuPick(); audioEnd(); back_callback()
+check("HOME scene finale jouee", lastModule.name == "audio-player" and lastModule.args.audio_path == "h.mp3")
+audioEnd()
+check("HOME scene finale = vraie fin", menuLabel() == "Demarrer l'histoire" and state.inv == nil, menuLabel())
+
+-- ---------------------------------------------------------------------------
+-- Reprise : inventaire sauve illisible (absent, cles texte) -> garde-fou
+-- ---------------------------------------------------------------------------
+toHubWithItem(nm2)
+back_callback(); opt("quit.mp3").cb()
+state.inv = { ["1"] = { value = 1, max = 1 } }       -- cles devenues texte
+boot(nm2, true); menuPick()
+check("INV cles texte relues", type(state.inv[1]) == "table" and state.inv[1].value == 1)
+state.inv = nil                                      -- inventaire perdu par la sauvegarde
+boot(nm2, true); menuPick()
+check("INV absent -> reinitialise", type(state.inv) == "table" and state.inv[1].value == 0)
+opt("take.mp3").cb()
+check("INV objet ramasse apres reinitialisation", state.inv[1].value == 1)
+
+-- ---------------------------------------------------------------------------
+-- Revue : reprise sur le menu retour, #44 avec backStage atteint par ok,
+-- menu atteint par ok, inventaire agrandi par une mise a jour du pack
+-- ---------------------------------------------------------------------------
+-- reprise (relance) pendant que le menu retour est affiche, puis Quitter
+toHubWithItem(nm2)
+back_callback()
+check("REV menu affiche, origine sauvee", state.home_origin and state.home_origin.id == "hub")
+boot(nm2, true); menuPick()                          -- relance -> Reprendre
+check("REV reprise sur le menu retour", lastModule.name == "carousel" and #lastModule.args.choices == 3)
+opt("quit.mp3").cb()
+check("REV reprise menu puis Quitter : objet garde", menuLabel() == "Reprendre l'histoire"
+      and state.inv[1].value == 1 and state.current_fun == "hub", tostring(state.current_fun))
+-- meme chose via le menu M (LateralResume), sans relance
+toHubWithItem(nm2)
+back_callback()
+LateralResume()
+check("REV menu M -> menu retour", lastModule.name == "carousel" and #lastModule.args.choices == 3)
+opt("quit.mp3").cb()
+check("REV menu M puis Quitter : objet garde", menuLabel() == "Reprendre l'histoire" and state.inv[1].value == 1)
+-- origine sauvee invalide (noeud disparu) : ignoree, Quitter = fin
+toHubWithItem(nm2)
+back_callback()
+state.home_origin = { id = "disparu", kind = "s" }
+boot(nm2, true); menuPick(); opt("quit.mp3").cb()
+check("REV origine invalide ignoree", menuLabel() == "Demarrer l'histoire", menuLabel())
+-- reprise sur un noeud de jeu : origine perimee effacee
+toHubWithItem(nm2)
+state.home_origin = { id = "hub", kind = "a" }
+boot(nm2, true); menuPick()
+check("REV reprise sur le jeu efface l'origine", state.home_origin == nil)
+
+-- #44 : backChildAction vide, backStage AUSSI atteint par ok depuis le jeu
+local function nodes44()
+    return { inventory = { { name = "x", init = 0, max = 1 } }, start = { action = "a0" },
+        stages = { s0 = { audio = "s0.mp3", ctrl = CTRLW, home = HOME, items = { { type = 2, item = 0, number = 1 } },
+                          ok = { action = "a1" } },
+                   s1 = { audio = "s1.mp3", ctrl = CTRLW, home = HOME, ok = { action = "backAction" } },
+                   backStage = { ctrl = { ok = true, home = false, autoplay = true }, ok = { action = "backChildAction" } } },
+        actions = { a0 = { { stage = "s0" } }, a1 = { { stage = "s1" } }, backAction = { { stage = "backStage" } },
+                    backChildAction = {} }, totalChapters = 2 }
+end
+boot(nodes44()); menuPick()
+check("REV44 objet pose", state.inv[1].value == 1)
+back_callback()
+check("REV44 retour -> menu Start sans effacer", menuLabel() == "Reprendre l'histoire" and state.inv[1].value == 1
+      and state.current_fun == "s0", menuLabel())
+
+-- menu retour AUSSI atteint par ok (scene "info" -> backAction) : toujours menu
+local nmInfo = nodesMenu()
+nmInfo.stages.info = { audio = "info.mp3", ctrl = CTRLW, home = HOME, ok = { action = "backAction" } }
+nmInfo.actions.hub[#nmInfo.actions.hub + 1] = { stage = "info" }
+toHubWithItem(nmInfo)
+back_callback(); opt("quit.mp3").cb()
+check("REV menu atteint aussi par ok : Quitter garde l'objet", menuLabel() == "Reprendre l'histoire"
+      and state.inv[1].value == 1, menuLabel())
+
+-- depart = scene de passage de routage, cible d'une home "menu principal" :
+-- l'action de depart reste un noeud de jeu (#44 garde la progression)
+boot({ inventory = { { name = "x", init = 0, max = 1 } }, start = { action = "a0" },
+       stages = { route = { ctrl = { ok = true, home = false, autoplay = true }, ok = { action = "hub" } },
+                  h1 = { audio = "h1.mp3", ctrl = CTRLW, home = { action = "a0" }, items = { { type = 2, item = 0, number = 1 } },
+                         ok = { action = "a2" } },
+                  h2 = { audio = "h2.mp3", ctrl = CTRLW, home = HOME, ok = { action = "hub" } },
+                  backStage = { ctrl = { ok = true, home = false, autoplay = true }, ok = { action = "backChildAction" } } },
+       actions = { a0 = { { stage = "route" } }, hub = { { stage = "h1" } }, a2 = { { stage = "h2" } },
+                   backAction = { { stage = "backStage" } }, backChildAction = {} }, totalChapters = 2 })
+menuPick(); lastModule.args.okCallback()             -- h1 (objet) -> h2
+back_callback()                                      -- h2 : home -> backAction -> vide
+check("REV depart en passage : retour garde la progression", menuLabel() == "Reprendre l'histoire"
+      and state.inv[1].value == 1 and state.current_fun == "h2", menuLabel())
+
+-- forme "Pere Noel" : backStage repris dans une action de jeu (a109, apres une
+-- scene info) ; le menu interne reste un menu, Quitter garde l'objet
+local nmPN = nodesMenu()
+nmPN.stages.info = { audio = "info.mp3", ctrl = CTRLW, home = HOME, ok = { action = "a109" } }
+nmPN.actions.a109 = { { stage = "backStage" } }
+nmPN.actions.hub[#nmPN.actions.hub + 1] = { stage = "info" }
+toHubWithItem(nmPN)
+back_callback(); opt("quit.mp3").cb()
+check("REV forme Pere Noel : Quitter garde l'objet", menuLabel() == "Reprendre l'histoire"
+      and state.inv[1].value == 1, menuLabel())
+
+-- pack mis a jour avec un objet de plus : objets ramasses gardes
+toHubWithItem(nm2)
+back_callback(); opt("quit.mp3").cb()
+local nmBig = nodesMenu()
+nmBig.inventory[2] = { name = "pelle", init = 2, max = 3 }
+boot(nmBig, true); menuPick()
+check("REV inventaire agrandi : objet garde + nouveau a init", state.inv[1].value == 1 and state.inv[2].value == 2,
+      tostring(state.inv[2] and state.inv[2].value))
+
 -- flam-test appelle setup() s'il existe apres le chargement : main.lua l'a
 -- defini, on le retire pour ne pas relancer l'histoire hors test.
 setup = nil
