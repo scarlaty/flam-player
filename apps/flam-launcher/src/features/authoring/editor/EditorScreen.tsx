@@ -21,6 +21,7 @@ import { toAppError } from "../../../api/error";
 import { Banner, Button, Dialog, RadioGroup, TextField } from "../../../components";
 import { t } from "../../../i18n";
 import { EditorHeader } from "./EditorHeader";
+import { useEditorDnd } from "./dnd/useEditorDnd";
 import { EditorTree } from "./EditorTree";
 import { editorErrorText } from "./errors";
 import { FolderMissingBanner } from "./FolderMissingBanner";
@@ -117,7 +118,11 @@ export function EditorScreen() {
     setView(next);
     setSelectedId((id) => nodeForPath(next.report.root, id).id);
   }, []);
-  const { missing } = useFolderWatch({ busy, onView: onWatchedView, onNotice: announce });
+  const { missing, reading } = useFolderWatch({
+    busy,
+    onView: onWatchedView,
+    onNotice: announce,
+  });
   const missingRef = useRef(false);
   useEffect(() => {
     missingRef.current = missing;
@@ -139,8 +144,18 @@ export function EditorScreen() {
         setView(update.view);
         // Une image ou un titre lu rend son propre id : la sélection va à son élément.
         const first = update.ids[0];
-        if (first !== undefined)
-          setSelectedId(nodeForPath(update.view.report.root, first).id);
+        if (first !== undefined) {
+          const chosen = nodeForPath(update.view.report.root, first).id;
+          setSelectedId(chosen);
+          // Ses menus sont dépliés : la ligne choisie reste visible et atteignable au clavier
+          // (déplacement ou copie dans un menu replié).
+          setCollapsed((current) => {
+            const next = new Set(
+              [...current].filter((menu) => !isWithin(chosen, menu) || menu === chosen),
+            );
+            return next.size === current.size ? current : next;
+          });
+        }
         const skipped =
           update.skipped.length > 0 ? ` ${text.skipped(update.skipped.length)}` : "";
         const said =
@@ -179,6 +194,26 @@ export function EditorScreen() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [view, ask, doUndo, doRedo]);
+
+  // Glisser-déposer (lot 8) : fichiers de l'Explorateur et déplacement au pointeur.
+  const refocusTree = useCallback(() => setRefocus((n) => n + 1), []);
+  const { attachRoot, ...dnd } = useEditorDnd({
+    view,
+    selectedId: node?.id ?? "",
+    collapsed,
+    // Relecture à venir : la place visée pourrait venir d'une vue périmée (lot 9).
+    busy: busy || reading,
+    blocked: missing
+      ? t.authoringDnd.refuse.missing
+      : ask !== null
+        ? t.authoringDnd.refuse.dialog
+        : null,
+    run,
+    select: setSelectedId,
+    refocusTree,
+    announce,
+    setError,
+  });
 
   if (view === null || node === null) {
     return (
@@ -297,7 +332,10 @@ export function EditorScreen() {
   const conflict = view.report.conflict;
 
   return (
-    <main className="fl-editor">
+    <main
+      ref={attachRoot}
+      className={`fl-editor${dnd.filesOver ? " fl-editor--files-over" : ""}${dnd.tree.draggingId !== null ? " fl-editor--dragging" : ""}`}
+    >
       <EditorHeader
         view={view}
         busy={locked}
@@ -350,8 +388,9 @@ export function EditorScreen() {
               {text.tree.newMenu}
             </Button>
           </div>
-          <div className="fl-editor__tree">
+          <div className="fl-editor__tree" data-dnd-zone="tree">
             <EditorTree
+              dnd={dnd.tree}
               view={view}
               selectedId={node.id}
               onSelect={setSelectedId}
@@ -388,6 +427,7 @@ export function EditorScreen() {
         <div className="fl-editor__panel">
           <ItemPanel
             key={node.id}
+            dropZone={dnd.panelZone}
             view={view}
             node={node}
             busy={locked}
@@ -404,6 +444,7 @@ export function EditorScreen() {
         </div>
       </div>
       <ReportList view={view} onGoTo={select} />
+      {dnd.overlay}
 
       <Dialog
         open={ask !== null}

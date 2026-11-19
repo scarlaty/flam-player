@@ -19,6 +19,8 @@ export interface FolderWatchOptions {
 export interface FolderWatch {
   /** Le dossier a disparu (supprimé, renommé, clé USB retirée) : éditeur en lecture seule. */
   missing: boolean;
+  /** Un changement fait ailleurs attend sa relecture : la vue affichée est peut-être périmée. */
+  reading: boolean;
 }
 
 /**
@@ -93,5 +95,5 @@ export function useFolderWatch({
     };
   }, [pending, busy]);
 
-  return { missing };
+  return { missing, reading: pending > 0 };
 }

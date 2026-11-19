@@ -168,8 +168,19 @@ export function editorView(): Promise<EditorView> {
   return invokeCommand("authoring_editor_view");
 }
 
-export function importFiles(menu: string, sources: string[]): Promise<EditorUpdate> {
-  return invokeCommand("authoring_editor_import", { menu, sources });
+/**
+ * Copie `sources` (fichiers ou dossiers, lus et jamais modifiés) dans le menu `menu`, avant
+ * l'option `before` (nom ; `null` : à la place que donne l'ordre du menu).
+ */
+export function importFiles(
+  menu: string,
+  sources: string[],
+  before: string | null = null,
+): Promise<EditorUpdate> {
+  return invokeCommand(
+    "authoring_editor_import",
+    before === null ? { menu, sources } : { menu, sources, before },
+  );
 }
 
 export function setImage(target: Target, source: string): Promise<EditorUpdate> {
