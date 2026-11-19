@@ -88,6 +88,13 @@ dériver un autre (chaque création donne une nouvelle histoire) ; elle se renom
 partage, publicité comprise) ; « J'ai compris » le ferme et il n'est plus affiché. Détails et
 décisions : [docs/podcasts.md](docs/podcasts.md).
 
+## Créer une histoire depuis un dossier
+
+Un dossier de fichiers audio (et d'images) de votre PC devient une histoire pour la Flam :
+recueil de petites histoires ou livre à chapitres, avec un éditeur (glisser-déposer, annuler,
+images et titres lus automatiques). Guide : [docs/guide-editeur.md](docs/guide-editeur.md) ;
+conception : [docs/creation-dossier.md](docs/creation-dossier.md).
+
 ## Flam : envoyer des histoires (expérimental)
 
 > **Fonction expérimentale et non officielle**, ni prévue ni garantie par le fabricant de la
@@ -436,6 +443,8 @@ apps/flam-launcher/
     i18n/                  Textes de l'interface (français)
   docs/DESIGN.md           Design system : principes, palette, composants
   docs/podcasts.md         Spécification produit des podcasts (#208)
+  docs/guide-editeur.md    Guide de l'éditeur d'histoires sur dossier
+  docs/creation-dossier.md Note de conception de l'éditeur d'histoires sur dossier
   src-tauri/
     src/
       lib.rs               Initialisation (traces, builder Tauri)

@@ -1,13 +1,15 @@
 # Éditeur d'histoires sur dossier : note de conception
 
-> **Statut : décidé** (2026-11-19). Le mainteneur a validé l'objectif (§ 1), les modes recueil
-> et chapitres (§ 5) et les recommandations Q1 à Q8 (§ 12). Restent à fixer après essai sur la
-> Flam : les limites (§ 9).
+> **Statut : implémenté, essais sur la Flam à faire** (2026-11-19). Le mainteneur a validé
+> l'objectif (§ 1), les modes recueil et chapitres (§ 5) et les recommandations Q1 à Q8 (§ 12).
+> Les lots 1 à 10 sont faits (§ 11.3). Restent les essais sur la Flam (§ 13), qui confirmeront
+> les limites (§ 9). Guide utilisateur : [guide-editeur.md](guide-editeur.md).
 
 Légende :
 
 - **Décidé** : demandé ou validé par le mainteneur ;
 - **Proposé** : recommandation de cette note ;
+- **Fait** : implémenté dans `main` (ou dans une PR indiquée) ;
 - **Existant** : déjà présent dans `main` (fichier cité).
 
 ## Sommaire
@@ -67,7 +69,7 @@ Windows, l'activer fait disparaître les événements HTML5 (`draggable`, `ondro
 
 ## 3. Le dossier, source de vérité
 
-**Proposé** : l'histoire **est** le dossier. L'éditeur n'a pas de projet caché : tout ce qu'il
+**Fait** : l'histoire **est** le dossier. L'éditeur n'a pas de projet caché : tout ce qu'il
 modifie est écrit dans le dossier, et tout ce qui est fait à la main dans l'Explorateur apparaît
 dans l'éditeur (§ 4.5). Un dossier rangé à la main, sans aucun fichier spécial, donne déjà une
 histoire.
@@ -262,7 +264,7 @@ Les deux modes produisent un graphe Telmi que `telmi2flam` convertit sans modifi
 - menu des chapitres = actions à plusieurs entrées, comme les menus du recueil ;
 - démarrage : `startAction` → premier chapitre (`debut = chapitre`) ou menu racine.
 
-**Proposé** : ajouter à `Pack` un mode par menu ; `Graph::build` (`podcast/archive.rs`) choisit
+**Fait** : `Pack` a un mode par menu ; `Graph::build` (`podcast/archive.rs`) choisit
 les transitions selon ce mode. Tests sur le JSON produit ; ceux des podcasts ne changent pas.
 
 ## 6. Réglages (`_histoire.json`, `_dossier.json`)
@@ -340,8 +342,8 @@ Les limites des podcasts (`podcast/archive.rs`) sont trop serrées pour des hist
 la main ou des livres audio : `MAX_MENU_DEPTH = 3`, `MAX_EPISODES = 50`,
 `MAX_OPTIONS_PER_MENU = 50`, `MAX_STAGES = 256`, 1,25 Gio d'audio au total.
 
-**Proposé** : limites propres à cette source, passées en paramètre de `Graph::build`, fixées
-après mesure sur la Flam (§ 13). Valeurs visées : 5 niveaux, 300 histoires ou chapitres,
+**Fait** : limites propres à cette source, passées en paramètre de `Graph::build`
+(`authoring/build.rs`), à confirmer par des mesures sur la Flam (§ 13). Valeurs retenues : 5 niveaux, 300 histoires ou chapitres,
 50 options par menu, 3 Gio d'audio (archive zip32 : nettement sous 4 Gio). Une limite dépassée est un problème bloquant du rapport,
 visible dans l'éditeur avant toute conversion.
 
@@ -394,6 +396,40 @@ L'éditeur **modifie les fichiers de l'utilisateur** : c'est la partie la plus s
 10. Pochette extraite, image générée avec le titre.
 11. Essais sur la Flam (§ 13), réglage des limites, guide utilisateur.
 
+### 11.3 État d'avancement
+
+Les PR vont de #662 (note de conception) à #676 (guide).
+
+| Lot | Contenu                                    | État                                                                      |
+| --- | ------------------------------------------ | ------------------------------------------------------------------------- |
+| 1   | Cette note                                 | Fait (#662)                                                               |
+| 2   | Lecture du dossier, réglages               | Fait (#663)                                                               |
+| 3   | Mode chapitres du graphe, limites          | Fait (#665) ; moteur : `role` des scènes, #667                            |
+| 4   | Étape commune de `install/podcast.rs`      | Fait (#664)                                                               |
+| 5   | Un dossier fait à la main devient histoire | Fait (#670), suites (#673) : relance, dossier déplacé, cache              |
+| 6   | Opérations, journal, corbeille             | Fait (#671)                                                               |
+| 7   | Fenêtre de l'éditeur                       | Fait (#672)                                                               |
+| 8   | Glisser-déposer                            | Fait (#674)                                                               |
+| 9   | Surveillance du dossier                    | Fait (#675)                                                               |
+| 10  | Pochette extraite, image avec le titre     | Fait (#669)                                                               |
+| 11  | Essais sur la Flam, guide utilisateur      | Guide fait ([guide-editeur.md](guide-editeur.md)) ; essais à faire (§ 13) |
+
+### 11.4 Écarts constatés à l'implémentation
+
+- **Couverture** : sans `_couverture.*`, la complétion utilise l'image de la première histoire
+  (fournie, sinon sa pochette), sinon une image avec le **titre de l'histoire** (et non une image unie).
+- **Écran noir pendant un chapitre** : l'image du chapitre n'est affichée qu'avec le titre lu
+  (option du menu ou annonce) ; pendant la lecture, l'écran est noir (retour d'essai, § 5.3).
+- **Pochette** : extraite par ffmpeg avec `image2pipe`, flux vidéo copié tel quel, sans filtre
+  ni décodage (`authoring/images.rs`).
+- **Renuméroter** : l'action « Renuméroter les fichiers selon l'ordre » (§ 3.2, Q3) n'est **pas
+  encore faite** ; l'ordre reste noté dans `_dossier.json`.
+- **Enregistrement d'un titre lu au micro** : plus tard (Q7), comme prévu.
+- **Limites** : les valeurs du § 9 sont dans `authoring/build.rs`
+  (`MAX_MENU_DEPTH = 5`, `MAX_STORIES = 300`, `MAX_OPTIONS_PER_MENU = 50`, 3 Gio d'audio).
+- **Dossier déplacé** : « Choisir le dossier » existe dans Mes histoires (#673) et dans l'éditeur
+  (#675).
+
 ## 12. Décisions
 
 | #   | Question                                                                                     | Recommandation                                                                                                                                         |
@@ -420,3 +456,23 @@ L'éditeur **modifie les fichiers de l'utilisateur** : c'est la partie la plus s
    lancement.
 5. Actualisation : ajouter un chapitre, « Mettre à jour l'histoire », « Remplacer sur la
    Flam ». La reprise de l'ancienne version reste cohérente ou redémarre proprement.
+
+### 13.1 Essais restant à faire
+
+Aucun des essais ci-dessous n'a encore été fait sur une histoire créée depuis un dossier. Le comportement décrit aux § 5.2 et 5.3 (retour,
+position gardée, écran noir) reste à confirmer.
+
+- [ ] Recueil 3 × 10 : navigation, retour focalisé, `fin = menu` et `suivante` (essai 1).
+- [ ] Livre 2 × 15 : démarrage direct, passage de partie, menu des chapitres, fin du livre
+      (essai 2).
+- [ ] Reprise au milieu du chapitre 7 : position gardée au retour, « Reprendre l'histoire »,
+      jauge (essai 3) ; les autres chapitres repartent du début.
+- [ ] Écran noir pendant un chapitre, et image du chapitre avec le titre lu (§ 5.3).
+- [ ] Retour depuis le premier niveau du menu des chapitres : sortie de l'histoire ; livre dans
+      un recueil : remontée au recueil.
+- [ ] Mesures : 300 chapitres, mémoire, temps de lancement ; confirmer ou revoir 5 niveaux,
+      300 histoires, 3 Gio (essai 4).
+- [ ] Actualisation d'une histoire déjà envoyée (essai 5).
+- [ ] Titres lus : voix Windows et fichier, avec et sans « Annoncer le titre avant chaque
+      chapitre ».
+- [ ] Image avec le titre et pochette extraite : lisibilité sur l'écran de la Flam.
