@@ -1336,10 +1336,6 @@ export const fr = {
       image: (title: string) => `Image de « ${title} »`,
       titleAudio: (title: string) => `Titre lu de « ${title} »`,
     },
-    dropZone: {
-      image: "Déposez une image ici",
-      titleAudio: "Déposez un fichier audio ici",
-    },
     refuse: {
       nowhere:
         "Déposez sur un menu de l'arbre (ou entre deux éléments), sur l'image ou sur le titre lu de l'élément choisi.",
@@ -1351,13 +1347,10 @@ export const fr = {
         "Ce n'est pas un fichier audio (mp3, m4a, aac, ogg, opus, wav, flac) : rien n'a été copié.",
       oneAudio: "Un seul fichier audio à la fois : rien n'a été copié.",
       busy: "Une opération est en cours : réessayez dans un instant.",
-      gone: "Cet élément n'existe plus dans le dossier. L'affichage est à jour.",
+      dialog: "Fermez d'abord la fenêtre ouverte : rien n'a été copié.",
+      gone: "Cet élément n'existe plus dans le dossier : rien n'a été fait.",
       invalid: "Un menu ne peut pas aller dans lui-même ni dans un de ses sous-menus.",
     },
-    rejected: (n: number) =>
-      n === 1
-        ? "1 fichier laissé de côté (format non accepté)."
-        : `${n} fichiers laissés de côté (format non accepté).`,
     copied: (menu: string) => `Copié dans « ${menu} ».`,
     started: (title: string) =>
       `Déplacement de « ${title} » : relâchez à la place voulue, ou Échap pour annuler.`,

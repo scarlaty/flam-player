@@ -193,12 +193,11 @@ describe("planFileDrop", () => {
       menuTitle: "A",
       before: null,
       sources: [audio],
-      rejected: [],
       hint: { kind: "row", id: "A", slot: "inside" },
     });
   });
 
-  it("entre deux éléments : copie à cette place ; formats refusés laissés de côté", () => {
+  it("entre deux éléments : copie à cette place ; tout est envoyé au backend", () => {
     const plan = planFileDrop(
       root,
       { kind: "row", spot: { id: "A/2.mp3", slot: "before" } },
@@ -209,8 +208,8 @@ describe("planFileDrop", () => {
       menu: "A",
       menuTitle: "A",
       before: "2.mp3",
-      sources: [audio, image, "C:\\Src\\Dossier"],
-      rejected: ["C:\\Src\\note.txt"],
+      // Le backend trie : « note.txt » sera laissé de côté (ou copié si c'est un dossier).
+      sources: [audio, image, "C:\\Src\\Dossier", "C:\\Src\\note.txt"],
       hint: { kind: "row", id: "A/2.mp3", slot: "before" },
     });
   });
@@ -243,13 +242,12 @@ describe("planFileDrop", () => {
     ).toMatchObject({ kind: "refuse", reason: "oneImage" });
   });
 
-  it("rien d'accepté : refus, rien à copier", () => {
+  it("nulle part : refus ; un dossier nommé avec un point est envoyé", () => {
     expect(
       planFileDrop(root, { kind: "row", spot: { id: "A", slot: "inside" } }, [
-        "C:\\a.txt",
-        "C:\\b.pdf",
+        "C:\\Livres\\Tome.III",
       ]),
-    ).toMatchObject({ kind: "refuse", reason: "formats" });
+    ).toMatchObject({ kind: "import", sources: ["C:\\Livres\\Tome.III"] });
     expect(planFileDrop(root, null, [audio])).toEqual({
       kind: "refuse",
       reason: "nowhere",

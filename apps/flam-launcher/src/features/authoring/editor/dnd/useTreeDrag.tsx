@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -9,10 +10,13 @@ import {
 import type { EditorNode } from "../../../../api/editor";
 import { findNode } from "../model";
 import {
+  clip,
+  contains,
   edgeScroll,
   pastThreshold,
   spotAt,
   type Point,
+  type Rect,
   type RowBox,
   type Spot,
 } from "./geometry";
@@ -23,7 +27,7 @@ import { planTreeMove, type TreeMovePlan } from "./plan";
  * de glisser-déposer HTML5 (incompatible avec le dépôt natif de fichiers sous Windows). On
  * saisit la poignée d'une ligne ; le glissement commence au-delà de quelques pixels ; un aperçu
  * suit le pointeur, un trait montre la place (ou le menu surligné : « dans ») ; l'arbre défile
- * près de ses bords ; Échap annule.
+ * près de ses bords ; Échap annule ; relâché hors de l'arbre, rien ne bouge.
  */
 
 /** Attribut de la poignée d'une ligne. */
@@ -58,20 +62,14 @@ export interface TreeDrag {
   ghost: ReactNode;
 }
 
-/** Lignes de l'arbre mesurées, dans l'ordre affiché. */
-export function measureRows(tree: HTMLElement): RowBox[] {
-  return Array.from(tree.querySelectorAll<HTMLElement>(`[${ROW_ATTR}]`)).map((el) => {
-    const r = el.getBoundingClientRect();
-    return {
-      id: el.getAttribute(ROW_ATTR) ?? "",
-      menu: el.getAttribute(ROW_MENU_ATTR) === "true",
-      rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
-    };
-  });
+/** Rectangle d'un élément. */
+export function rectOf(el: Element): Rect {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
 }
 
 /** Premier parent qui défile verticalement. */
-function scrollerOf(el: HTMLElement): HTMLElement | null {
+export function scrollerOf(el: HTMLElement): HTMLElement | null {
   for (let node = el.parentElement; node; node = node.parentElement) {
     const overflow = window.getComputedStyle(node).overflowY;
     if (overflow === "auto" || overflow === "scroll") return node;
@@ -79,10 +77,70 @@ function scrollerOf(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/** Partie visible de l'élément `el`, coupée par son conteneur qui défile ; `null` hors vue. */
+export function visibleRect(el: HTMLElement): Rect | null {
+  const scroller = scrollerOf(el);
+  return clip(rectOf(el), scroller ? rectOf(scroller) : null);
+}
+
+/**
+ * Lignes de l'arbre mesurées, dans l'ordre affiché : seule leur partie visible compte (une
+ * ligne défilée hors vue ne peut pas être visée à travers la barre d'outils ou le rapport).
+ */
+export function measureRows(tree: HTMLElement): RowBox[] {
+  const scroller = scrollerOf(tree);
+  const bounds = scroller ? rectOf(scroller) : null;
+  const rows: RowBox[] = [];
+  for (const el of tree.querySelectorAll<HTMLElement>(`[${ROW_ATTR}]`)) {
+    const rect = clip(rectOf(el), bounds);
+    if (!rect) continue;
+    rows.push({
+      id: el.getAttribute(ROW_ATTR) ?? "",
+      menu: el.getAttribute(ROW_MENU_ATTR) === "true",
+      rect,
+    });
+  }
+  return rows;
+}
+
+/** Zone visible de l'arbre (son conteneur qui défile, sinon l'arbre). */
+function treeArea(tree: HTMLElement): { el: HTMLElement; rect: Rect } {
+  const el = scrollerOf(tree) ?? tree;
+  return { el, rect: rectOf(el) };
+}
+
+/** Place visée au point `point` ; `null` hors de la zone visible de l'arbre. */
+function spotFor(tree: HTMLElement | null, point: Point): Spot | null {
+  if (!tree || !contains(treeArea(tree).rect, point)) return null;
+  return spotAt(measureRows(tree), point.y);
+}
+
+/** Absorbe le prochain clic (celui qui suit le relâchement du bouton). */
+function swallowNextClick(afterRelease: boolean) {
+  const swallow = (event: MouseEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+  };
+  const stop = () => window.removeEventListener("click", swallow, { capture: true });
+  window.addEventListener("click", swallow, { capture: true, once: true });
+  if (afterRelease) {
+    window.setTimeout(stop, 0);
+    return;
+  }
+  // Annulé bouton enfoncé (Échap, perte du focus) : le clic viendra au relâchement.
+  const onUp = () => window.setTimeout(stop, 0);
+  window.addEventListener("pointerup", onUp, { capture: true, once: true });
+  window.setTimeout(() => {
+    window.removeEventListener("pointerup", onUp, { capture: true });
+    stop();
+  }, 10_000);
+}
+
 interface Session {
   pointerId: number;
   id: string;
   title: string;
+  grip: HTMLElement;
   start: Point;
   last: Point;
   started: boolean;
@@ -92,7 +150,9 @@ interface Session {
 
 export function useTreeDrag(options: TreeDragOptions): TreeDrag {
   const latest = useRef(options);
-  useEffect(() => {
+  // Mis à jour dès le rendu validé (pas après les effets) : un `pointerdown` juste après
+  // l'affichage de l'arbre voit déjà la vue chargée.
+  useLayoutEffect(() => {
     latest.current = options;
   });
   const [drag, setDrag] = useState<TreeDragState | null>(null);
@@ -117,10 +177,9 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
   /** Recalcule la place visée au point `point`. */
   const update = useCallback((point: Point) => {
     const s = session.current;
-    const tree = latest.current.getTree();
-    if (!s || !tree) return;
-    const { root, isOpen } = latest.current;
-    const spot = spotAt(measureRows(tree), point.y);
+    if (!s) return;
+    const { root, isOpen, getTree } = latest.current;
+    const spot = spotFor(getTree(), point);
     const plan = planTreeMove(root, s.id, spot, isOpen);
     setDrag((current) =>
       current &&
@@ -132,31 +191,26 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
     );
   }, []);
 
-  const finish = useCallback((commit: boolean) => {
+  const finish = useCallback((commit: boolean, released: boolean) => {
     const s = session.current;
     if (!s) return;
     session.current = null;
     window.clearInterval(s.scrollTimer);
     s.cleanup();
     setDrag(null);
-    if (!s.started) return;
+    if (!s.started) {
+      // Simple clic sur la poignée : la ligne prend le focus comme sur un clic ordinaire.
+      if (released) s.grip.closest<HTMLElement>('[role="treeitem"]')?.focus();
+      return;
+    }
     // Le clic qui suit le relâchement ne doit pas choisir la ligne survolée.
-    const swallow = (event: MouseEvent) => {
-      event.stopPropagation();
-      event.preventDefault();
-    };
-    window.addEventListener("click", swallow, { capture: true, once: true });
-    window.setTimeout(
-      () => window.removeEventListener("click", swallow, { capture: true }),
-      0,
-    );
+    swallowNextClick(released);
     const { root, isOpen, getTree } = latest.current;
     if (!commit) {
       latest.current.onCancel(s.id, s.title);
       return;
     }
-    const tree = getTree();
-    const spot = tree ? spotAt(measureRows(tree), s.last.y) : null;
+    const spot = spotFor(getTree(), s.last);
     latest.current.onDrop(s.id, s.title, planTreeMove(root, s.id, spot, isOpen));
   }, []);
 
@@ -176,7 +230,7 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
     (event: ReactPointerEvent<HTMLElement>) => {
       if (event.button !== 0 || latest.current.disabled || session.current) return;
       const target = event.target as HTMLElement | null;
-      const grip = target?.closest?.(`[${GRIP_ATTR}]`);
+      const grip = target?.closest?.<HTMLElement>(`[${GRIP_ATTR}]`);
       const row = grip?.closest?.(`[${ROW_ATTR}]`);
       const id = row?.getAttribute(ROW_ATTR);
       if (!grip || id === null || id === undefined || id === "") return;
@@ -187,14 +241,16 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
       const start = { x: event.clientX, y: event.clientY };
       const pointerId = event.pointerId;
       try {
-        (grip as HTMLElement).setPointerCapture?.(pointerId);
+        grip.setPointerCapture?.(pointerId);
       } catch {
         // Capture impossible : les écouteurs de la fenêtre suffisent.
       }
+      const ours = (e: PointerEvent) =>
+        e.pointerId === undefined || e.pointerId === pointerId;
 
       const onMove = (e: PointerEvent) => {
         const s = session.current;
-        if (!s || (e.pointerId !== undefined && e.pointerId !== s.pointerId)) return;
+        if (!s || !ours(e)) return;
         const point = { x: e.clientX, y: e.clientY };
         s.last = point;
         if (!s.started) {
@@ -206,39 +262,37 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
         }
         placeGhost(point);
         update(point);
-        // Défilement automatique près des bords de l'arbre.
-        const tree = latest.current.getTree();
-        const scroller = tree ? scrollerOf(tree) : null;
+        // Défilement automatique près des bords haut et bas de l'arbre.
         window.clearInterval(s.scrollTimer);
         s.scrollTimer = undefined;
-        if (scroller) {
-          const r = scroller.getBoundingClientRect();
-          const step = edgeScroll(
-            { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
-            point.y,
-          );
-          if (step !== 0) {
-            s.scrollTimer = window.setInterval(() => {
-              scroller.scrollTop += step;
-              update(s.last);
-            }, 16);
-          }
+        const tree = latest.current.getTree();
+        if (!tree) return;
+        const area = treeArea(tree);
+        if (point.x < area.rect.left || point.x > area.rect.right) return;
+        const step = edgeScroll(area.rect, point.y);
+        if (step !== 0) {
+          s.scrollTimer = window.setInterval(() => {
+            area.el.scrollTop += step;
+            update(s.last);
+          }, 16);
         }
       };
       const onUp = (e: PointerEvent) => {
         const s = session.current;
-        if (!s || (e.pointerId !== undefined && e.pointerId !== s.pointerId)) return;
+        if (!s || !ours(e)) return;
         s.last = { x: e.clientX, y: e.clientY };
-        finish(true);
+        finish(true, true);
       };
-      const onCancelPointer = () => finish(false);
+      const onCancelPointer = (e: PointerEvent) => {
+        if (ours(e)) finish(false, true);
+      };
       const onKey = (e: KeyboardEvent) => {
         if (e.key !== "Escape") return;
         e.preventDefault();
         e.stopPropagation();
-        finish(false);
+        finish(false, false);
       };
-      const onBlur = () => finish(false);
+      const onBlur = () => finish(false, false);
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onCancelPointer);
@@ -248,6 +302,7 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
         pointerId,
         id,
         title: node.title,
+        grip,
         start,
         last: start,
         started: false,
@@ -259,7 +314,7 @@ export function useTreeDrag(options: TreeDragOptions): TreeDrag {
           window.removeEventListener("keydown", onKey, { capture: true });
           window.removeEventListener("blur", onBlur);
           try {
-            (grip as HTMLElement).releasePointerCapture?.(pointerId);
+            grip.releasePointerCapture?.(pointerId);
           } catch {
             // Déjà relâchée.
           }

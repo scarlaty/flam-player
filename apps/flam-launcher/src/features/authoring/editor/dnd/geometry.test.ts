@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  clip,
   edgeScroll,
   hitZone,
   pastThreshold,
@@ -91,6 +92,16 @@ describe("edgeScroll", () => {
     expect(edgeScroll(box, 101)).toBeLessThan(edgeScroll(box, 125));
     expect(edgeScroll(box, 50)).toBe(-18);
     expect(edgeScroll(box, 600)).toBe(18);
+  });
+});
+
+describe("clip", () => {
+  it("garde la partie visible ; rien si l'élément est défilé hors vue", () => {
+    const view = rect(0, 100, 300, 500);
+    expect(clip(rect(0, 80, 300, 120), view)).toEqual(rect(0, 100, 300, 120));
+    expect(clip(rect(0, 20, 300, 60), view)).toBeNull();
+    expect(clip(rect(0, 500, 300, 540), view)).toBeNull();
+    expect(clip(rect(0, 20, 300, 60), null)).toEqual(rect(0, 20, 300, 60));
   });
 });
 

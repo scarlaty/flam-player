@@ -21,7 +21,7 @@ import {
   type ZoneBox,
 } from "./plan";
 import { useFileDrop, type FileDragSubscribe } from "./useFileDrop";
-import { measureRows, useTreeDrag, type TreeDragState } from "./useTreeDrag";
+import { measureRows, useTreeDrag, visibleRect, type TreeDragState } from "./useTreeDrag";
 import "./Dnd.css";
 
 /** Attribut d'une zone de dépôt nommée (`tree`, `image`, `titleAudio`). */
@@ -44,6 +44,8 @@ export interface EditorDndOptions {
   selectedId: string;
   collapsed: ReadonlySet<string>;
   busy: boolean;
+  /** Un dialogue est ouvert : aucun dépôt ni déplacement. */
+  blocked: boolean;
   run: (
     action: () => Promise<EditorUpdate>,
     say?: (label: string) => string,
@@ -78,11 +80,9 @@ export function measureZones(root: HTMLElement): ZoneBox[] {
   for (const el of root.querySelectorAll<HTMLElement>(`[${ZONE_ATTR}]`)) {
     const kind = el.getAttribute(ZONE_ATTR);
     if (kind !== "tree" && kind !== "image" && kind !== "titleAudio") continue;
-    const r = el.getBoundingClientRect();
-    zones.push({
-      kind,
-      rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
-    });
+    // Partie visible seulement : une zone défilée hors vue ne se vise pas.
+    const rect = visibleRect(el);
+    if (rect) zones.push({ kind, rect });
   }
   return zones;
 }
@@ -117,6 +117,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
     selectedId,
     collapsed,
     busy,
+    blocked,
     run,
     select,
     refocusTree,
@@ -129,7 +130,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
     rootEl.current = el;
   }, []);
   const isOpen = useCallback((id: string) => !collapsed.has(id), [collapsed]);
-  const [hover, setHover] = useState<{ plan: FileDropPlan; point: Point } | null>(null);
+  const [hover, setHover] = useState<{ plan: FileDropPlan; key: string } | null>(null);
 
   const planAt = useCallback(
     (paths: string[], point: Point): FileDropPlan | null => {
@@ -143,6 +144,11 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
 
   const dropFiles = useCallback(
     (paths: string[], point: Point) => {
+      if (blocked) {
+        // Dialogue ouvert : le dépôt natif ne doit pas le contourner.
+        setError(text.refuse.dialog);
+        return;
+      }
       const plan = planAt(paths, point);
       if (!plan || !view) return;
       if (busy) {
@@ -154,12 +160,19 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
           setError(refuseText(plan));
           return;
         case "import": {
-          const { menu, menuTitle, before, sources, rejected } = plan;
-          const extra = rejected.length > 0 ? ` ${text.rejected(rejected.length)}` : "";
+          const { menu, menuTitle, before, sources } = plan;
+          let copied = 0;
           void run(
-            () => importFiles(menu, sources, before),
-            () => `${text.copied(menuTitle)}${extra}`,
-          );
+            async () => {
+              const update = await importFiles(menu, sources, before);
+              copied = update.ids.length;
+              return update;
+            },
+            () => (copied > 0 ? text.copied(menuTitle) : text.refuse.formats),
+          ).then((ok) => {
+            // Rien de copiable (formats refusés) : le dire clairement, rien n'a changé.
+            if (ok && copied === 0) setError(text.refuse.formats);
+          });
           return;
         }
         case "image":
@@ -177,14 +190,18 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
         }
       }
     },
-    [planAt, view, busy, run, setError, text],
+    [planAt, view, busy, blocked, run, setError, text],
   );
 
   useFileDrop(
     {
       onHover: (drag) => {
-        const plan = drag ? planAt(drag.paths, drag.point) : null;
-        setHover(drag && plan ? { plan, point: drag.point } : null);
+        const plan = drag && !blocked ? planAt(drag.paths, drag.point) : null;
+        const next = plan
+          ? { plan, key: JSON.stringify([plan.hint, hoverText(plan)]) }
+          : null;
+        // Un état nouveau seulement si ce qui est montré change (`over` arrive ~60 fois/s).
+        setHover((current) => (current?.key === next?.key ? current : next));
       },
       onDrop: dropFiles,
     },
@@ -194,14 +211,20 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
   const onTreeDrop = useCallback(
     (id: string, title: string, plan: TreeMovePlan) => {
       if (!view) return;
+      if (busy && (plan.kind === "reorder" || plan.kind === "move")) {
+        // Une opération (Ctrl+Z…) a commencé pendant le glissement.
+        setError(text.refuse.busy);
+        refocusTree();
+        return;
+      }
       switch (plan.kind) {
         case "none":
           announce(text.stayed(title));
           refocusTree();
           return;
         case "invalid":
+          // La bannière (role="alert") est lue : pas d'annonce en double.
           setError(text.refuse.invalid);
-          announce(text.refuse.invalid);
           refocusTree();
           return;
         case "reorder": {
@@ -229,7 +252,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
         }
       }
     },
-    [view, run, select, refocusTree, announce, setError, text],
+    [view, busy, run, select, refocusTree, announce, setError, text],
   );
 
   const getTree = useCallback(
@@ -240,7 +263,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
     getTree,
     root: view?.report.root ?? EMPTY_ROOT,
     isOpen,
-    disabled: busy || view === null,
+    disabled: busy || blocked || view === null,
     onStart: (id, title) => {
       setError(null);
       select(id);

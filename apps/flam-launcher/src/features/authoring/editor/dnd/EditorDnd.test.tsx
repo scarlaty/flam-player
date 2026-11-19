@@ -124,15 +124,23 @@ type Call = { cmd: string; args: Record<string, unknown> };
 let calls: Call[] = [];
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd);
 
+/** Id rendu par une copie (un élément existant de la vue simulée). */
+const importedId = "Animaux/01 Le chat.mp3";
+
 function backend(view: EditorView) {
   calls = [];
   mockIPC((cmd, args) => {
     calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> });
     if (cmd === "authoring_editor_view") return view;
     if (cmd.startsWith("authoring_editor_")) {
+      // Copie : le backend rend les éléments copiés (rien pour un format refusé).
+      const sources =
+        cmd === "authoring_editor_import"
+          ? ((args as { sources?: string[] }).sources ?? [])
+          : [];
       const update: EditorUpdate = {
         label: "Opération",
-        ids: [],
+        ids: sources.some((s) => s.endsWith(".mp3")) ? [importedId] : [],
         skipped: [],
         trashed: null,
         view,
@@ -168,6 +176,7 @@ function layout(this: HTMLElement): DOMRect {
     const index = rows.indexOf(this);
     return rect(0, index * 40, 300, index * 40 + 40);
   }
+  if (this.getAttribute("role") === "tree") return rect(0, 0, 300, 1000);
   switch (this.getAttribute("data-dnd-zone")) {
     case "tree":
       return rect(0, 0, 300, 1000);
@@ -331,17 +340,58 @@ slowIt(
 
 slowIt("fichiers : formats refusés, message clair et rien de copié", async () => {
   await open();
-  await emit({ type: "enter", paths: ["C:\\a.txt"], position: { x: 10, y: 60 } });
+  // Le backend décide (et ne copie rien) : le message le dit.
+  await emit({ type: "drop", paths: ["C:\\a.txt"], position: { x: 10, y: 60 } });
+  expect(await screen.findByRole("alert")).toHaveTextContent("Formats non acceptés");
+  expect(called("authoring_editor_import")).toHaveLength(1);
+  // Hors de toute zone : bandeau d'avertissement, aucun appel.
+  await emit({ type: "enter", paths: ["C:\\a.mp3"], position: { x: 350, y: 60 } });
   expect(document.querySelector(".fl-editor-dnd__banner")).toHaveClass(
     "fl-editor-dnd__banner--refused",
   );
-  await emit({ type: "drop", paths: ["C:\\a.txt"], position: { x: 10, y: 60 } });
-  expect(await screen.findByRole("alert")).toHaveTextContent("Formats non acceptés");
-  // Hors de toute zone.
   await emit({ type: "drop", paths: ["C:\\a.mp3"], position: { x: 350, y: 60 } });
   expect(await screen.findByRole("alert")).toHaveTextContent("Déposez sur un menu");
   await emit({ type: "leave" });
+  expect(called("authoring_editor_import")).toHaveLength(1);
+});
+
+slowIt(
+  "fichiers : copie dans un menu replié, la ligne copiée devient visible",
+  async () => {
+    await open();
+    const animaux = screen.getByRole("treeitem", { name: /Animaux/ });
+    fireEvent.click(animaux.querySelector(".fl-editor-tree__twisty")!);
+    expect(screen.queryByRole("treeitem", { name: /Le chat/ })).toBeNull();
+    await emit({ type: "drop", paths: ["C:\\x.mp3"], position: { x: 10, y: 60 } });
+    await waitFor(() => expect(called("authoring_editor_import")).toHaveLength(1));
+    expect(
+      await screen.findByRole("treeitem", { name: /Le chat/, selected: true }),
+    ).toBeInTheDocument();
+  },
+);
+
+slowIt("fichiers : refusés tant qu'un dialogue est ouvert", async () => {
+  await open();
+  fireEvent.click(screen.getAllByRole("button", { name: "Nouveau menu" })[0]!);
+  await emit({ type: "enter", paths: ["C:\\x.mp3"], position: { x: 10, y: 60 } });
+  expect(document.querySelector(".fl-editor-dnd__banner")).toBeNull();
+  await emit({ type: "drop", paths: ["C:\\x.mp3"], position: { x: 10, y: 60 } });
+  await waitFor(() =>
+    expect(document.body).toHaveTextContent("Fermez d'abord la fenêtre ouverte"),
+  );
   expect(called("authoring_editor_import")).toHaveLength(0);
+});
+
+slowIt("pointeur : relâché hors de l'arbre, rien ne bouge", async () => {
+  await open();
+  drag(grip("Le chien"), 140, [130, 84, 90]);
+  fireEvent.pointerMove(window, { pointerId: 1, clientX: 500, clientY: 90 });
+  expect(rowOf("Le chat")).not.toHaveClass("fl-editor-tree__row--drop-before");
+  fireEvent.pointerUp(window, { pointerId: 1, clientX: 500, clientY: 90 });
+  await waitFor(() =>
+    expect(status()).toHaveTextContent("« Le chien » est resté à sa place."),
+  );
+  expect(called("authoring_editor_reorder")).toHaveLength(0);
 });
 
 slowIt("fichiers : image et titre lu sur les zones du panneau", async () => {

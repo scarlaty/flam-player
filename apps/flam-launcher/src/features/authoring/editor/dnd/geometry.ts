@@ -140,3 +140,15 @@ export function physicalToCss(position: Point, ratio: number): Point {
   const r = ratio > 0 && Number.isFinite(ratio) ? ratio : 1;
   return { x: position.x / r, y: position.y / r };
 }
+
+/** Partie de `rect` visible dans `bounds` ; `null` si elle est vide (élément défilé hors vue). */
+export function clip(rect: Rect, bounds: Rect | null): Rect | null {
+  if (bounds === null) return rect;
+  const out = {
+    left: Math.max(rect.left, bounds.left),
+    top: Math.max(rect.top, bounds.top),
+    right: Math.min(rect.right, bounds.right),
+    bottom: Math.min(rect.bottom, bounds.bottom),
+  };
+  return out.right > out.left && out.bottom > out.top ? out : null;
+}

@@ -116,8 +116,9 @@ export function baseName(path: string): string {
 }
 
 /**
- * Sorte d'un chemin : extension audio ou image acceptée ; autre extension de fichier
- * (`.txt`, `.docx`…) : refusée ; sans extension : un dossier probable, laissé au backend.
+ * Sorte probable d'un chemin, d'après son nom seulement (le choix image / titre lu / copie) :
+ * extension audio ou image acceptée ; autre extension (`.txt`, `.docx`…) ; sans extension :
+ * un dossier probable. Le backend tranche (un dossier peut s'appeler « Tome.III »).
  */
 export function pathKind(path: string): PathKind {
   const name = baseName(path);
@@ -157,7 +158,6 @@ export type FileDropPlan =
       menuTitle: string;
       before: string | null;
       sources: string[];
-      rejected: string[];
       hint: DropHint;
     }
   | { kind: "image"; id: string; title: string; source: string; hint: DropHint }
@@ -213,25 +213,21 @@ export function planFileDrop(
     return { kind: "image", id: node.id, title: node.title, source, hint };
   }
 
-  const sources = kinds.filter((k) => k.kind !== "other").map((k) => k.path);
-  const rejected = of("other");
   const dest = destinationOf(root, spot, isOpen);
   if (!dest) return { kind: "refuse", reason: "nowhere", hint: null };
   const hint: DropHint =
     dest.beforeId === null && spot.slot !== "after"
       ? { kind: "row", id: dest.menu.id, slot: "inside" }
       : { kind: "row", id: spot.id, slot: spot.slot };
-  if (audio.length === 0 && of("folder").length === 0) {
-    return { kind: "refuse", reason: "formats", hint };
-  }
   const before = dest.beforeId === null ? null : findNode(root, dest.beforeId);
+  // Tout est envoyé : seul le backend sait si « Tome.III » est un dossier ou un fichier ; il
+  // ne copie que les formats acceptés et rend ceux qu'il a laissés de côté.
   return {
     kind: "import",
     menu: dest.menu.id,
     menuTitle: dest.menu.title,
     before: before ? entryName(before) : null,
-    sources,
-    rejected,
+    sources: [...paths],
     hint,
   };
 }

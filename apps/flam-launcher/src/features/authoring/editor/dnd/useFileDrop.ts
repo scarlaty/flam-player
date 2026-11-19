@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { physicalToCss, type Point } from "./geometry";
 
@@ -55,7 +55,7 @@ export function useFileDrop(
   subscribe: FileDragSubscribe = tauriFileDrag,
 ): void {
   const latest = useRef(handlers);
-  useEffect(() => {
+  useLayoutEffect(() => {
     latest.current = handlers;
   });
   useEffect(() => {

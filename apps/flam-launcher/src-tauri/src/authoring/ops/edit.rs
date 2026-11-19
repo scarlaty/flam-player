@@ -702,13 +702,21 @@ impl Editor {
             result?;
             if let (Some(position), false) = (position, ids.is_empty()) {
                 // Nouvelles options (pas les images ni les titres lus) : celles du menu relu
-                // qui n'y étaient pas, insérées à la place du dépôt.
+                // qui n'y étaient pas, insérées à la place du dépôt dans l'ordre des copies
+                // (fichiers puis dossiers, chacun dans l'ordre déposé).
                 let known: HashSet<String> = current.iter().map(|n| name_key(n)).collect();
+                let rank = |name: &str| {
+                    let key = name_key(name);
+                    ids.iter()
+                        .position(|id| name_key(name_of(id)) == key)
+                        .unwrap_or(usize::MAX)
+                };
                 let scan = ed.scan()?;
-                let added: Vec<String> = child_names(require_menu(&scan, &menu)?)
+                let mut added: Vec<String> = child_names(require_menu(&scan, &menu)?)
                     .into_iter()
                     .filter(|n| !known.contains(&name_key(n)))
                     .collect();
+                added.sort_by_key(|n| rank(n));
                 if !added.is_empty() {
                     let mut order = current;
                     order.splice(position..position, added);

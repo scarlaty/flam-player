@@ -414,26 +414,39 @@ fn copie_deposee_a_sa_place_puis_une_seule_annulation() {
     for n in ["1.mp3", "2.mp3", "3.mp3"] {
         write(dir.path(), &format!("M/{n}"), b"x");
     }
+    write(src.path(), "z.mp3", b"z");
     write(src.path(), "b.mp3", b"b");
     write(src.path(), "b.png", b"p");
     write(src.path(), "Dossier/c.mp3", b"c");
     let before = snapshot(dir.path());
     let mut ed = open(dir.path());
     let sources = [
+        src.path().join("Dossier"),
+        src.path().join("z.mp3"),
         src.path().join("b.mp3"),
         src.path().join("b.png"),
-        src.path().join("Dossier"),
     ];
     let report = ed.import_at("M", &sources, Some("2.MP3")).unwrap();
-    assert_eq!(report.done.ids, ["M/b.mp3", "M/b.png", "M/Dossier"]);
-    // Les options copiées (pas l'image) prennent la place du dépôt, dans l'ordre déposé.
+    assert_eq!(
+        report.done.ids,
+        ["M/z.mp3", "M/b.mp3", "M/b.png", "M/Dossier"]
+    );
+    // Les options copiées (pas l'image) prennent la place du dépôt, dans l'ordre des copies
+    // (fichiers puis dossiers, chacun dans l'ordre déposé), pas dans l'ordre alphabétique.
     assert_eq!(
         json(dir.path(), "M/_dossier.json")["ordre"],
-        serde_json::json!(["1.mp3", "b.mp3", "Dossier", "2.mp3", "3.mp3"])
+        serde_json::json!(["1.mp3", "z.mp3", "b.mp3", "Dossier", "2.mp3", "3.mp3"])
     );
     assert_eq!(
         ids(&ed.scan().unwrap(), "M"),
-        ["M/1.mp3", "M/b.mp3", "M/Dossier", "M/2.mp3", "M/3.mp3"]
+        [
+            "M/1.mp3",
+            "M/z.mp3",
+            "M/b.mp3",
+            "M/Dossier",
+            "M/2.mp3",
+            "M/3.mp3"
+        ]
     );
     ed.undo().unwrap();
     assert_eq!(

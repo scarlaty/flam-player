@@ -125,8 +125,18 @@ export function EditorScreen() {
         setView(update.view);
         // Une image ou un titre lu rend son propre id : la sélection va à son élément.
         const first = update.ids[0];
-        if (first !== undefined)
-          setSelectedId(nodeForPath(update.view.report.root, first).id);
+        if (first !== undefined) {
+          const chosen = nodeForPath(update.view.report.root, first).id;
+          setSelectedId(chosen);
+          // Ses menus sont dépliés : la ligne choisie reste visible et atteignable au clavier
+          // (déplacement ou copie dans un menu replié).
+          setCollapsed((current) => {
+            const next = new Set(
+              [...current].filter((menu) => !isWithin(chosen, menu) || menu === chosen),
+            );
+            return next.size === current.size ? current : next;
+          });
+        }
         const skipped =
           update.skipped.length > 0 ? ` ${text.skipped(update.skipped.length)}` : "";
         const said =
@@ -173,6 +183,7 @@ export function EditorScreen() {
     selectedId: node?.id ?? "",
     collapsed,
     busy,
+    blocked: ask !== null,
     run,
     select: setSelectedId,
     refocusTree,
