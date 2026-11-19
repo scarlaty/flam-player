@@ -79,7 +79,9 @@ end
 --     "Reprendre l'histoire" (menu Start, apres sortie ou veille dans le menu des
 --     chapitres) le reprend a cette position, et y revenir par le menu des
 --     chapitres aussi. Tout autre chapitre repart du debut ; toute autre scene
---     ecoutee (hors titre lu) oublie le chapitre quitte.
+--     ecoutee (hors titre lu) oublie le chapitre quitte. Pendant sa lecture,
+--     ecran noir (l'image accompagne son titre lu) ; la progression garde son
+--     image (Reprendre). Sans audio, l'image reste affichee.
 --   role = "title"   : titre lu (option affichee seule, annonce d'un chapitre) :
 --     position seule, pas un chapitre de la jauge (totalChapters l'exclut aussi).
 local function roleOf(st)
@@ -459,7 +461,7 @@ function enterStage(id, isResume)
         audio_path = st.audio,   -- nil : scene image seule (attend OK)
         -- role "chapter" : ecran noir pendant le chapitre (l'image a accompagne
         -- son titre lu) ; elle reste celle de la progression (Reprendre).
-        image_background_path = (role ~= "chapter" and st.image) or "empty.lif",
+        image_background_path = (role == "chapter" and st.audio) and "empty.lif" or (st.image or "empty.lif"),
         image_path = "empty.lif",
         image_foreground_path = "empty.lif",
         song_name = "",

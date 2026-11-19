@@ -1179,7 +1179,9 @@ nécessaires pour que l'histoire **charge sur le device**) :
     `home_origin`). **Reprendre l'histoire** (après sortie ou veille dans le menu des
     chapitres) le reprend à cette position au lieu du nœud sauvé ; y revenir par le menu des
     chapitres aussi. Entrer dans un autre chapitre efface le chapitre quitté et repart du
-    début ; `Démarrer` et la fin d'histoire l'effacent ;
+    début ; `Démarrer` et la fin d'histoire l'effacent. Pendant la lecture d'un chapitre
+    (scène avec audio), l'écran est **noir** : l'image accompagne son titre lu (option ou
+    annonce) et reste celle de l'écran « Reprendre » ;
   - `role = "title"` : titre lu (option affichée seule, annonce d'un chapitre) : position
     seule, pas un chapitre de la jauge ; `totalChapters` ne le compte pas ;
   - autre valeur : ignorée (`role` absent). La clé `role` est **réservée** à cette

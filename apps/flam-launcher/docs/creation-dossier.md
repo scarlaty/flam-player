@@ -243,7 +243,10 @@ Comportement actuel des packs de podcasts (podcasts.md § 6) :
   livre portent un `role` (`"chapter"` : position gardée au retour, chapitre quitté retenu ;
   `"title"` : annonce ou titre lu, hors jauge) que `telmi2flam` transmet ; `story.lua` (gel de
   parité, #661) en tient compte. À confirmer sur la Flam (§ 13).
-- **Images** : celle du chapitre, sinon celle de sa partie, sinon la couverture.
+- **Images** : celle du chapitre, sinon celle de sa partie, sinon la couverture. Elle
+  s'affiche avec le titre lu du chapitre (option du menu ou annonce) ; pendant la lecture du
+  chapitre, l'écran est noir (retour d'essai sur la Flam, 2026-11-19). L'écran « Reprendre »
+  garde l'image du chapitre.
 
 ### 5.4 Traduction en graphe Telmi
 
