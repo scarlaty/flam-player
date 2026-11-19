@@ -23,6 +23,7 @@ import { t } from "../../../i18n";
 import { EditorHeader } from "./EditorHeader";
 import { EditorTree } from "./EditorTree";
 import { editorErrorText } from "./errors";
+import { FolderMissingBanner } from "./FolderMissingBanner";
 import { ItemPanel } from "./ItemPanel";
 import {
   findNode,
@@ -33,6 +34,7 @@ import {
   targetOf,
 } from "./model";
 import { ReportList } from "./ReportList";
+import { useFolderWatch } from "./useFolderWatch";
 import "./Editor.css";
 
 type Ask =
@@ -109,13 +111,26 @@ export function EditorScreen() {
     };
   }, []);
 
+  // Changement fait ailleurs : vue relue, sélection gardée si l'élément existe encore, sinon son
+  // menu le plus proche (lot 9). Dossier disparu : lecture seule.
+  const onWatchedView = useCallback((next: EditorView) => {
+    setView(next);
+    setSelectedId((id) => nodeForPath(next.report.root, id).id);
+  }, []);
+  const { missing } = useFolderWatch({ busy, onView: onWatchedView, onNotice: announce });
+  const missingRef = useRef(false);
+  useEffect(() => {
+    missingRef.current = missing;
+  }, [missing]);
+  const locked = busy || missing;
+
   // Sélection gardée si l'élément existe encore, sinon la racine.
   const node = view ? (findNode(view.report.root, selectedId) ?? view.report.root) : null;
 
   /** Lance une opération : une à la fois, résultat annoncé, erreur dite puis vue relue. */
   const run = useCallback(
     async (action: () => Promise<EditorUpdate>, say = text.done): Promise<boolean> => {
-      if (busyRef.current) return false;
+      if (busyRef.current || missingRef.current) return false;
       busyRef.current = true;
       setBusy(true);
       setError(null);
@@ -285,7 +300,7 @@ export function EditorScreen() {
     <main className="fl-editor">
       <EditorHeader
         view={view}
-        busy={busy}
+        busy={locked}
         creating={creating}
         onSelectRoot={() => setSelectedId("")}
         onReveal={() => {
@@ -300,6 +315,12 @@ export function EditorScreen() {
       <div className="fl-editor__status" role="status" aria-live="polite">
         {status}
       </div>
+      {missing && (
+        <FolderMissingBanner
+          uuid={view.report.installed_version !== null ? view.report.uuid : null}
+          onError={setError}
+        />
+      )}
       {error && (
         <Banner tone="danger" role="alert" className="fl-editor__error">
           <p>{error}</p>
@@ -311,7 +332,7 @@ export function EditorScreen() {
             <Button
               size="sm"
               icon="plus"
-              disabled={busy}
+              disabled={locked}
               onClick={() => void addFiles(currentMenu)}
             >
               {text.tree.addFiles}
@@ -320,7 +341,7 @@ export function EditorScreen() {
               size="sm"
               variant="secondary"
               icon="folder"
-              disabled={busy}
+              disabled={locked}
               onClick={() => {
                 setMenuName("");
                 setAsk({ kind: "newMenu", parent: currentMenu });
@@ -358,7 +379,7 @@ export function EditorScreen() {
             size="sm"
             variant="ghost"
             icon="trash"
-            disabled={busy}
+            disabled={locked}
             onClick={() => setAsk({ kind: "emptyTrash" })}
           >
             {text.tree.emptyTrash}
@@ -369,7 +390,7 @@ export function EditorScreen() {
             key={node.id}
             view={view}
             node={node}
-            busy={busy}
+            busy={locked}
             run={run}
             titleRef={titleRef}
             onShift={shift}

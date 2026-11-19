@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
@@ -22,6 +22,18 @@ export const EDITOR_LABEL_PREFIX = "editor-";
 
 /** Événement : création lancée depuis un éditeur (tâche à suivre, `TASK_EVENT`). */
 export const EDITOR_TASK_EVENT = "authoring:task";
+
+/** Événement : le dossier a changé ailleurs (lot 9, `editor_watch::EVENT_CHANGED`). */
+export const FOLDER_CHANGED_EVENT = "authoring:folder-changed";
+
+/** Événement : le dossier a disparu (lot 9, `editor_watch::EVENT_MISSING`). */
+export const FOLDER_MISSING_EVENT = "authoring:folder-missing";
+
+/**
+ * Événement envoyé par une fenêtre d'éditeur à la fenêtre principale : une histoire de Mes
+ * histoires y retient un nouveau dossier (« Choisir le dossier », lot 9), liste à relire.
+ */
+export const EDITOR_RELOCATED_EVENT = "authoring:relocated";
 
 /** Fin d'une histoire ou d'un livre (miroir de `Fin`). */
 export type FolderFin = "menu" | "suivante" | "fin";
@@ -146,7 +158,9 @@ export function isEditorWindow(): boolean {
 }
 
 /** `authoring_editor_open` : ouvre `path` dans une fenêtre d'éditeur (ou ramène la sienne). */
-export function openEditor(path: string): Promise<{ already_open: boolean }> {
+export function openEditor(
+  path: string,
+): Promise<{ already_open: boolean; label: string }> {
   return invokeCommand("authoring_editor_open", { path });
 }
 
@@ -289,4 +303,60 @@ export async function onEditorTask(
   } catch {
     return () => {};
   }
+}
+
+/**
+ * Écoute un événement de la surveillance du dossier sur **cette** fenêtre : le backend l'envoie
+ * à la seule fenêtre de l'éditeur concernée (un écouteur global le recevrait aussi d'ailleurs).
+ */
+function onWindowEvent(event: string, handler: () => void): Promise<() => void> {
+  try {
+    return getCurrentWindow()
+      .listen(event, () => handler())
+      .catch(() => () => {});
+  } catch {
+    return Promise.resolve(() => {});
+  }
+}
+
+/** Le dossier de cet éditeur a changé ailleurs (Explorateur, autre programme). */
+export function onFolderChanged(handler: () => void): Promise<() => void> {
+  return onWindowEvent(FOLDER_CHANGED_EVENT, handler);
+}
+
+/** Le dossier de cet éditeur a disparu (supprimé, renommé, clé USB retirée). */
+export function onFolderMissing(handler: () => void): Promise<() => void> {
+  return onWindowEvent(FOLDER_MISSING_EVENT, handler);
+}
+
+/** Prévient la fenêtre principale qu'une histoire a changé de dossier (sans effet en cas d'échec). */
+export async function notifyRelocated(): Promise<void> {
+  try {
+    await emitTo("main", EDITOR_RELOCATED_EVENT);
+  } catch {
+    // La fenêtre principale relira la liste à sa prochaine ouverture.
+  }
+}
+
+/** Écoute les changements de dossier faits depuis un éditeur (fenêtre principale). */
+export async function onEditorRelocated(handler: () => void): Promise<() => void> {
+  try {
+    return await listen(EDITOR_RELOCATED_EVENT, () => handler());
+  } catch {
+    return () => {};
+  }
+}
+
+/** Libellé de cette fenêtre (`null` hors de Tauri). */
+export function currentWindowLabel(): string | null {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return null;
+  }
+}
+
+/** Ferme la fenêtre de l'éditeur (son éditeur est oublié par le backend). */
+export function closeEditorWindow(): Promise<void> {
+  return getCurrentWindow().close();
 }

@@ -13,6 +13,7 @@
 //!   par l'étape commune des packs) ;
 //! - [`identity`] : uuid et version (§ 8), dossiers en lecture seule et dossiers copiés ;
 //! - [`commands`] : commandes Tauri « lire un dossier » et « créer ou actualiser l'histoire » ;
+//! - [`editor_watch`] : surveillance du dossier ouvert dans l'éditeur (§ 4.5) ;
 //! - [`ops_commands`] : commandes de la fenêtre de l'éditeur (une fenêtre et un éditeur par
 //!   dossier, éléments désignés par ids, vue relue après chaque opération).
 //!
@@ -21,6 +22,7 @@
 
 pub mod build;
 pub mod commands;
+pub mod editor_watch;
 pub mod identity;
 pub mod images;
 pub mod ops;
