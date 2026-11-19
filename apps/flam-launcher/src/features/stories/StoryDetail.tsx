@@ -14,6 +14,7 @@ import {
 import { placeholderTone } from "../../components/StoryCard/StoryCard";
 import { t } from "../../i18n";
 import { CreateStoryFromFolder } from "../authoring/CreateStoryFromFolder";
+import { OpenEditorButton } from "../authoring/editor/OpenEditorButton";
 import { useCompat } from "../compat/CompatContext";
 import { useDevice } from "../device/DeviceContext";
 import { SendToDeviceButton } from "../device/SendToDeviceButton";
@@ -163,11 +164,14 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 {source.type === "library" &&
                   entry.source_id === AUTHORING_SOURCE_ID &&
                   entry.download_url !== "" && (
-                    <CreateStoryFromFolder
-                      folder={entry.download_url}
-                      uuid={installed.uuid}
-                      size="sm"
-                    />
+                    <>
+                      <OpenEditorButton folder={entry.download_url} size="sm" />
+                      <CreateStoryFromFolder
+                        folder={entry.download_url}
+                        uuid={installed.uuid}
+                        size="sm"
+                      />
+                    </>
                   )}
                 {stories.updateAvailable(entry) && (
                   <>

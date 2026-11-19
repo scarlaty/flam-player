@@ -116,7 +116,7 @@ fn flam_drive_of(path: &Path) -> Option<PathBuf> {
 
 /// Dossiers interdits en plus de ceux du système : configuration, programme, lecteur de la Flam
 /// (le dossier du cache est ajouté par l'appelant).
-fn launcher_forbidden(config_dir: &Path, path: &Path) -> Vec<PathBuf> {
+pub(super) fn launcher_forbidden(config_dir: &Path, path: &Path) -> Vec<PathBuf> {
     let mut out = vec![config_dir.to_path_buf()];
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
@@ -129,14 +129,18 @@ fn launcher_forbidden(config_dir: &Path, path: &Path) -> Vec<PathBuf> {
 }
 
 /// Dossier lu, problèmes de création compris.
-struct Read {
-    scan: Scan,
-    problems: Vec<Problem>,
-    identity: Identity,
-    forbidden: Vec<PathBuf>,
+pub(super) struct Read {
+    pub(super) scan: Scan,
+    pub(super) problems: Vec<Problem>,
+    pub(super) identity: Identity,
+    pub(super) forbidden: Vec<PathBuf>,
 }
 
-async fn read(config: &ConfigState, install: &InstallService, path: &str) -> AppResult<Read> {
+pub(super) async fn read(
+    config: &ConfigState,
+    install: &InstallService,
+    path: &str,
+) -> AppResult<Read> {
     let root = PathBuf::from(path);
     let mut forbidden = launcher_forbidden(&config.dir, &root);
     let cache_root = install.cache_root().await?;
@@ -164,7 +168,7 @@ async fn read(config: &ConfigState, install: &InstallService, path: &str) -> App
     })
 }
 
-fn report(read: &Read) -> FolderReport {
+pub(super) fn report(read: &Read) -> FolderReport {
     let scan = &read.scan;
     let mode = match &scan.root {
         Node::Menu { mode, .. } => *mode,
@@ -199,6 +203,16 @@ pub async fn authoring_read(
 ) -> AppResult<FolderReport> {
     let read = read(&config, &install, &path).await?;
     Ok(report(&read))
+}
+
+/// Corps de [`authoring_create`], partagé avec l'éditeur (`ops_commands`).
+pub(super) async fn create_at(
+    config: &ConfigState,
+    install: &InstallService,
+    path: &str,
+    choice: Option<ConflictChoice>,
+) -> AppResult<FolderCreated> {
+    create(config, install, path, choice, None).await
 }
 
 /// Crée (ou actualise) l'histoire du dossier `path` ; `retry` : tâche en échec relancée (son

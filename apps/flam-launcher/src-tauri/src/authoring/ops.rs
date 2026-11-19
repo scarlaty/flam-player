@@ -88,6 +88,8 @@ pub const TRASH_DIR: &str = ".flam/corbeille";
 const WORK_DIR: &str = ".flam/tmp";
 /// Taille maximale d'une image déposée.
 pub const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+/// Taille maximale d'un titre lu choisi dans l'éditeur.
+pub const MAX_TITLE_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 /// Longueur maximale (caractères) d'un nom de fichier ou de dossier choisi dans l'éditeur.
 const MAX_NAME_CHARS: usize = 120;
 /// Opérations gardées dans le journal (les plus anciennes sont oubliées).

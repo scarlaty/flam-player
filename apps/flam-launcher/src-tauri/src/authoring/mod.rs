@@ -12,7 +12,9 @@
 //! - [`build`] : l'arbre devient une histoire (modes, compléments, bornes propres, fabrication
 //!   par l'étape commune des packs) ;
 //! - [`identity`] : uuid et version (§ 8), dossiers en lecture seule et dossiers copiés ;
-//! - [`commands`] : commandes Tauri « lire un dossier » et « créer ou actualiser l'histoire ».
+//! - [`commands`] : commandes Tauri « lire un dossier » et « créer ou actualiser l'histoire » ;
+//! - [`ops_commands`] : commandes de la fenêtre de l'éditeur (une fenêtre et un éditeur par
+//!   dossier, éléments désignés par ids, vue relue après chaque opération).
 //!
 //! Lot 5 : un dossier fait à la main devient une histoire, sans éditeur. Opérations sur le
 //! disque et éditeur visuel viennent dans les lots suivants (§ 11.2).
@@ -22,6 +24,7 @@ pub mod commands;
 pub mod identity;
 pub mod images;
 pub mod ops;
+pub mod ops_commands;
 pub mod root;
 pub mod settings;
 pub mod title_card;

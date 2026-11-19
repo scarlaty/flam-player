@@ -10,7 +10,7 @@ use super::{
     ancestor_ids, base_key, is_audio, is_image, is_link_meta, join, name_of, parent_of, parse_id,
     read_bounded, sanitize_name, stem_of, valid_component, Action, Doc, Done, Editor, FolderPatch,
     ImportReport, OpError, OpResult, Skipped, Stamp, StoryPatch, Taken, Target, Tx,
-    MAX_IMAGE_BYTES,
+    MAX_IMAGE_BYTES, MAX_TITLE_AUDIO_BYTES,
 };
 use crate::authoring::settings::{
     self, name_key, FolderSettings, FOLDER_FILE, MAX_AGE, MAX_SETTINGS_BYTES, MAX_TEXT_CHARS,
@@ -344,6 +344,43 @@ fn group_loose(files: Vec<SourceFile>) -> Vec<Vec<SourceFile>> {
     groups
 }
 
+/// Fichier compagnon d'un élément : son image ou son titre lu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Companion {
+    Image,
+    TitleAudio,
+}
+
+impl Companion {
+    fn accepts(self, name: &str) -> bool {
+        match self {
+            Companion::Image => is_image(name),
+            Companion::TitleAudio => is_audio(name),
+        }
+    }
+
+    fn refusal(self) -> &'static str {
+        match self {
+            Companion::Image => "pas une image acceptée",
+            Companion::TitleAudio => "pas un fichier audio accepté",
+        }
+    }
+
+    fn max_bytes(self) -> u64 {
+        match self {
+            Companion::Image => MAX_IMAGE_BYTES,
+            Companion::TitleAudio => MAX_TITLE_AUDIO_BYTES,
+        }
+    }
+
+    fn staged_stem(self) -> &'static str {
+        match self {
+            Companion::Image => "image",
+            Companion::TitleAudio => "titre",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Aides des opérations
 // ---------------------------------------------------------------------------
@@ -648,17 +685,46 @@ impl Editor {
     /// Remplace l'image de l'élément `target` (histoire : `<nom>.<ext>` ; menu : `_image.<ext>` ;
     /// racine : `_couverture.<ext>`) par une copie de `source` ; l'ancienne va dans la corbeille.
     pub fn set_image(&mut self, target: &Target, source: &Path) -> OpResult<Done> {
+        self.replace_companion(target, source, Companion::Image)
+    }
+
+    /// Remplace le titre lu de l'élément `target` (histoire : `<nom>.titre.<ext>` ; menu et
+    /// racine : `_titre.<ext>`) par une copie du fichier audio `source` ; l'ancien va dans la
+    /// corbeille.
+    pub fn set_title_audio(&mut self, target: &Target, source: &Path) -> OpResult<Done> {
+        self.replace_companion(target, source, Companion::TitleAudio)
+    }
+
+    /// [`Editor::set_image`] et [`Editor::set_title_audio`].
+    fn replace_companion(
+        &mut self,
+        target: &Target,
+        source: &Path,
+        kind: Companion,
+    ) -> OpResult<Done> {
         let target = target.clone();
         let source = source.to_path_buf();
-        let label = format!("Image de « {} »", name_of(&target.id));
+        let label = match kind {
+            Companion::Image => format!("Image de « {} »", name_of(&target.id)),
+            Companion::TitleAudio => format!("Titre lu de « {} »", name_of(&target.id)),
+        };
         let ((), done) = self.run(label, |tx, ids| {
             let ed = tx.ed;
             let id = ed.check_target(&target)?;
             let scan = ed.scan()?;
-            let (dir, base) = match find(&scan, &id)? {
-                Node::Menu { .. } if id.is_empty() => (String::new(), "_couverture".to_owned()),
-                Node::Menu { .. } => (id.clone(), "_image".to_owned()),
-                Node::Story { file, .. } => (parent_of(&id).to_owned(), stem_of(file).to_owned()),
+            let (dir, base) = match (find(&scan, &id)?, kind) {
+                (Node::Menu { .. }, Companion::Image) if id.is_empty() => {
+                    (String::new(), "_couverture".to_owned())
+                }
+                (Node::Menu { .. }, Companion::Image) => (id.clone(), "_image".to_owned()),
+                (Node::Menu { .. }, Companion::TitleAudio) => (id.clone(), "_titre".to_owned()),
+                (Node::Story { file, .. }, Companion::Image) => {
+                    (parent_of(&id).to_owned(), stem_of(file).to_owned())
+                }
+                (Node::Story { file, .. }, Companion::TitleAudio) => (
+                    parent_of(&id).to_owned(),
+                    format!("{}.titre", stem_of(file)),
+                ),
             };
             if !source.is_absolute() {
                 return Err(source_error(&source, "chemin relatif"));
@@ -677,22 +743,22 @@ impl Editor {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
-            if !meta.is_file() || !is_image(src_name) {
-                return Err(source_error(&source, "pas une image acceptée"));
+            if !meta.is_file() || !kind.accepts(src_name) {
+                return Err(source_error(&source, kind.refusal()));
             }
-            if meta.len() > MAX_IMAGE_BYTES {
-                return Err(source_error(&source, "image trop volumineuse"));
+            if meta.len() > kind.max_bytes() {
+                return Err(source_error(&source, "fichier trop volumineux"));
             }
             let ext = super::ext_key(src_name);
             let work = ed.work_slot()?;
             let result = (|| -> OpResult<String> {
-                let staged = join(&work, &format!("image.{ext}"));
+                let staged = join(&work, &format!("{}.{ext}", kind.staged_stem()));
                 copy_file(&source, &ed.abs(&staged), meta.len())?;
                 let base_key = name_key(&base);
                 let old: Vec<String> = ed
                     .names(&dir)?
                     .into_iter()
-                    .filter(|n| is_image(n) && name_key(stem_of(n)) == base_key)
+                    .filter(|n| kind.accepts(n) && name_key(stem_of(n)) == base_key)
                     .collect();
                 if !old.is_empty() {
                     let slot = ed.trash_slot()?;
