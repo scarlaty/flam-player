@@ -47,18 +47,18 @@ Hors périmètre de la première version : histoires interactives à choix multi
 La création des packs de podcasts fabrique déjà une histoire à partir d'un arbre de menus, avec
 un éditeur d'arbre. Le nouveau parcours en réutilise la plus grande partie.
 
-| Étape | Existant |
-|---|---|
-| Éditeur d'arbre (déplacer, renommer, monter, descendre, image de catégorie) | `src/features/podcasts/pack/` : `PackEditor.tsx`, `PackTree.tsx`, `tree.ts` |
-| Modèle menus / épisodes | `podcast/archive.rs` : `Pack`, `MenuEntry::{Episode, Category}`, `PackEpisode` |
-| MP3 conforme depuis un fichier local | `podcast/audio.rs` : `probe`, `convert` |
-| Images 640 × 480 et couverture 512 × 512 | `podcast/artwork.rs` |
-| Titres lus (voix Windows) | `podcast/speech.rs`, `install/pack_speech.rs`, `TitlesAudioField.tsx` |
-| Cache des MP3 convertis | `podcast/mp3cache.rs` (podcasts.md § 13) |
-| Archive Telmi synthétique puis `.plain.pk` | `podcast/archive.rs::write_archive`, puis `telmi2flam` |
-| Surveillance d'un dossier | `watch.rs` |
-| Écoute sur le PC | `player.rs` |
-| Lecture prudente d'un dossier (liens, bornes) | `folder.rs` |
+| Étape                                                                       | Existant                                                                       |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Éditeur d'arbre (déplacer, renommer, monter, descendre, image de catégorie) | `src/features/podcasts/pack/` : `PackEditor.tsx`, `PackTree.tsx`, `tree.ts`    |
+| Modèle menus / épisodes                                                     | `podcast/archive.rs` : `Pack`, `MenuEntry::{Episode, Category}`, `PackEpisode` |
+| MP3 conforme depuis un fichier local                                        | `podcast/audio.rs` : `probe`, `convert`                                        |
+| Images 640 × 480 et couverture 512 × 512                                    | `podcast/artwork.rs`                                                           |
+| Titres lus (voix Windows)                                                   | `podcast/speech.rs`, `install/pack_speech.rs`, `TitlesAudioField.tsx`          |
+| Cache des MP3 convertis                                                     | `podcast/mp3cache.rs` (podcasts.md § 13)                                       |
+| Archive Telmi synthétique puis `.plain.pk`                                  | `podcast/archive.rs::write_archive`, puis `telmi2flam`                         |
+| Surveillance d'un dossier                                                   | `watch.rs`                                                                     |
+| Écoute sur le PC                                                            | `player.rs`                                                                    |
+| Lecture prudente d'un dossier (liens, bornes)                               | `folder.rs`                                                                    |
 
 Contrainte constatée : le dépôt de fichiers natif est **désactivé** sur toutes les fenêtres
 (`tauri.conf.json`, `dragDropEnabled: false`, test `src/tauriConfig.test.ts`, #300). Sous
@@ -135,17 +135,17 @@ Mes histoires du soir/            ← racine : titre par défaut de l'histoire
 
 ### 4.2 Opérations et effet sur le disque
 
-| Dans l'éditeur | Sur le disque |
-|---|---|
-| Déposer des fichiers audio depuis l'Explorateur sur un menu | **Copie** dans le dossier du menu ; jamais de déplacement de l'original |
-| Déposer un dossier depuis l'Explorateur | Copie récursive (formats acceptés seulement) ; devient un menu |
-| Déposer une image sur un élément | Copie sous `<nom>.<ext>` ou `_image.<ext>` ; l'ancienne image va dans la corbeille |
-| Réordonner dans un menu | `_dossier.json` (`ordre`) |
-| Déplacer vers un autre menu | Déplacement du fichier (et de son image, de son titre lu) ; mise à jour des deux `_dossier.json` |
-| Renommer | `_dossier.json` (`titres`) ; « Renommer aussi le fichier » en option |
-| Nouveau menu | Création d'un sous-dossier |
-| Supprimer | Déplacement dans la corbeille `.flam/` (§ 4.4) |
-| Mode, fin, âge, couverture… | `_histoire.json`, `_dossier.json`, `_couverture.*` |
+| Dans l'éditeur                                              | Sur le disque                                                                                    |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Déposer des fichiers audio depuis l'Explorateur sur un menu | **Copie** dans le dossier du menu ; jamais de déplacement de l'original                          |
+| Déposer un dossier depuis l'Explorateur                     | Copie récursive (formats acceptés seulement) ; devient un menu                                   |
+| Déposer une image sur un élément                            | Copie sous `<nom>.<ext>` ou `_image.<ext>` ; l'ancienne image va dans la corbeille               |
+| Réordonner dans un menu                                     | `_dossier.json` (`ordre`)                                                                        |
+| Déplacer vers un autre menu                                 | Déplacement du fichier (et de son image, de son titre lu) ; mise à jour des deux `_dossier.json` |
+| Renommer                                                    | `_dossier.json` (`titres`) ; « Renommer aussi le fichier » en option                             |
+| Nouveau menu                                                | Création d'un sous-dossier                                                                       |
+| Supprimer                                                   | Déplacement dans la corbeille `.flam/` (§ 4.4)                                                   |
+| Mode, fin, âge, couverture…                                 | `_histoire.json`, `_dossier.json`, `_couverture.*`                                               |
 
 Ajout aussi possible sans glisser-déposer : bouton « Ajouter des fichiers » (sélecteur natif
 existant), indispensable pour le clavier et l'accessibilité.
@@ -293,12 +293,12 @@ les transitions selon ce mode. Tests sur le JSON produit ; ceux des podcasts ne 
 
 ## 7. Compléments automatiques
 
-| Manque | Complément, dans l'ordre |
-|---|---|
-| Titre lu | fichier `_titre.*` / `<nom>.titre.*`, sinon voix Windows (existant), sinon muet |
+| Manque                                | Complément, dans l'ordre                                                                                                    |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Titre lu                              | fichier `_titre.*` / `<nom>.titre.*`, sinon voix Windows (existant), sinon muet                                             |
 | Image d'une histoire ou d'un chapitre | image du même nom, sinon pochette du fichier audio (ffmpeg), sinon image générée avec le titre, sinon image unie (existant) |
-| Image d'un menu | `_image.*`, sinon image de sa première histoire (règle N5 a des podcasts) |
-| Couverture | `_couverture.*`, sinon image de la première histoire, sinon image unie |
+| Image d'un menu                       | `_image.*`, sinon image de sa première histoire (règle N5 a des podcasts)                                                   |
+| Couverture                            | `_couverture.*`, sinon image de la première histoire, sinon image unie                                                      |
 
 - Les compléments sont calculés dans le dossier de travail du launcher, affichés dans l'éditeur
   (pastille « automatique ») et **ne sont pas écrits** dans le dossier. **Décidé** (Q5) : bouton
@@ -385,16 +385,16 @@ L'éditeur **modifie les fichiers de l'utilisateur** : c'est la partie la plus s
 
 ## 12. Décisions
 
-| # | Question | Recommandation |
-|---|---|---|
-| Q1 | Mode réglable par sous-dossier, ou seulement pour toute l'histoire ? | **Décidé** : par sous-dossier, avec héritage (§ 5.1) |
-| Q2 | Retour depuis le menu des chapitres : reprendre le chapitre quitté, ou rester dans le menu ? | **Décidé**, révisé le 2026-11-19 : retour du premier niveau = sortie de l'histoire ; « Reprendre l'histoire » (et le chapitre quitté choisi dans le menu) reprend à la position quittée, par une évolution du moteur (§ 5.3) |
-| Q3 | Réordonner renomme-t-il les fichiers (préfixes) ? | **Décidé** : non, `_dossier.json`, action « Renuméroter » à part |
-| Q4 | Corbeille : `.flam/corbeille/` ou Corbeille Windows ? | **Décidé** : `.flam/corbeille/` (annulable), vidage vers la Corbeille Windows |
-| Q5 | Écrire les compléments automatiques dans le dossier ? | **Décidé** : non par défaut, bouton « Garder » |
-| Q6 | Fenêtre séparée pour l'éditeur (§ 4.3) | **Décidé** : oui |
-| Q7 | Enregistrer un titre lu au micro | **Décidé** : plus tard |
-| Q8 | Extraction d'une histoire installée en dossier ; histoires interactives | **Décidé** : plus tard, à part |
+| #   | Question                                                                                     | Recommandation                                                                                                                                                                                                               |
+| --- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | Mode réglable par sous-dossier, ou seulement pour toute l'histoire ?                         | **Décidé** : par sous-dossier, avec héritage (§ 5.1)                                                                                                                                                                         |
+| Q2  | Retour depuis le menu des chapitres : reprendre le chapitre quitté, ou rester dans le menu ? | **Décidé**, révisé le 2026-11-19 : retour du premier niveau = sortie de l'histoire ; « Reprendre l'histoire » (et le chapitre quitté choisi dans le menu) reprend à la position quittée, par une évolution du moteur (§ 5.3) |
+| Q3  | Réordonner renomme-t-il les fichiers (préfixes) ?                                            | **Décidé** : non, `_dossier.json`, action « Renuméroter » à part                                                                                                                                                             |
+| Q4  | Corbeille : `.flam/corbeille/` ou Corbeille Windows ?                                        | **Décidé** : `.flam/corbeille/` (annulable), vidage vers la Corbeille Windows                                                                                                                                                |
+| Q5  | Écrire les compléments automatiques dans le dossier ?                                        | **Décidé** : non par défaut, bouton « Garder »                                                                                                                                                                               |
+| Q6  | Fenêtre séparée pour l'éditeur (§ 4.3)                                                       | **Décidé** : oui                                                                                                                                                                                                             |
+| Q7  | Enregistrer un titre lu au micro                                                             | **Décidé** : plus tard                                                                                                                                                                                                       |
+| Q8  | Extraction d'une histoire installée en dossier ; histoires interactives                      | **Décidé** : plus tard, à part                                                                                                                                                                                               |
 
 ## 13. Essais sur la Flam
 
