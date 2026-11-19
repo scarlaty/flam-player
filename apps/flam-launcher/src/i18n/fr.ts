@@ -1385,6 +1385,208 @@ export const fr = {
       other: "Élément du dossier à vérifier.",
     },
   },
+  /** Fenêtre de l'éditeur d'histoires (lot 7, docs/creation-dossier.md § 4). */
+  authoringEditor: {
+    open: "Créer une histoire depuis un dossier",
+    edit: "Modifier",
+    editHelp: "Ouvre le dossier de cette histoire dans l'éditeur.",
+    pickTitle: "Dossier de l'histoire",
+    opening: "Ouverture…",
+    alreadyOpen:
+      "Ce dossier est déjà ouvert dans un éditeur : sa fenêtre est passée au premier plan.",
+    openFailed: "L'éditeur n'a pas pu s'ouvrir. Vérifiez le dossier, puis réessayez.",
+    loading: "Lecture du dossier…",
+    loadFailed: "Le dossier n'a pas pu être lu.",
+    retry: "Réessayer",
+    header: {
+      cover: "Couverture",
+      noCover: "Couverture automatique",
+      modeRecueil: "Recueil",
+      modeChapitres: "Livre à chapitres",
+      age: (age: number) => `Dès ${age} ans`,
+      count: (n: number, chapters: boolean) => {
+        const word = chapters ? "chapitre" : "histoire";
+        return n <= 1 ? `${n} ${word}` : `${n} ${word}s`;
+      },
+      reveal: "Ouvrir dans l'Explorateur",
+      undo: "Annuler",
+      redo: "Rétablir",
+      undoHelp: (label: string | null) =>
+        label ? `Annuler : ${label} (Ctrl+Z)` : "Rien à annuler",
+      redoHelp: (label: string | null) =>
+        label ? `Rétablir : ${label} (Ctrl+Y)` : "Rien à rétablir",
+      create: "Créer l'histoire",
+      update: "Mettre à jour l'histoire",
+      creating: "Création…",
+      blockedHelp: "Corrigez d'abord les points signalés en bas de la fenêtre.",
+      started:
+        "Création lancée : l'histoire arrivera dans Mes histoires (fenêtre principale du launcher).",
+      copiedTitle: "Dossier copié",
+      copiedLegend:
+        "Ce dossier semble copié d'un autre dossier d'histoire déjà installé.",
+      newStory: "Nouvelle histoire",
+      replace: (title: string) => `Remplacer « ${title} »`,
+      foreign:
+        "L'identifiant de ce dossier appartient à une histoire d'une autre source : une nouvelle histoire sera créée.",
+      cancel: "Annuler",
+      confirmCreate: "Continuer",
+    },
+    tree: {
+      label: "Contenu de l'histoire",
+      help: "Flèches pour parcourir, Alt+Flèche haut ou bas pour réordonner, Suppr pour mettre à la corbeille.",
+      addFiles: "Ajouter des fichiers",
+      newMenu: "Nouveau menu",
+      emptyTrash: "Vider la corbeille de l'histoire",
+      size: (size: string) => size,
+      items: (n: number) => (n <= 1 ? `${n} élément` : `${n} éléments`),
+      titleAudio: "Titre lu",
+      titleAudioHelp: "Un fichier audio lit le titre.",
+      autoImage: "Image automatique",
+      autoImageHelp:
+        "Pas d'image dans le dossier : une image est choisie automatiquement.",
+      problem: "À vérifier",
+      blocking: "À corriger",
+    },
+    panel: {
+      rootHeading: "L'histoire",
+      menuHeading: "Menu",
+      partHeading: "Partie",
+      storyHeading: "Histoire",
+      chapterHeading: "Chapitre",
+      title: "Titre affiché",
+      titleHint: (max: number) => `Sur la Flam, le titre est coupé à ${max} caractères.`,
+      titleTooLong: (max: number) =>
+        `Plus de ${max} caractères : la fin sera coupée sur la Flam.`,
+      renameFile: "Renommer aussi le fichier",
+      renameFileHint: "Sinon, seul le titre affiché change ; le fichier garde son nom.",
+      saveTitle: "Enregistrer le titre",
+      storyTitle: "Titre de l'histoire",
+      subtitle: "Sous-titre",
+      description: "Description",
+      age: "Âge conseillé",
+      ageHint: "Laisser vide si aucun.",
+      ageInvalid: "Âge entre 0 et 99.",
+      saveDetails: "Enregistrer",
+      image: "Image",
+      coverImage: "Couverture",
+      imageAlt: (title: string) => `Image de « ${title} »`,
+      chooseImage: "Choisir une image…",
+      removeImage: "Retirer l'image",
+      automatic: "automatique",
+      autoImageMenu: "Image de la première histoire de ce menu.",
+      autoImageCover: "Image de la première histoire.",
+      autoImageStory:
+        "Une image sera préparée à la création (pochette du fichier audio, ou image avec le titre).",
+      autoImageNone: "Image unie, préparée à la création.",
+      keep: "Garder",
+      keepHelp: "Copie cette image dans le dossier pour pouvoir la changer ensuite.",
+      titleAudio: "Titre lu",
+      titleAudioFile: (name: string) => `Fichier : ${name}`,
+      titleAudioVoice: "Voix Windows : le titre sera lu automatiquement à la création.",
+      listenVoice: "Écouter la voix Windows",
+      stopVoice: "Arrêter",
+      voiceUnavailable: "La voix Windows n'est pas disponible sur ce PC.",
+      chooseAudio: "Choisir un fichier audio…",
+      replaceAudio: "Remplacer le fichier…",
+      removeAudio: "Retirer le fichier",
+      audio: "Fichier audio",
+      audioFile: (name: string, size: string) => `${name} (${size})`,
+      organize: "Ranger",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+      moveTo: "Déplacer vers",
+      move: "Déplacer",
+      delete: "Mettre à la corbeille",
+      deleteConfirmTitle: (title: string) => `Mettre « ${title} » à la corbeille ?`,
+      deleteConfirm:
+        "L'élément est rangé dans la corbeille de l'histoire (dossier .flam) : « Annuler » le remet en place.",
+      cancel: "Annuler",
+      settings: "Réglages du dossier",
+      mode: "Organisation",
+      modeInherit: "Comme le dossier parent",
+      modeRecueil: "Recueil : un menu de petites histoires",
+      modeChapitres: "Livre à chapitres : les chapitres s'enchaînent",
+      fin: "À la fin",
+      finInherit: "Comme le dossier parent",
+      finMenuRecueil: "Retour au menu",
+      finSuivante: "L'histoire suivante démarre",
+      finMenuChapitres: "Menu des chapitres",
+      finFin: "Fin de l'histoire (retour à la bibliothèque)",
+      debut: "Au démarrage",
+      debutChapitre: "Le premier chapitre démarre",
+      debutMenu: "Le menu des chapitres s'ouvre",
+      annoncer: "Annoncer le titre avant chaque chapitre",
+      annoncerHint: "Seulement pour les chapitres qui ont un titre lu.",
+      addHere: "Ajouter des fichiers ici",
+      newMenuHere: "Nouveau menu ici",
+      newMenuName: "Nom du nouveau menu",
+      newMenuDefault: "Nouveau menu",
+      create: "Créer",
+      problems: "Points à vérifier",
+    },
+    trash: {
+      confirmTitle: "Vider la corbeille de l'histoire ?",
+      confirm:
+        "Les éléments retirés pendant cette session et les précédentes partent dans la Corbeille Windows. Ce qui en dépend ne pourra plus être annulé ici.",
+      empty: "Vider",
+      cancel: "Annuler",
+      done: (n: number) =>
+        n === 0
+          ? "La corbeille de l'histoire était déjà vide."
+          : n === 1
+            ? "1 élément envoyé dans la Corbeille Windows."
+            : `${n} éléments envoyés dans la Corbeille Windows.`,
+    },
+    report: {
+      heading: "Rapport",
+      none: "Aucun problème : l'histoire peut être créée.",
+      blocking: "À corriger avant de créer l'histoire",
+      warnings: "Avertissements",
+      goTo: (text: string) => `${text} (aller à l'élément)`,
+    },
+    pick: {
+      files: "Ajouter des fichiers audio ou des images",
+      image: "Choisir une image",
+      audio: "Choisir le titre lu",
+      audioFilter: "Fichiers audio",
+      imageFilter: "Images",
+      mediaFilter: "Audio et images",
+    },
+    done: (label: string) => `Fait : ${label}.`,
+    undone: (label: string) => `Annulé : ${label}.`,
+    redone: (label: string) => `Rétabli : ${label}.`,
+    skipped: (n: number) =>
+      n === 1
+        ? "1 fichier n'a pas été copié (format non accepté)."
+        : `${n} fichiers n'ont pas été copiés (format non accepté).`,
+    error: {
+      changed:
+        "Le dossier a changé entre-temps (modifié ailleurs) : rien n'a été fait. L'affichage est à jour, réessayez.",
+      not_undoable:
+        "Impossible de défaire cette opération : un fichier a changé depuis. Rien n'a été fait.",
+      nothing_to_undo: "Rien à annuler.",
+      nothing_to_redo: "Rien à rétablir.",
+      gone: "Cet élément n'existe plus dans le dossier. L'affichage est à jour.",
+      link: "Élément refusé : c'est un raccourci, une jonction ou un fichier en ligne non téléchargé.",
+      source_refused:
+        "Fichier refusé : format non accepté, fichier trop gros, ou fichier déjà dans le dossier de l'histoire.",
+      too_large: "Trop de fichiers ou fichiers trop gros : rien n'a été copié.",
+      settings:
+        "Réglage non modifié : le fichier de réglages a été écrit par une version plus récente du launcher.",
+      no_recycle_bin:
+        "La corbeille n'a pas été vidée : ce disque n'a pas de Corbeille Windows (clé USB, disque réseau).",
+      closed:
+        "Le dossier a été déplacé ou n'est plus utilisable : fermez cette fenêtre, puis rouvrez-le.",
+      refused: (message: string) => `Refusé : ${message}.`,
+      inconsistent:
+        "L'opération a été interrompue et n'a pu être défaite qu'en partie : vérifiez le dossier dans l'Explorateur.",
+      io: "Erreur de lecture ou d'écriture sur le disque. Vérifiez que le dossier est accessible.",
+      folderRefused:
+        "Ce dossier ne peut pas être utilisé (disque entier, dossier système, du launcher ou de la Flam). Choisissez un dossier personnel, par exemple dans Documents.",
+      folderMissing: "Dossier introuvable : il a peut-être été déplacé ou renommé.",
+      other: "L'opération n'a pas abouti. Réessayez.",
+    },
+  },
 };
 
 /** Forme commune à toutes les langues. */

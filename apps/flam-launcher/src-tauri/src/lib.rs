@@ -156,6 +156,9 @@ pub fn run() {
                     device::close::on_close_requested(window, api);
                 }
             }
+            if let tauri::WindowEvent::Destroyed = event {
+                authoring::ops_commands::on_window_destroyed(window);
+            }
         })
         .setup(|app| {
             let config_dir = storage::config_dir()?;
@@ -180,6 +183,7 @@ pub fn run() {
             app.manage(storage::ConfigState::with_gate(config_dir.clone(), gate));
             app.manage(folder::FolderState::default());
             app.manage(watch::WatchState::default());
+            app.manage(Arc::new(authoring::ops_commands::EditorState::default()));
             app.manage(catalog);
             app.manage(podcasts);
             app.manage(device::official::OfficialCatalog::new()?);
@@ -221,6 +225,25 @@ pub fn run() {
             app::app_info,
             authoring::commands::authoring_create,
             authoring::commands::authoring_read,
+            authoring::ops_commands::authoring_editor_create,
+            authoring::ops_commands::authoring_editor_delete,
+            authoring::ops_commands::authoring_editor_empty_trash,
+            authoring::ops_commands::authoring_editor_folder_settings,
+            authoring::ops_commands::authoring_editor_import,
+            authoring::ops_commands::authoring_editor_keep,
+            authoring::ops_commands::authoring_editor_move,
+            authoring::ops_commands::authoring_editor_new_menu,
+            authoring::ops_commands::authoring_editor_open,
+            authoring::ops_commands::authoring_editor_redo,
+            authoring::ops_commands::authoring_editor_rename,
+            authoring::ops_commands::authoring_editor_reorder,
+            authoring::ops_commands::authoring_editor_reveal,
+            authoring::ops_commands::authoring_editor_set_image,
+            authoring::ops_commands::authoring_editor_set_title_audio,
+            authoring::ops_commands::authoring_editor_story_settings,
+            authoring::ops_commands::authoring_editor_thumbnail,
+            authoring::ops_commands::authoring_editor_undo,
+            authoring::ops_commands::authoring_editor_view,
             catalog::catalog_refresh,
             catalog::catalog_entries,
             catalog::catalog_thumbnail,
@@ -307,6 +330,10 @@ mod tests {
         let modules = [
             ("app", include_str!("app.rs")),
             ("authoring::commands", include_str!("authoring/commands.rs")),
+            (
+                "authoring::ops_commands",
+                include_str!("authoring/ops_commands.rs"),
+            ),
             ("catalog", include_str!("catalog.rs")),
             ("compat", include_str!("compat.rs")),
             ("device::carrier", include_str!("device/carrier.rs")),

@@ -20,7 +20,7 @@ import {
 } from "../../components";
 import { t } from "../../i18n";
 import { ROUTE_HASHES } from "../../router";
-import { CreateStoryFromFolder } from "../authoring/CreateStoryFromFolder";
+import { OpenEditorButton } from "../authoring/editor/OpenEditorButton";
 import { ErrorBanner } from "../ErrorBanner";
 import { useLibrary } from "./LibraryContext";
 import {
@@ -259,7 +259,7 @@ export function SourceView({ source, ...hooks }: SourceViewProps) {
         </h2>
         <Badge>{t.sources.kind[source.type]}</Badge>
         {source.type !== "library" && refreshButton}
-        {source.type === "library" && <CreateStoryFromFolder />}
+        {source.type === "library" && <OpenEditorButton />}
       </div>
 
       {loadError && (

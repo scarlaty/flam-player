@@ -18,6 +18,16 @@
         "minWidth": 640,
         "minHeight": 480,
         "dragDropEnabled": false
+      },
+      {
+        "label": "editor",
+        "create": false,
+        "title": "Éditeur d'histoire",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 760,
+        "minHeight": 520,
+        "dragDropEnabled": true
       }
     ],
     "security": {
