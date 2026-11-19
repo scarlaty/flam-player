@@ -184,18 +184,18 @@ pub async fn authoring_create(
         )));
     }
     let decision = identity::decide(&read.identity, choice)?;
-    if install.has_active(&decision.uuid) {
+    let base = read.scan.base.clone();
+    // Contrôle, enregistrement et mise en file sous le verrou de la configuration : deux
+    // créations simultanées du même dossier (uuid neuf chacune) ne passent jamais toutes deux.
+    let _guard = config.guard();
+    if install.has_active(&decision.uuid, &base) {
         return Err(AppError::Validation(
             "cette histoire est déjà en cours de création : attendez la fin ou annulez-la, puis \
              réessayez"
                 .into(),
         ));
     }
-    let base = read.scan.base.clone();
-    let saved_in = {
-        let _guard = config.guard();
-        identity::commit(&base, &decision, &Registry::new(&config.dir))?
-    };
+    let saved_in = identity::commit(&base, &decision, &Registry::new(&config.dir))?;
     let meta = build::metadata(&read.scan);
     let entry = build::story_entry(&decision.uuid, decision.version, &meta, &base);
     let job = FolderJob {

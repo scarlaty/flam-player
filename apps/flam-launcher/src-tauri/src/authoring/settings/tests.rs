@@ -451,3 +451,24 @@ fn reglage_en_lien_refuse() {
     assert!(loaded.damaged);
     assert_eq!(loaded.settings.mode, None);
 }
+
+#[test]
+fn identite_ecrite_sans_toucher_au_reste() {
+    let dir = tempfile::tempdir().unwrap();
+    let uuid = "5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    // Absent : créé avec format, uuid, version.
+    write_story_identity(dir.path(), uuid, 1).unwrap();
+    let written = raw(&dir.path().join(STORY_FILE));
+    assert_eq!(written["format"], 1);
+    assert_eq!(written["uuid"], uuid);
+    assert_eq!(written["version"], 1);
+    // Abîmé ou format plus récent ou invalide : refus, fichier intact.
+    for text in ["{ abîmé", r#"{"format": 2}"#, r#"{"format": "1"}"#, "[1]"] {
+        write(dir.path(), STORY_FILE, text);
+        assert!(write_story_identity(dir.path(), uuid, 2).is_err(), "{text}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(STORY_FILE)).unwrap(),
+            text
+        );
+    }
+}

@@ -91,11 +91,16 @@ impl InstallService {
         )
     }
 
-    /// Vrai si une tâche active concerne déjà l'histoire `uuid`.
-    pub fn has_active(&self, uuid: &str) -> bool {
-        lock(&self.0.tasks)
-            .iter()
-            .any(|s| s.task.state.is_active() && s.task.entry.uuid == uuid)
+    /// Vrai si une tâche active concerne déjà l'histoire `uuid` ou le dossier `folder`.
+    pub fn has_active(&self, uuid: &str, folder: &Path) -> bool {
+        let key = crate::authoring::identity::path_key(folder);
+        lock(&self.0.tasks).iter().any(|s| {
+            s.task.state.is_active()
+                && (s.task.entry.uuid == uuid
+                    || s.folder.as_ref().is_some_and(|job| {
+                        crate::authoring::identity::path_key(Path::new(&job.folder)) == key
+                    }))
+        })
     }
 
     /// Dossier du cache effectif (refusé comme dossier d'histoire).

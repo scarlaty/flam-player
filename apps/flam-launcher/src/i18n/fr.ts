@@ -1370,7 +1370,7 @@ export const fr = {
       too_deep: (name: string) =>
         `« ${name} » est trop profond : 5 niveaux de dossiers au maximum.`,
       too_many_entries: "Ce dossier contient trop de fichiers.",
-      audio_too_large: "Audio trop volumineux : 3 Go au maximum.",
+      audio_too_large: "Audio trop volumineux : 3 Gio au maximum.",
       unreadable_folder: (name: string) => `Dossier « ${name} » illisible.`,
       collection_in_book: (name: string) =>
         `« ${name} » est un recueil placé dans un livre à chapitres : non pris en charge.`,

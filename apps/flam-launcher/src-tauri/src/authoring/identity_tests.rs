@@ -312,3 +312,70 @@ fn registre_borne_et_relu() {
         .unwrap();
     assert_eq!(registry.load().len(), MAX_REMEMBERED - 1);
 }
+
+#[test]
+fn seuls_uuid_et_version_changent_dans_le_fichier() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Histoire");
+    fs::create_dir_all(&folder).unwrap();
+    // Valeurs que la lecture tolérante nettoierait : description sur plusieurs lignes, entrée
+    // invalide dans `ordre`, casse d'une énumération, espaces d'un titre.
+    let text = "{\"description\": \"Ligne 1\\nLigne 2\", \"ordre\": [\"a.mp3\", \"x/y\", 3], \
+                \"mode\": \"Chapitres\", \"titre\": \"  Titre  \"}";
+    fs::write(folder.join(settings::STORY_FILE), text).unwrap();
+    let registry = Registry::new(&dir.path().join("config"));
+    let decision = decide(&inspect(&folder, &story(&folder), None, &[]), None).unwrap();
+    assert_eq!(
+        commit(&folder, &decision, &registry).unwrap(),
+        SavedIn::Folder
+    );
+    let mut expected: serde_json::Value = serde_json::from_str(text).unwrap();
+    expected["uuid"] = decision.uuid.as_str().into();
+    expected["version"] = 1.into();
+    assert_eq!(json(&folder), expected);
+}
+
+#[test]
+fn dossier_copie_non_inscriptible_nouvelle_histoire_puis_actualisation() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("Original");
+    let copy = dir.path().join("Copie");
+    fs::create_dir_all(&original).unwrap();
+    fs::write(
+        original.join(settings::STORY_FILE),
+        format!(r#"{{"uuid": "{UUID}", "version": 2}}"#),
+    )
+    .unwrap();
+    // La copie a un `_histoire.json` au format plus récent : jamais réécrit.
+    fs::create_dir_all(&copy).unwrap();
+    fs::write(
+        copy.join(settings::STORY_FILE),
+        format!(r#"{{"format": 9, "uuid": "{UUID}", "version": 2}}"#),
+    )
+    .unwrap();
+    let registry = Registry::new(&dir.path().join("config"));
+    let source = crate::authoring::build::SOURCE_ID;
+    let mut library = vec![installed(UUID, 2, source, &original)];
+    let identity = inspect(
+        &copy,
+        &story(&copy),
+        registry.find(&copy).as_ref(),
+        &library,
+    );
+    assert!(matches!(identity.conflict, Some(Conflict::Copied { .. })));
+    let fresh = decide(&identity, Some(ConflictChoice::NewStory)).unwrap();
+    assert_eq!(commit(&copy, &fresh, &registry).unwrap(), SavedIn::Launcher);
+    library.push(installed(&fresh.uuid, 1, source, &copy));
+    // Actualisation : l'uuid de la nouvelle histoire (configuration) l'emporte sur celui du
+    // fichier, sans conflit ni doublon.
+    let identity = inspect(
+        &copy,
+        &story(&copy),
+        registry.find(&copy).as_ref(),
+        &library,
+    );
+    assert_eq!(identity.uuid.as_deref(), Some(fresh.uuid.as_str()));
+    assert_eq!(identity.conflict, None);
+    let next = decide(&identity, None).unwrap();
+    assert_eq!((next.uuid.as_str(), next.version), (fresh.uuid.as_str(), 2));
+}

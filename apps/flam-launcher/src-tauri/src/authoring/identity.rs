@@ -5,12 +5,14 @@
 //! - **Création** (aucun uuid connu pour ce dossier) : uuid v4 neuf, `version: 1`.
 //! - **Actualisation** (uuid connu) : même uuid, version = la plus grande de celle du dossier et
 //!   de celle installée dans « Mes histoires », plus 1 : la version publiée augmente toujours.
-//! - **Où l'uuid est gardé** : dans `_histoire.json` (seul fichier écrit dans le dossier,
-//!   relu juste avant l'écriture pour garder les clés inconnues). Si le dossier ne peut pas
+//! - **Où l'uuid est gardé** : dans `_histoire.json` (seul fichier écrit dans le dossier, et
+//!   seulement ses champs `uuid` et `version` : le reste est relu brut juste avant et gardé tel
+//!   quel, `settings::write_story_identity`). Si le dossier ne peut pas
 //!   l'accueillir (lecture seule, fichier abîmé ou non lu, format plus récent, toute erreur
 //!   d'écriture), il est gardé dans la configuration du launcher ([`REGISTRY_FILE`]), indexé
-//!   par le chemin résolu du dossier. Un uuid écrit dans le dossier l'emporte sur celui de la
-//!   configuration, qui est alors oublié.
+//!   par le chemin résolu du dossier. L'entrée de la configuration l'emporte sur l'uuid du
+//!   fichier (elle est toujours plus récente) ; elle est oubliée dès que le fichier a pu être
+//!   écrit.
 //! - **Conflits** ([`Conflict`]) : l'uuid est déjà celui d'une histoire de « Mes histoires »
 //!   venue d'**un autre dossier** qui existe encore et porte toujours cet uuid (dossier copié :
 //!   « Remplacer l'autre » ou « Nouvelle histoire ») ; ou celui d'une histoire d'une **autre
@@ -204,17 +206,20 @@ fn known(
     story: &StorySettings,
     remembered: Option<&Remembered>,
 ) -> (Option<String>, Option<u32>, bool) {
-    if let Some(uuid) = story.uuid.as_deref().filter(|u| is_usable_uuid(u)) {
-        // Version de la configuration si elle porte le même uuid et va plus loin (dossier
-        // redevenu inscriptible après une création en lecture seule).
-        let version = match remembered.filter(|r| r.uuid == uuid) {
-            Some(r) => Some(story.version.unwrap_or(0).max(r.version)),
-            None => story.version,
+    let file_uuid = story.uuid.as_deref().filter(|u| is_usable_uuid(u));
+    // L'entrée de la configuration est toujours plus récente que l'uuid du fichier : `commit`
+    // ne la pose que s'il n'a pas pu écrire le fichier, et l'oublie dès qu'il y parvient (dossier
+    // copié puis « Nouvelle histoire » sur un dossier non inscriptible : le fichier garde l'uuid
+    // de l'original, la configuration celui de la nouvelle histoire).
+    if let Some(r) = remembered {
+        let version = match (file_uuid, story.version) {
+            (Some(uuid), Some(v)) if uuid == r.uuid => r.version.max(v),
+            _ => r.version,
         };
-        return (Some(uuid.to_string()), version, false);
+        return (Some(r.uuid.clone()), Some(version), true);
     }
-    match remembered {
-        Some(r) => (Some(r.uuid.clone()), Some(r.version), true),
+    match file_uuid {
+        Some(uuid) => (Some(uuid.to_string()), story.version, false),
         None => (None, None, false),
     }
 }
@@ -305,21 +310,13 @@ pub fn decide(identity: &Identity, choice: Option<ConflictChoice>) -> AppResult<
     }
 }
 
-/// Enregistre `decision` : dans `_histoire.json` du dossier `base` si possible (fichier relu
-/// juste avant : clés inconnues gardées ; abîmé, non lu ou d'un format plus récent : jamais
-/// réécrit), sinon dans `registry`. Rend l'endroit choisi.
+/// Enregistre `decision` : dans `_histoire.json` du dossier `base` si possible (seuls `uuid` et
+/// `version` y changent ; abîmé, non lu ou d'un format plus récent : jamais réécrit), sinon dans
+/// `registry`. Rend l'endroit choisi.
 pub fn commit(base: &Path, decision: &Decision, registry: &Registry) -> AppResult<SavedIn> {
-    let loaded = settings::load_story(base);
-    let written = if loaded.damaged || loaded.skipped {
-        Err(AppError::Validation(
-            "_histoire.json abîmé : non réécrit".into(),
-        ))
-    } else {
-        let mut story = loaded.settings;
-        story.uuid = Some(decision.uuid.clone());
-        story.version = Some(decision.version);
-        settings::write_story(base, &story)
-    };
+    // Le reste du fichier est gardé tel quel (valeurs que la lecture tolérante nettoierait
+    // comprises).
+    let written = settings::write_story_identity(base, &decision.uuid, decision.version);
     match written {
         Ok(()) => {
             if let Err(err) = registry.forget(base) {
