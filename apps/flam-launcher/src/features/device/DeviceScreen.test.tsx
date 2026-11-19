@@ -735,6 +735,30 @@ it("un rechargement silencieux ne relance pas la lecture des titres, seul « Act
   await waitFor(() => expect(count("device_story_titles")).toBe(2));
 });
 
+it("relit la liste après un retrait en échec : l'histoire sortie de l'index s'affiche « Non listée »", async () => {
+  status = detected();
+  stories = report([story(A, { title: "Capi", in_library: true })]);
+  renderScreen();
+  fireEvent.click(await screen.findByRole("button", { name: "Retirer « Capi »" }));
+  const dialog = await screen.findByRole("alertdialog");
+  // Index réécrit, dossier resté occupé par un autre programme : erreur d'entrée/sortie.
+  stories = report([
+    story(A, { title: "Capi", in_library: true, placement: "unlisted" }),
+  ]);
+  failures["device_remove_story"] = {
+    kind: "io",
+    message: "son dossier est resté occupé par un autre programme",
+  };
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retirer de la Flam" }));
+  await waitFor(() => expect(count("device_list_stories")).toBe(2));
+  const list = await screen.findByRole("list", {
+    name: "Histoires installées sur la Flam",
+  });
+  expect(await within(list).findByText("Non listée")).toBeInTheDocument();
+  // L'histoire peut être retirée de nouveau.
+  expect(screen.getByRole("button", { name: "Retirer « Capi »" })).toBeEnabled();
+});
+
 it("affiche le titre déchiffré et la vignette de la Flam, avec repli", async () => {
   status = detected();
   deviceTitles = { [A]: "Titre de la Flam" };
