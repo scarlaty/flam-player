@@ -1,0 +1,614 @@
+== metadata.json ==
+{
+  "age": 5,
+  "category": "© Radio Exemple",
+  "description": "- Épisode n°1\n- Épisode n°2\n- Épisode n°3\n- Épisode n°4\n- Épisode n°5\n- Épisode n°6\n- Épisode n°7\n- Épisode n°8\n- Épisode n°9\n- Épisode n°10\n- Épisode n°11\n- Épisode n°12",
+  "image": "cover.png",
+  "title": "Mon pack",
+  "uuid": "0b5e0c1d-3f6a-4b7e-9c2d-5a6b7c8d9e0f",
+  "version": 1
+}
+== nodes.json ==
+{
+  "actions": {
+    "begin": [
+      {
+        "stage": "start"
+      }
+    ],
+    "m0": [
+      {
+        "stage": "o1"
+      },
+      {
+        "stage": "o2"
+      },
+      {
+        "stage": "o3"
+      },
+      {
+        "stage": "o4"
+      },
+      {
+        "stage": "o5"
+      },
+      {
+        "stage": "o6"
+      },
+      {
+        "stage": "o7"
+      },
+      {
+        "stage": "o8"
+      },
+      {
+        "stage": "o9"
+      },
+      {
+        "stage": "o10"
+      },
+      {
+        "stage": "o11"
+      },
+      {
+        "stage": "o12"
+      }
+    ],
+    "p1": [
+      {
+        "stage": "e1"
+      }
+    ],
+    "p10": [
+      {
+        "stage": "e10"
+      }
+    ],
+    "p11": [
+      {
+        "stage": "e11"
+      }
+    ],
+    "p12": [
+      {
+        "stage": "e12"
+      }
+    ],
+    "p2": [
+      {
+        "stage": "e2"
+      }
+    ],
+    "p3": [
+      {
+        "stage": "e3"
+      }
+    ],
+    "p4": [
+      {
+        "stage": "e4"
+      }
+    ],
+    "p5": [
+      {
+        "stage": "e5"
+      }
+    ],
+    "p6": [
+      {
+        "stage": "e6"
+      }
+    ],
+    "p7": [
+      {
+        "stage": "e7"
+      }
+    ],
+    "p8": [
+      {
+        "stage": "e8"
+      }
+    ],
+    "p9": [
+      {
+        "stage": "e9"
+      }
+    ]
+  },
+  "stages": {
+    "e1": {
+      "audio": "e001.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 0
+      },
+      "image": "e001.png",
+      "ok": {
+        "action": "p2",
+        "index": 0
+      }
+    },
+    "e10": {
+      "audio": "e010.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 9
+      },
+      "image": "e010.png",
+      "ok": {
+        "action": "p11",
+        "index": 0
+      }
+    },
+    "e11": {
+      "audio": "e011.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 10
+      },
+      "image": "e011.png",
+      "ok": {
+        "action": "p12",
+        "index": 0
+      }
+    },
+    "e12": {
+      "audio": "e012.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 11
+      },
+      "image": "e012.png",
+      "ok": {
+        "action": "m0",
+        "index": 11
+      }
+    },
+    "e2": {
+      "audio": "e002.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 1
+      },
+      "image": "e002.png",
+      "ok": {
+        "action": "p3",
+        "index": 0
+      }
+    },
+    "e3": {
+      "audio": "e003.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 2
+      },
+      "image": "e003.png",
+      "ok": {
+        "action": "p4",
+        "index": 0
+      }
+    },
+    "e4": {
+      "audio": "e004.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 3
+      },
+      "image": "e004.png",
+      "ok": {
+        "action": "p5",
+        "index": 0
+      }
+    },
+    "e5": {
+      "audio": "e005.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 4
+      },
+      "image": "e005.png",
+      "ok": {
+        "action": "p6",
+        "index": 0
+      }
+    },
+    "e6": {
+      "audio": "e006.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 5
+      },
+      "image": "e006.png",
+      "ok": {
+        "action": "p7",
+        "index": 0
+      }
+    },
+    "e7": {
+      "audio": "e007.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 6
+      },
+      "image": "e007.png",
+      "ok": {
+        "action": "p8",
+        "index": 0
+      }
+    },
+    "e8": {
+      "audio": "e008.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 7
+      },
+      "image": "e008.png",
+      "ok": {
+        "action": "p9",
+        "index": 0
+      }
+    },
+    "e9": {
+      "audio": "e009.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 8
+      },
+      "image": "e009.png",
+      "ok": {
+        "action": "p10",
+        "index": 0
+      }
+    },
+    "o1": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e001.png",
+      "ok": {
+        "action": "p1",
+        "index": 0
+      }
+    },
+    "o10": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e010.png",
+      "ok": {
+        "action": "p10",
+        "index": 0
+      }
+    },
+    "o11": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e011.png",
+      "ok": {
+        "action": "p11",
+        "index": 0
+      }
+    },
+    "o12": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e012.png",
+      "ok": {
+        "action": "p12",
+        "index": 0
+      }
+    },
+    "o2": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e002.png",
+      "ok": {
+        "action": "p2",
+        "index": 0
+      }
+    },
+    "o3": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e003.png",
+      "ok": {
+        "action": "p3",
+        "index": 0
+      }
+    },
+    "o4": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e004.png",
+      "ok": {
+        "action": "p4",
+        "index": 0
+      }
+    },
+    "o5": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e005.png",
+      "ok": {
+        "action": "p5",
+        "index": 0
+      }
+    },
+    "o6": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e006.png",
+      "ok": {
+        "action": "p6",
+        "index": 0
+      }
+    },
+    "o7": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e007.png",
+      "ok": {
+        "action": "p7",
+        "index": 0
+      }
+    },
+    "o8": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e008.png",
+      "ok": {
+        "action": "p8",
+        "index": 0
+      }
+    },
+    "o9": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e009.png",
+      "ok": {
+        "action": "p9",
+        "index": 0
+      }
+    },
+    "start": {
+      "audio": null,
+      "control": {
+        "autoplay": true,
+        "home": false,
+        "ok": false
+      },
+      "home": null,
+      "image": null,
+      "ok": {
+        "action": "m0",
+        "index": 0
+      }
+    }
+  },
+  "startAction": {
+    "action": "begin",
+    "index": 0
+  }
+}
+== notes.json ==
+{
+  "e1": {
+    "title": "Épisode n°1"
+  },
+  "e10": {
+    "title": "Épisode n°10"
+  },
+  "e11": {
+    "title": "Épisode n°11"
+  },
+  "e12": {
+    "title": "Épisode n°12"
+  },
+  "e2": {
+    "title": "Épisode n°2"
+  },
+  "e3": {
+    "title": "Épisode n°3"
+  },
+  "e4": {
+    "title": "Épisode n°4"
+  },
+  "e5": {
+    "title": "Épisode n°5"
+  },
+  "e6": {
+    "title": "Épisode n°6"
+  },
+  "e7": {
+    "title": "Épisode n°7"
+  },
+  "e8": {
+    "title": "Épisode n°8"
+  },
+  "e9": {
+    "title": "Épisode n°9"
+  },
+  "o1": {
+    "title": "Épisode n°1"
+  },
+  "o10": {
+    "title": "Épisode n°10"
+  },
+  "o11": {
+    "title": "Épisode n°11"
+  },
+  "o12": {
+    "title": "Épisode n°12"
+  },
+  "o2": {
+    "title": "Épisode n°2"
+  },
+  "o3": {
+    "title": "Épisode n°3"
+  },
+  "o4": {
+    "title": "Épisode n°4"
+  },
+  "o5": {
+    "title": "Épisode n°5"
+  },
+  "o6": {
+    "title": "Épisode n°6"
+  },
+  "o7": {
+    "title": "Épisode n°7"
+  },
+  "o8": {
+    "title": "Épisode n°8"
+  },
+  "o9": {
+    "title": "Épisode n°9"
+  }
+}
+== entrées ==
+audios/e001.mp3 8757
+audios/e002.mp3 9174
+audios/e003.mp3 9591
+audios/e004.mp3 10008
+audios/e005.mp3 10425
+audios/e006.mp3 10842
+audios/e007.mp3 11259
+audios/e008.mp3 11676
+audios/e009.mp3 12093
+audios/e010.mp3 12510
+audios/e011.mp3 12927
+audios/e012.mp3 13344
+cover.png 1814
+images/e001.png 1886
+images/e002.png 1887
+images/e003.png 1887
+images/e004.png 1887
+images/e005.png 1887
+images/e006.png 1887
+images/e007.png 1887
+images/e008.png 1887
+images/e009.png 1887
+images/e010.png 1887
+images/e011.png 1887
+images/e012.png 1887
+metadata.json 387
+nodes.json 8204
+notes.json 1070

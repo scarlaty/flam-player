@@ -1077,3 +1077,6 @@ fn read_zip_any(path: &Path) -> BTreeMap<String, Vec<u8>> {
     }
     out
 }
+
+mod chapters;
+mod golden;

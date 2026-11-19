@@ -1,0 +1,398 @@
+== metadata.json ==
+{
+  "age": 5,
+  "category": "© Radio Exemple",
+  "description": "- A\n- B\n- C\n- D\n- E\n- L’œuvre — 🎉 un très long titre d’épisode qui déborde",
+  "image": "cover.png",
+  "title": "Mon pack",
+  "uuid": "0b5e0c1d-3f6a-4b7e-9c2d-5a6b7c8d9e0f",
+  "version": 1
+}
+== nodes.json ==
+{
+  "actions": {
+    "begin": [
+      {
+        "stage": "start"
+      }
+    ],
+    "m0": [
+      {
+        "stage": "o1"
+      },
+      {
+        "stage": "o2"
+      },
+      {
+        "stage": "o8"
+      }
+    ],
+    "m1": [
+      {
+        "stage": "o3"
+      },
+      {
+        "stage": "o4"
+      },
+      {
+        "stage": "o7"
+      }
+    ],
+    "m2": [
+      {
+        "stage": "o5"
+      },
+      {
+        "stage": "o6"
+      }
+    ],
+    "p1": [
+      {
+        "stage": "e1"
+      }
+    ],
+    "p2": [
+      {
+        "stage": "e2"
+      }
+    ],
+    "p3": [
+      {
+        "stage": "e3"
+      }
+    ],
+    "p4": [
+      {
+        "stage": "e4"
+      }
+    ],
+    "p5": [
+      {
+        "stage": "e5"
+      }
+    ],
+    "p6": [
+      {
+        "stage": "e6"
+      }
+    ]
+  },
+  "stages": {
+    "e1": {
+      "audio": "e001.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 0
+      },
+      "image": "e001.png",
+      "ok": {
+        "action": "p6",
+        "index": 0
+      }
+    },
+    "e2": {
+      "audio": "e002.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m1",
+        "index": 0
+      },
+      "image": "e002.png",
+      "ok": {
+        "action": "p5",
+        "index": 0
+      }
+    },
+    "e3": {
+      "audio": "e003.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m2",
+        "index": 0
+      },
+      "image": "e003.png",
+      "ok": {
+        "action": "p4",
+        "index": 0
+      }
+    },
+    "e4": {
+      "audio": "e004.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m2",
+        "index": 1
+      },
+      "image": "e004.png",
+      "ok": {
+        "action": "m2",
+        "index": 1
+      }
+    },
+    "e5": {
+      "audio": "e005.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m1",
+        "index": 2
+      },
+      "image": "e005.png",
+      "ok": {
+        "action": "m1",
+        "index": 2
+      }
+    },
+    "e6": {
+      "audio": "e006.mp3",
+      "control": {
+        "autoplay": true,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 2
+      },
+      "image": "e006.png",
+      "ok": {
+        "action": "m0",
+        "index": 2
+      }
+    },
+    "o1": {
+      "audio": "t001.mp3",
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e001.png",
+      "ok": {
+        "action": "p1",
+        "index": 0
+      }
+    },
+    "o2": {
+      "audio": "c001.mp3",
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e004.png",
+      "ok": {
+        "action": "m1",
+        "index": 0
+      }
+    },
+    "o3": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 1
+      },
+      "image": "e002.png",
+      "ok": {
+        "action": "p2",
+        "index": 0
+      }
+    },
+    "o4": {
+      "audio": null,
+      "control": {
+        "autoplay": false,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 1
+      },
+      "image": "e003.png",
+      "ok": {
+        "action": "m2",
+        "index": 0
+      }
+    },
+    "o5": {
+      "audio": "t003.mp3",
+      "control": {
+        "autoplay": false,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m1",
+        "index": 1
+      },
+      "image": "e003.png",
+      "ok": {
+        "action": "p3",
+        "index": 0
+      }
+    },
+    "o6": {
+      "audio": "t004.mp3",
+      "control": {
+        "autoplay": false,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m1",
+        "index": 1
+      },
+      "image": "e004.png",
+      "ok": {
+        "action": "p4",
+        "index": 0
+      }
+    },
+    "o7": {
+      "audio": "t005.mp3",
+      "control": {
+        "autoplay": false,
+        "home": true,
+        "ok": true
+      },
+      "home": {
+        "action": "m0",
+        "index": 1
+      },
+      "image": "e005.png",
+      "ok": {
+        "action": "p5",
+        "index": 0
+      }
+    },
+    "o8": {
+      "audio": "t006.mp3",
+      "control": {
+        "autoplay": false,
+        "home": false,
+        "ok": true
+      },
+      "home": null,
+      "image": "e006.png",
+      "ok": {
+        "action": "p6",
+        "index": 0
+      }
+    },
+    "start": {
+      "audio": null,
+      "control": {
+        "autoplay": true,
+        "home": false,
+        "ok": false
+      },
+      "home": null,
+      "image": null,
+      "ok": {
+        "action": "m0",
+        "index": 0
+      }
+    }
+  },
+  "startAction": {
+    "action": "begin",
+    "index": 0
+  }
+}
+== notes.json ==
+{
+  "e1": {
+    "title": "A"
+  },
+  "e2": {
+    "title": "B"
+  },
+  "e3": {
+    "title": "C"
+  },
+  "e4": {
+    "title": "D"
+  },
+  "e5": {
+    "title": "E"
+  },
+  "e6": {
+    "title": "L'oeuvre - un très long titre d'épiso..."
+  },
+  "o1": {
+    "title": "A"
+  },
+  "o2": {
+    "title": "X"
+  },
+  "o3": {
+    "title": "B"
+  },
+  "o4": {
+    "title": "Y"
+  },
+  "o5": {
+    "title": "C"
+  },
+  "o6": {
+    "title": "D"
+  },
+  "o7": {
+    "title": "E"
+  },
+  "o8": {
+    "title": "L'oeuvre - un très long titre d'épiso..."
+  }
+}
+== entrées ==
+audios/c001.mp3 2502
+audios/e001.mp3 8757
+audios/e002.mp3 9174
+audios/e003.mp3 9591
+audios/e004.mp3 10008
+audios/e005.mp3 10425
+audios/e006.mp3 10842
+audios/t001.mp3 2085
+audios/t003.mp3 2919
+audios/t004.mp3 1251
+audios/t005.mp3 1668
+audios/t006.mp3 2085
+cover.png 1813
+images/e001.png 1886
+images/e002.png 1887
+images/e003.png 1887
+images/e004.png 1887
+images/e005.png 1887
+images/e006.png 1888
+metadata.json 274
+nodes.json 5187
+notes.json 532
+title.mp3 2502
