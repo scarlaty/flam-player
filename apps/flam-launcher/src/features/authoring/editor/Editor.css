@@ -1,0 +1,381 @@
+/* Fenêtre de l'éditeur d'histoires (lot 7). */
+.fl-editor {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  height: 100vh;
+  background: var(--color-bg);
+}
+
+.fl-editor--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+}
+
+.fl-editor__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fl-editor__cover {
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  cursor: pointer;
+}
+
+.fl-editor__identity {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.fl-editor__title {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  line-height: var(--line-height-tight);
+  overflow-wrap: anywhere;
+}
+
+.fl-editor__facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+
+.fl-editor__description {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fl-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fl-editor__blocked {
+  flex-basis: 100%;
+  text-align: right;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.fl-editor__status {
+  min-height: 0;
+  padding: 0 var(--space-5);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.fl-editor__status:not(:empty) {
+  padding-block: var(--space-2);
+}
+
+.fl-editor__error {
+  margin: var(--space-2) var(--space-5) 0;
+}
+
+.fl-editor__body {
+  display: grid;
+  grid-template-columns: minmax(18rem, 2fr) minmax(20rem, 3fr);
+  min-height: 0;
+}
+
+.fl-editor__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: var(--space-3);
+  border-right: 1px solid var(--color-border);
+}
+
+.fl-editor__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.fl-editor__tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.fl-editor__panel {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4) var(--space-5);
+}
+
+/* Vignettes */
+.fl-editor-thumb {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+}
+
+.fl-editor-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Arbre */
+.fl-editor-tree,
+.fl-editor-tree__group {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-editor-tree__item {
+  outline: none;
+}
+
+.fl-editor-tree__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block: var(--space-1);
+  padding-inline-end: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.fl-editor-tree__row:hover {
+  background: var(--color-surface-hover);
+}
+
+.fl-editor-tree__row--selected {
+  background: var(--color-primary-soft);
+  color: var(--color-on-primary-soft);
+}
+
+.fl-editor-tree__item:focus-visible > .fl-editor-tree__row {
+  box-shadow: var(--focus-ring);
+}
+
+.fl-editor-tree__twisty {
+  flex: none;
+  width: 1rem;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+.fl-editor-tree__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fl-editor-tree__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fl-editor-tree__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.fl-editor-tree__row--selected .fl-editor-tree__meta {
+  color: inherit;
+}
+
+.fl-editor-tree__badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+/* Panneau */
+.fl-editor-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 44rem;
+}
+
+.fl-editor-panel__kind {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fl-editor-panel__title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  overflow-wrap: anywhere;
+}
+
+.fl-editor-panel__section,
+.fl-editor-panel__settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.fl-editor-panel__section h3,
+.fl-editor-panel__settings h3 {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.fl-editor-panel__section p {
+  margin: 0;
+}
+
+.fl-editor-panel__problems {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.fl-editor-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.fl-editor-panel__inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.fl-editor-panel__media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+.fl-editor-panel__media-text {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fl-editor-panel__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.fl-editor-panel__field label {
+  font-weight: var(--font-weight-semibold);
+}
+
+.fl-editor-panel__textarea {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  resize: vertical;
+}
+
+.fl-editor-panel__note {
+  color: var(--color-text-muted);
+}
+
+/* Rapport */
+.fl-editor-report {
+  max-height: 11rem;
+  overflow: auto;
+  padding: var(--space-2) var(--space-5) var(--space-3);
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+.fl-editor-report__title {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.fl-editor-report__none {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+
+.fl-editor-report__group {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.fl-editor-report__group--blocking {
+  color: var(--color-danger);
+}
+
+.fl-editor-report__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-editor-report__line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fl-editor-report__line:hover {
+  background: var(--color-surface-hover);
+}
+
+@media (max-width: 900px) {
+  .fl-editor__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(12rem, 1fr) minmax(0, 1.4fr);
+  }
+
+  .fl-editor__side {
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+  }
+}
+
+@media (forced-colors: active) {
+  .fl-editor-tree__row--selected {
+    outline: 2px solid Highlight;
+  }
+}

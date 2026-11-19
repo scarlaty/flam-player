@@ -566,6 +566,58 @@ fn image_refusee_si_pas_une_image() {
     assert!(matches!(err, OpError::Source { .. }));
 }
 
+#[test]
+fn titre_lu_remplace_puis_annuler() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.mp3", b"a");
+    write(dir.path(), "a.titre.ogg", b"ancien");
+    write(dir.path(), "a.png", b"image");
+    write(dir.path(), "M/b.mp3", b"b");
+    write(src.path(), "voix.MP3", b"nouveau");
+    write(src.path(), "image.png", b"png");
+    let mut ed = open(dir.path());
+
+    let done = ed
+        .set_title_audio(&target(&ed, "a.mp3"), &src.path().join("voix.MP3"))
+        .unwrap();
+    assert_eq!(done.ids, ["a.titre.mp3"]);
+    assert_eq!(read(dir.path(), "a.titre.mp3"), b"nouveau");
+    assert!(!exists(dir.path(), "a.titre.ogg"));
+    // L'image et le fichier audio ne sont pas touchés.
+    assert_eq!(read(dir.path(), "a.png"), b"image");
+    assert_eq!(read(dir.path(), "a.mp3"), b"a");
+    assert_eq!(
+        trash(dir.path()),
+        [("a.titre.ogg".to_owned(), b"ancien".to_vec())]
+    );
+    match ed.scan().unwrap().root.find("a.mp3").unwrap() {
+        Node::Story { title_audio, .. } => assert_eq!(title_audio.as_deref(), Some("a.titre.mp3")),
+        other => panic!("{other:?}"),
+    }
+
+    ed.set_title_audio(&target(&ed, "M"), &src.path().join("voix.MP3"))
+        .unwrap();
+    assert!(exists(dir.path(), "M/_titre.mp3"));
+    ed.set_title_audio(&target(&ed, ""), &src.path().join("voix.MP3"))
+        .unwrap();
+    assert!(exists(dir.path(), "_titre.mp3"));
+
+    let err = ed
+        .set_title_audio(&target(&ed, "a.mp3"), &src.path().join("image.png"))
+        .unwrap_err();
+    assert!(matches!(err, OpError::Source { .. }));
+
+    ed.undo().unwrap();
+    ed.undo().unwrap();
+    ed.undo().unwrap();
+    assert_eq!(read(dir.path(), "a.titre.ogg"), b"ancien");
+    assert!(!exists(dir.path(), "a.titre.mp3"));
+    assert!(!exists(dir.path(), "M/_titre.mp3"));
+    assert!(!exists(dir.path(), "_titre.mp3"));
+    assert!(exists(src.path(), "voix.MP3"));
+}
+
 // ---------------------------------------------------------------------------
 // Ordre, déplacement, renommage
 // ---------------------------------------------------------------------------

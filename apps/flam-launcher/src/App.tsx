@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { ToastProvider } from "./components";
 import { AppFrame } from "./features/app/AppFrame";
+import { EditorTaskBridge } from "./features/authoring/editor/EditorTaskBridge";
 import { DeviceBoundary } from "./features/device/DeviceBoundary";
 import { CompatProvider } from "./features/compat/CompatProvider";
 import { LibraryProvider } from "./features/library/LibraryProvider";
@@ -37,6 +38,7 @@ function AppRoutes({ route }: { route: Exclude<Route, "demo"> }) {
         <LibraryProvider>
           <CompatProvider>
             <StoriesProvider>
+              <EditorTaskBridge />
               <PodcastSelectionProvider>
                 <DeviceBoundary>
                   <AppFrame route={route} />
