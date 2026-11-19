@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use serde::{Serialize, Serializer};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -152,9 +152,19 @@ fn lock(session: &Shared) -> MutexGuard<'_, Session> {
     session.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Éditeur ouvert : clé du dossier (immuable, comparée sans verrouiller la session) et session.
+#[derive(Debug)]
+struct Open {
+    key: String,
+    session: Shared,
+}
+
 #[derive(Debug, Default)]
 struct Inner {
-    sessions: HashMap<String, Shared>,
+    sessions: HashMap<String, Open>,
+    /// Sessions de fenêtres fermées dont une opération peut encore tourner : leur dossier ne se
+    /// rouvre pas tant qu'elles vivent (deux éditeurs sur un même `.flam/tmp`).
+    closing: Vec<(String, Weak<Mutex<Session>>)>,
     next: u64,
 }
 
@@ -171,6 +181,8 @@ pub enum Registered {
     New(String),
     /// Le même dossier est déjà ouvert dans la fenêtre de ce libellé.
     Existing(String),
+    /// La fenêtre de ce dossier vient d'être fermée pendant une opération qui n'est pas finie.
+    Closing,
 }
 
 impl EditorState {
@@ -180,22 +192,27 @@ impl EditorState {
 
     /// Garde `editor` pour une nouvelle fenêtre, sauf si son dossier (forme résolue, sans
     /// casse) est déjà ouvert : une seule fenêtre par dossier (§ 4.3).
+    /// Aucune session n'est verrouillée ici : une opération longue d'un autre éditeur ne bloque
+    /// ni l'ouverture ni le registre.
     pub fn register(&self, editor: Editor) -> Registered {
         let key = path_key(editor.base());
         let mut inner = self.inner();
         let existing = inner
             .sessions
             .iter()
-            .find(|(_, s)| path_key(lock(s).editor.base()) == key)
+            .find(|(_, open)| open.key == key)
             .map(|(label, _)| label.clone());
         if let Some(label) = existing {
             return Registered::Existing(label);
         }
+        inner.closing.retain(|(_, weak)| weak.strong_count() > 0);
+        if inner.closing.iter().any(|(k, _)| *k == key) {
+            return Registered::Closing;
+        }
         inner.next += 1;
         let label = format!("{EDITOR_LABEL_PREFIX}{}", inner.next);
-        inner
-            .sessions
-            .insert(label.clone(), Arc::new(Mutex::new(Session::new(editor))));
+        let session = Arc::new(Mutex::new(Session::new(editor)));
+        inner.sessions.insert(label.clone(), Open { key, session });
         Registered::New(label)
     }
 
@@ -204,13 +221,21 @@ impl EditorState {
         self.inner()
             .sessions
             .get(label)
-            .cloned()
+            .map(|open| open.session.clone())
             .ok_or_else(EditorError::closed)
     }
 
-    /// Oublie l'éditeur de la fenêtre `label` (fenêtre fermée).
+    /// Oublie l'éditeur de la fenêtre `label` (fenêtre fermée). Une opération encore en cours
+    /// garde sa session vivante : le dossier ne se rouvre qu'à sa fin ([`Registered::Closing`]).
     pub fn remove(&self, label: &str) {
-        self.inner().sessions.remove(label);
+        let mut inner = self.inner();
+        if let Some(open) = inner.sessions.remove(label) {
+            let weak = Arc::downgrade(&open.session);
+            drop(open.session);
+            if weak.strong_count() > 0 {
+                inner.closing.push((open.key, weak));
+            }
+        }
     }
 
     /// Libellés des fenêtres ouvertes.
@@ -493,7 +518,7 @@ pub enum Op {
 /// par l'opération, qui ne les modifie jamais).
 fn sources(paths: Vec<String>) -> EditorResult<Vec<PathBuf>> {
     if paths.is_empty() || paths.len() > 1_000 {
-        return Err(OpError::Refused("aucun fichier à ajouter".into()).into());
+        return Err(OpError::Refused("entre 1 et 1 000 fichiers à la fois".into()).into());
     }
     paths.into_iter().map(source).collect()
 }
@@ -745,6 +770,12 @@ pub async fn authoring_editor_open(
             focus(&app, &label);
             Ok(EditorOpened { already_open: true })
         }
+        Registered::Closing => Err(EditorError {
+            kind: "editor_closing".into(),
+            message: "l'éditeur de ce dossier vient d'être fermé et termine une opération : \
+                      réessayez dans un instant"
+                .into(),
+        }),
         Registered::New(label) => {
             if let Err(e) = open_window(&app, &label, &folder_name) {
                 editors.remove(&label);

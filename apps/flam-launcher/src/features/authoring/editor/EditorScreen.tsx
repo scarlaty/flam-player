@@ -24,7 +24,14 @@ import { EditorHeader } from "./EditorHeader";
 import { EditorTree } from "./EditorTree";
 import { editorErrorText } from "./errors";
 import { ItemPanel } from "./ItemPanel";
-import { findNode, parentOf, shiftedOrder, targetOf } from "./model";
+import {
+  findNode,
+  isWithin,
+  nodeForPath,
+  parentOf,
+  shiftedOrder,
+  targetOf,
+} from "./model";
 import { ReportList } from "./ReportList";
 import "./Editor.css";
 
@@ -61,6 +68,15 @@ export function EditorScreen() {
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [status, setStatus] = useState("");
+  const [refocus, setRefocus] = useState(0);
+  const statusTimer = useRef<number | undefined>(undefined);
+
+  /** Annonce `message`, même identique au précédent (la région est vidée puis réécrite). */
+  const announce = useCallback((message: string) => {
+    setStatus("");
+    window.clearTimeout(statusTimer.current);
+    statusTimer.current = window.setTimeout(() => setStatus(message), 60);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [menuName, setMenuName] = useState("");
@@ -105,13 +121,15 @@ export function EditorScreen() {
       try {
         const update = await action();
         setView(update.view);
+        // Une image ou un titre lu rend son propre id : la sélection va à son élément.
         const first = update.ids[0];
-        if (first !== undefined) setSelectedId(first);
+        if (first !== undefined)
+          setSelectedId(nodeForPath(update.view.report.root, first).id);
         const skipped =
           update.skipped.length > 0 ? ` ${text.skipped(update.skipped.length)}` : "";
         const said =
           update.trashed !== null ? text.trash.done(update.trashed) : say(update.label);
-        setStatus(`${said}${skipped}`);
+        announce(`${said}${skipped}`);
         return true;
       } catch (caught) {
         setError(editorErrorText(toAppError(caught)));
@@ -122,7 +140,7 @@ export function EditorScreen() {
         setBusy(false);
       }
     },
-    [load, text],
+    [load, text, announce],
   );
 
   const doUndo = useCallback(() => void run(undo, text.undone), [run, text]);
@@ -171,7 +189,18 @@ export function EditorScreen() {
     const order = parent ? shiftedOrder(parent, id, delta) : null;
     if (!parent || !order) return;
     setSelectedId(id);
-    void run(() => reorder(parent.id, order));
+    void run(() => reorder(parent.id, order)).then(() => setRefocus((n) => n + 1));
+  }
+
+  /** Choisit `id` en dépliant ses menus : la ligne reste visible et atteignable au Tab. */
+  function select(id: string) {
+    setSelectedId(id);
+    setCollapsed((current) => {
+      const next = new Set(
+        [...current].filter((menu) => !isWithin(id, menu) || menu === id),
+      );
+      return next.size === current.size ? current : next;
+    });
   }
 
   async function addFiles(menu: string) {
@@ -200,7 +229,10 @@ export function EditorScreen() {
     const at = view ? targetOf(view, id) : null;
     if (!at) return;
     const parent = parentOf(root, id);
-    if (await run(() => deleteItem(at))) setSelectedId(parent?.id ?? "");
+    if (await run(() => deleteItem(at))) {
+      setSelectedId(parent?.id ?? "");
+      setRefocus((n) => n + 1);
+    }
   }
 
   function submitNewMenu(event: FormEvent, parent: string) {
@@ -299,13 +331,17 @@ export function EditorScreen() {
               selectedId={node.id}
               onSelect={setSelectedId}
               collapsed={collapsed}
-              onToggle={(id) =>
+              refocus={refocus}
+              onToggle={(id) => {
+                // Replier le menu de la ligne choisie : la sélection remonte sur ce menu.
+                if (!collapsed.has(id) && id !== node.id && isWithin(node.id, id))
+                  setSelectedId(id);
                 setCollapsed((current) => {
                   const next = new Set(current);
                   if (!next.delete(id)) next.add(id);
                   return next;
-                })
-              }
+                });
+              }}
               onShift={shift}
               onDelete={askDelete}
               onRename={(id) => {
@@ -342,7 +378,7 @@ export function EditorScreen() {
           />
         </div>
       </div>
-      <ReportList view={view} onGoTo={setSelectedId} />
+      <ReportList view={view} onGoTo={select} />
 
       <Dialog
         open={ask !== null}

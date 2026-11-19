@@ -31,6 +31,7 @@ export function editorErrorText(error: AppError): string {
     case "editor_closed":
       return text.closed;
     case "refused":
+    case "validation":
       // Messages du backend déjà rédigés pour l'utilisateur (« titre vide : rien à renommer »).
       return text.refused(error.message);
     case "inconsistent":
@@ -45,6 +46,7 @@ export function editorErrorText(error: AppError): string {
 /** Message d'un échec d'ouverture de l'éditeur (fenêtre principale). */
 export function openErrorText(error: AppError): string {
   const text = t.authoringEditor;
+  if (error.kind === "editor_closing") return text.closing;
   // `root_refused` couvre aussi un dossier disparu (« dossier introuvable : … »).
   if (error.kind === "not_found" || error.message.startsWith("dossier introuvable"))
     return text.error.folderMissing;

@@ -20,10 +20,12 @@ export interface EditorTreeProps {
   onDelete: (id: string) => void;
   /** F2 : renommer (focus sur le titre du panneau). */
   onRename: (id: string) => void;
+  /** Change après une opération lancée depuis l'arbre : le focus revient sur la ligne choisie. */
+  refocus?: number;
 }
 
 const domId = (base: string, id: string) =>
-  `${base}-${Array.from(id, (c) => c.charCodeAt(0).toString(36)).join("_")}`;
+  `${base}-${Array.from(id, (c) => (c.codePointAt(0) ?? 0).toString(36)).join("_")}`;
 
 /**
  * Arbre de l'histoire (motif ARIA « tree ») : un seul élément focalisable à la fois (celui
@@ -58,6 +60,13 @@ export function EditorTree(props: EditorTreeProps) {
     );
     row?.focus();
   }, [selectedId, base]);
+
+  // Après Alt+Flèche ou une suppression, la ligne choisie (déplacée ou nouvelle) reprend le focus.
+  const refocus = props.refocus ?? 0;
+  useEffect(() => {
+    if (refocus === 0) return;
+    tree.current?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')?.focus();
+  }, [refocus]);
 
   const move = (id: string | undefined) => {
     if (id === undefined) return;

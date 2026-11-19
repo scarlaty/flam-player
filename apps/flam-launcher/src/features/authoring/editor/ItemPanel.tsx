@@ -82,7 +82,7 @@ export function ItemPanel(props: ItemPanelProps) {
         : text.storyHeading;
   const problems = problemsOf(view, node.id);
   // Formulaires remis à zéro quand l'élément ou son état changent.
-  const formKey = `${node.id}|${node.title}|${JSON.stringify(view.story)}`;
+  const formKey = `${node.id}|${node.title}|${JSON.stringify(view.story)}|${JSON.stringify(view.folders[node.id] ?? null)}|${node.kind === "menu" ? `${node.mode}|${node.annoncer}` : ""}`;
 
   return (
     <section className="fl-editor-panel" aria-labelledby={headingId}>
@@ -519,7 +519,12 @@ function Organize({ view, node, busy, run, onShift, onAskDelete }: ItemPanelProp
 type ModeChoice = FolderMode | "inherit";
 type FinChoice = FolderFin | "inherit";
 
-/** Mode, fin, début et annonce d'un dossier (racine : `_histoire.json`). */
+/**
+ * Mode, fin, début et annonce d'un dossier (racine : `_histoire.json`). Les choix restent
+ * locaux jusqu'à « Appliquer » : parcourir les options au clavier n'écrit rien (une seule
+ * écriture, une seule entrée du journal) et les contrôles ne sont jamais désactivés sous le
+ * focus.
+ */
 function FolderSettings({
   view,
   node,
@@ -531,20 +536,17 @@ function FolderSettings({
   const fields = isRoot
     ? null
     : (view.folders[node.id] ?? { mode: null, fin: null, annoncer: null });
-  const chapters = node.mode === "chapitres";
-  const modeValue: ModeChoice = isRoot ? node.mode : (fields?.mode ?? "inherit");
-  const finValue: FinChoice = isRoot
+  const initialMode: ModeChoice = isRoot ? node.mode : (fields?.mode ?? "inherit");
+  const initialFin: FinChoice = isRoot
     ? (view.story.fin ?? "menu")
     : (fields?.fin ?? "inherit");
-
-  const apply = (patch: {
-    mode?: FolderMode | null;
-    fin?: FolderFin | null;
-    annoncer?: boolean | null;
-  }) =>
-    void run(() =>
-      isRoot ? setStorySettings(patch) : setFolderSettings(node.id, patch),
-    );
+  const initialDebut: BookStart = view.story.debut ?? "chapitre";
+  const [mode, setMode] = useState<ModeChoice>(initialMode);
+  const [fin, setFin] = useState<FinChoice>(initialFin);
+  const [debut, setDebut] = useState<BookStart>(initialDebut);
+  const [annoncer, setAnnoncer] = useState(node.annoncer);
+  const inherited = parentOf(view.report.root, node.id)?.mode ?? view.report.mode;
+  const chapters = (mode === "inherit" ? inherited : mode) === "chapitres";
 
   const modeOptions: { value: ModeChoice; label: string }[] = [
     ...(isRoot ? [] : [{ value: "inherit" as const, label: text.modeInherit }]),
@@ -558,49 +560,73 @@ function FolderSettings({
       ? { value: "fin", label: text.finFin }
       : { value: "suivante", label: text.finSuivante },
   ];
-  const finShown = finOptions.some((o) => o.value === finValue) ? finValue : "menu";
+  // Fin qui n'a pas de sens dans le mode choisi : ramenée à « menu ».
+  const finShown = finOptions.some((o) => o.value === fin) ? fin : "menu";
+
+  const patch: {
+    mode?: FolderMode | null;
+    fin?: FolderFin | null;
+    annoncer?: boolean | null;
+    debut?: BookStart | null;
+  } = {};
+  if (mode !== initialMode) patch.mode = mode === "inherit" ? null : mode;
+  if (finShown !== initialFin) patch.fin = finShown === "inherit" ? null : finShown;
+  if (chapters && annoncer !== node.annoncer) patch.annoncer = annoncer;
+  if (isRoot && chapters && debut !== initialDebut) patch.debut = debut;
+  const changed = Object.keys(patch).length > 0;
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!changed || busy) return;
+    void run(() =>
+      isRoot ? setStorySettings(patch) : setFolderSettings(node.id, patch),
+    );
+  }
 
   return (
-    <div className="fl-editor-panel__settings">
+    <form className="fl-editor-panel__settings" onSubmit={submit}>
       <h3>{text.settings}</h3>
       <RadioGroup<ModeChoice>
         legend={text.mode}
-        value={modeValue}
-        disabled={busy}
+        value={mode}
         options={modeOptions}
-        onChange={(value) => apply({ mode: value === "inherit" ? null : value })}
+        onChange={setMode}
       />
       {isRoot && chapters && (
         <RadioGroup<BookStart>
           legend={text.debut}
-          value={view.story.debut ?? "chapitre"}
-          disabled={busy}
+          value={debut}
           options={[
             { value: "chapitre", label: text.debutChapitre },
             { value: "menu", label: text.debutMenu },
           ]}
-          onChange={(value) => void run(() => setStorySettings({ debut: value }))}
+          onChange={setDebut}
         />
       )}
       <SelectField
         label={text.fin}
         value={finShown}
-        disabled={busy}
         options={finOptions}
-        onChange={(event) => {
-          const value = event.target.value as FinChoice;
-          apply({ fin: value === "inherit" ? null : value });
-        }}
+        onChange={(event) => setFin(event.target.value as FinChoice)}
       />
       {chapters && (
         <CheckboxField
           label={text.annoncer}
           hint={text.annoncerHint}
-          checked={node.annoncer}
-          disabled={busy}
-          onChange={(event) => apply({ annoncer: event.target.checked })}
+          checked={annoncer}
+          onChange={(event) => setAnnoncer(event.target.checked)}
         />
       )}
-    </div>
+      <div className="fl-editor-panel__actions">
+        <Button
+          type="submit"
+          size="sm"
+          variant="primary"
+          aria-disabled={!changed || busy || undefined}
+        >
+          {text.applySettings}
+        </Button>
+      </div>
+    </form>
   );
 }

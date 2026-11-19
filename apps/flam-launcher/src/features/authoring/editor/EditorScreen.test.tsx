@@ -346,3 +346,49 @@ slowIt(
     expect(await screen.findByText(/1 fichier n'a pas été copié/)).toBeInTheDocument();
   },
 );
+
+slowIt("choisir une image garde la sélection sur l'histoire", async () => {
+  const view = makeView();
+  // Vue relue : l'histoire a maintenant son image.
+  const after = JSON.parse(JSON.stringify(view)) as EditorView;
+  const animaux =
+    after.report.root.kind === "menu" ? after.report.root.children[0] : null;
+  const chien = animaux?.kind === "menu" ? animaux.children[1] : null;
+  if (chien) chien.image = "Animaux/02 Le chien.png";
+  calls = [];
+  mockIPC((cmd, args) => {
+    calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> });
+    if (cmd === "authoring_editor_view") return view;
+    if (cmd === "plugin:dialog|open") return "C:\\Images\\chien.png";
+    if (cmd === "authoring_editor_set_image")
+      return {
+        label: "Image",
+        ids: ["Animaux/02 Le chien.png"],
+        skipped: [],
+        trashed: null,
+        view: after,
+      };
+    return null;
+  });
+  render(<EditorScreen />);
+  const tree = await screen.findByRole("tree");
+  fireEvent.click(within(tree).getByRole("treeitem", { name: /Le chien/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Choisir une image…" }));
+  await waitFor(() => expect(called("authoring_editor_set_image")).toHaveLength(1));
+  expect(await screen.findByText("Fait : Image.")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 2, name: "Le chien" })).toBeInTheDocument();
+});
+
+slowIt("les réglages du dossier ne s'écrivent qu'avec « Appliquer »", async () => {
+  const tree = await open();
+  fireEvent.click(within(tree).getByRole("treeitem", { name: /Animaux/ }));
+  fireEvent.click(await screen.findByLabelText(/Livre à chapitres/));
+  fireEvent.click(screen.getByLabelText(/Annoncer le titre/));
+  expect(called("authoring_editor_folder_settings")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Appliquer les réglages" }));
+  await waitFor(() => expect(called("authoring_editor_folder_settings")).toHaveLength(1));
+  expect(called("authoring_editor_folder_settings")[0]?.args).toEqual({
+    menu: "Animaux",
+    patch: { mode: "chapitres", annoncer: true },
+  });
+});

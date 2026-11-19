@@ -1395,6 +1395,8 @@ export const fr = {
     alreadyOpen:
       "Ce dossier est déjà ouvert dans un éditeur : sa fenêtre est passée au premier plan.",
     openFailed: "L'éditeur n'a pas pu s'ouvrir. Vérifiez le dossier, puis réessayez.",
+    closing:
+      "L'éditeur de ce dossier vient d'être fermé et termine une opération : réessayez dans un instant.",
     loading: "Lecture du dossier…",
     loadFailed: "Le dossier n'a pas pu être lu.",
     retry: "Réessayer",
@@ -1433,7 +1435,7 @@ export const fr = {
     },
     tree: {
       label: "Contenu de l'histoire",
-      help: "Flèches pour parcourir, Alt+Flèche haut ou bas pour réordonner, Suppr pour mettre à la corbeille.",
+      help: "Flèches pour parcourir, Alt+Flèche haut ou bas pour réordonner, F2 pour renommer, Suppr pour mettre à la corbeille.",
       addFiles: "Ajouter des fichiers",
       newMenu: "Nouveau menu",
       emptyTrash: "Vider la corbeille de l'histoire",
@@ -1499,7 +1501,7 @@ export const fr = {
       delete: "Mettre à la corbeille",
       deleteConfirmTitle: (title: string) => `Mettre « ${title} » à la corbeille ?`,
       deleteConfirm:
-        "L'élément est rangé dans la corbeille de l'histoire (dossier .flam) : « Annuler » le remet en place.",
+        "L'élément est rangé dans la corbeille de l'histoire : « Annuler » le remet en place.",
       cancel: "Annuler",
       settings: "Réglages du dossier",
       mode: "Organisation",
@@ -1522,6 +1524,7 @@ export const fr = {
       newMenuName: "Nom du nouveau menu",
       newMenuDefault: "Nouveau menu",
       create: "Créer",
+      applySettings: "Appliquer les réglages",
       problems: "Points à vérifier",
     },
     trash: {

@@ -59,6 +59,37 @@ fn une_seule_fenetre_par_dossier() {
 }
 
 #[test]
+fn fermee_pendant_une_operation_le_dossier_ne_se_rouvre_qu_a_sa_fin() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = EditorState::default();
+    let label = new_label(&state, dir.path());
+    // Opération en cours : la session est encore tenue.
+    let running = state.get(&label).unwrap();
+    state.remove(&label);
+    assert_eq!(state.register(editor(dir.path())), Registered::Closing);
+    drop(running);
+    assert!(matches!(
+        state.register(editor(dir.path())),
+        Registered::New(_)
+    ));
+}
+
+#[test]
+fn ouvrir_un_dossier_n_attend_pas_l_operation_d_un_autre() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let state = EditorState::default();
+    let label = new_label(&state, a.path());
+    let session = state.get(&label).unwrap();
+    let _busy = lock(&session);
+    // Le verrou de la session A est tenu : enregistrer B ne doit pas l'attendre.
+    assert!(matches!(
+        state.register(editor(b.path())),
+        Registered::New(_)
+    ));
+}
+
+#[test]
 fn une_fenetre_sans_editeur_est_refusee() {
     let state = EditorState::default();
     let err = run_op(&state, "main", Op::Undo).unwrap_err();
