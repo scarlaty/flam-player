@@ -77,6 +77,7 @@ export function EditorScreen() {
     window.clearTimeout(statusTimer.current);
     statusTimer.current = window.setTimeout(() => setStatus(message), 60);
   }, []);
+  useEffect(() => () => window.clearTimeout(statusTimer.current), []);
   const [error, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [menuName, setMenuName] = useState("");
@@ -183,13 +184,16 @@ export function EditorScreen() {
 
   const root = view.report.root;
 
-  function shift(id: string, delta: -1 | 1) {
+  /** Monte ou descend `id` ; depuis l'arbre (Alt+Flèche), le focus revient à sa ligne. */
+  function shift(id: string, delta: -1 | 1, fromTree = false) {
     if (!view) return;
     const parent = parentOf(root, id);
     const order = parent ? shiftedOrder(parent, id, delta) : null;
     if (!parent || !order) return;
     setSelectedId(id);
-    void run(() => reorder(parent.id, order)).then(() => setRefocus((n) => n + 1));
+    void run(() => reorder(parent.id, order)).then(() => {
+      if (fromTree) setRefocus((n) => n + 1);
+    });
   }
 
   /** Choisit `id` en dépliant ses menus : la ligne reste visible et atteignable au Tab. */
@@ -342,7 +346,7 @@ export function EditorScreen() {
                   return next;
                 });
               }}
-              onShift={shift}
+              onShift={(id, delta) => shift(id, delta, true)}
               onDelete={askDelete}
               onRename={(id) => {
                 setSelectedId(id);
