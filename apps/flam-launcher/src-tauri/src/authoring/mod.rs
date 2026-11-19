@@ -13,6 +13,8 @@
 //! sont pas encore appelées). Conversion, graphe, opérations et front viennent dans les lots
 //! suivants (§ 11.2).
 
+pub mod images;
 pub mod root;
 pub mod settings;
+pub mod title_card;
 pub mod tree;
