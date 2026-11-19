@@ -172,7 +172,7 @@ fn dossier_redevenu_inscriptible_l_uuid_y_est_ecrit_et_oublie_du_launcher() {
     let folder = dir.path().join("Histoire");
     fs::create_dir_all(&folder).unwrap();
     let registry = Registry::new(&dir.path().join("config"));
-    registry.remember(&folder, UUID, 2).unwrap();
+    registry.remember(&folder, UUID, 2, None).unwrap();
     let identity = inspect(
         &folder,
         &story(&folder),
@@ -298,7 +298,7 @@ fn registre_borne_et_relu() {
     let registry = Registry::new(dir.path());
     for n in 0..(MAX_REMEMBERED + 5) {
         registry
-            .remember(&dir.path().join(format!("d{n}")), UUID, 1)
+            .remember(&dir.path().join(format!("d{n}")), UUID, 1, None)
             .unwrap();
     }
     let all = registry.load();
@@ -378,4 +378,39 @@ fn dossier_copie_non_inscriptible_nouvelle_histoire_puis_actualisation() {
     assert_eq!(identity.conflict, None);
     let next = decide(&identity, None).unwrap();
     assert_eq!((next.uuid.as_str(), next.version), (fresh.uuid.as_str(), 2));
+}
+
+#[test]
+fn entree_perimee_du_launcher_le_fichier_l_emporte() {
+    // Le launcher a retenu U2 pour ce chemin quand le fichier portait UUID (dossier non
+    // inscriptible) ; au même chemin, le fichier porte maintenant un autre uuid (autre clé USB
+    // sous la même lettre, ou uuid écrit à la main) : il l'emporte.
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Histoire");
+    fs::create_dir_all(&folder).unwrap();
+    let other = "11111111-2222-4333-8444-555555555555";
+    fs::write(
+        folder.join(settings::STORY_FILE),
+        format!(r#"{{"uuid": "{other}", "version": 4}}"#),
+    )
+    .unwrap();
+    let registry = Registry::new(&dir.path().join("config"));
+    let u2 = "22222222-3333-4444-8555-666666666666";
+    registry.remember(&folder, u2, 3, Some(UUID)).unwrap();
+    let identity = inspect(
+        &folder,
+        &story(&folder),
+        registry.find(&folder).as_ref(),
+        &[],
+    );
+    assert_eq!(identity.uuid.as_deref(), Some(other));
+    assert!(!identity.remembered);
+    let decision = decide(&identity, None).unwrap();
+    assert_eq!((decision.uuid.as_str(), decision.version), (other, 5));
+    // Écrit dans le fichier : l'entrée périmée est oubliée.
+    assert_eq!(
+        commit(&folder, &decision, &registry).unwrap(),
+        SavedIn::Folder
+    );
+    assert!(registry.find(&folder).is_none());
 }

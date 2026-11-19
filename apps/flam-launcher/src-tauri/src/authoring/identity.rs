@@ -47,6 +47,11 @@ pub struct Remembered {
     pub path: String,
     pub uuid: String,
     pub version: u32,
+    /// Uuid lu dans `_histoire.json` quand l'entrée a été posée (`None` : aucun). L'entrée ne
+    /// vaut que si le fichier porte toujours cet uuid : sinon c'est un autre dossier au même
+    /// chemin (lettre de lecteur réutilisée, dossier recréé) ou un uuid écrit à la main depuis.
+    #[serde(default)]
+    pub file_uuid: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -115,7 +120,13 @@ impl Registry {
     }
 
     /// Retient `uuid` et `version` pour le dossier `base` (remplace l'entrée précédente).
-    pub fn remember(&self, base: &Path, uuid: &str, version: u32) -> AppResult<()> {
+    pub fn remember(
+        &self,
+        base: &Path,
+        uuid: &str,
+        version: u32,
+        file_uuid: Option<&str>,
+    ) -> AppResult<()> {
         let key = path_key(base);
         let mut folders = self.load();
         folders.retain(|r| path_key(Path::new(&r.path)) != key);
@@ -123,6 +134,7 @@ impl Registry {
             path: base.to_string_lossy().into_owned(),
             uuid: uuid.to_string(),
             version,
+            file_uuid: file_uuid.map(str::to_string),
         });
         self.save(folders)
     }
@@ -207,11 +219,11 @@ fn known(
     remembered: Option<&Remembered>,
 ) -> (Option<String>, Option<u32>, bool) {
     let file_uuid = story.uuid.as_deref().filter(|u| is_usable_uuid(u));
-    // L'entrée de la configuration est toujours plus récente que l'uuid du fichier : `commit`
-    // ne la pose que s'il n'a pas pu écrire le fichier, et l'oublie dès qu'il y parvient (dossier
-    // copié puis « Nouvelle histoire » sur un dossier non inscriptible : le fichier garde l'uuid
-    // de l'original, la configuration celui de la nouvelle histoire).
-    if let Some(r) = remembered {
+    // L'entrée de la configuration est plus récente que l'uuid du fichier qu'elle a vu
+    // (`commit` ne la pose que s'il n'a pas pu écrire le fichier, et l'oublie dès qu'il y
+    // parvient : dossier copié puis « Nouvelle histoire » sur un dossier non inscriptible). Elle
+    // ne vaut que si le fichier porte toujours cet uuid ; sinon le fichier l'emporte.
+    if let Some(r) = remembered.filter(|r| r.file_uuid.as_deref() == file_uuid) {
         let version = match (file_uuid, story.version) {
             (Some(uuid), Some(v)) if uuid == r.uuid => r.version.max(v),
             _ => r.version,
@@ -329,7 +341,11 @@ pub fn commit(base: &Path, decision: &Decision, registry: &Registry) -> AppResul
                 "uuid de l'histoire gardé par le launcher (dossier non inscriptible) : {}",
                 err.kind()
             );
-            registry.remember(base, &decision.uuid, decision.version)?;
+            let file_uuid = settings::load_story(base)
+                .settings
+                .uuid
+                .filter(|u| is_usable_uuid(u));
+            registry.remember(base, &decision.uuid, decision.version, file_uuid.as_deref())?;
             Ok(SavedIn::Launcher)
         }
     }
