@@ -139,21 +139,18 @@ impl Nodes {
     }
 }
 
-/// Rang d'inventaire posé par une scène de chapitre du livre racine.
-fn item_number(nodes: &Nodes, stage: &str) -> Option<u64> {
-    let items = &nodes.stage(stage)["items"];
-    if items.is_null() {
-        return None;
-    }
-    assert_eq!(items.as_array().unwrap().len(), 1);
-    let op = &items[0];
-    assert_eq!(op["type"], 2, "affectation");
-    assert_eq!(op["item"], CHAPTER_ITEM);
-    op["number"].as_u64()
+/// Option du premier niveau d'un livre racine : retour par défaut du moteur (sortie).
+fn assert_exit(nodes: &Nodes, option: &str) {
+    assert!(nodes.raw(option, "home").is_null(), "{option}");
+    assert_eq!(nodes.stage(option)["control"]["home"], false, "{option}");
 }
 
-fn resume_home() -> Value {
-    json!({ "action": RESUME_ACTION, "indexItem": CHAPTER_ITEM })
+/// Graphe sans inventaire ni objet posé par une scène.
+fn assert_no_inventory(nodes: &Nodes) {
+    assert!(nodes.0.get("inventory").is_none());
+    for (sid, st) in nodes.0["stages"].as_object().unwrap() {
+        assert!(st.get("items").is_none(), "{sid}");
+    }
 }
 
 // --- recueil -------------------------------------------------------------------------------------
@@ -265,17 +262,10 @@ fn livre_simple_debut_chapitre_fin_menu() {
             nodes.stage(ch)["control"],
             json!({"ok": true, "home": true, "autoplay": true})
         );
-        // Rang retenu par l'inventaire, pour la reprise (Q2).
-        assert_eq!(item_number(&nodes, ch), Some(i as u64));
-        // Retour depuis le menu des chapitres : le chapitre quitté.
-        assert_eq!(nodes.raw(opt, "home"), &resume_home());
-        assert_eq!(nodes.stage(opt)["control"]["home"], true);
+        // Retour depuis le menu des chapitres : sortie de l'histoire (menu Start).
+        assert_exit(&nodes, opt);
     }
-    assert_eq!(nodes.action(RESUME_ACTION), [e1, e2, e3]);
-    assert_eq!(
-        nodes.0["inventory"],
-        json!([{ "name": "Chapitre", "initialNumber": 0, "maxNumber": 3, "display": 2 }])
-    );
+    assert_no_inventory(&nodes);
     // Entrée + 3 options + 3 chapitres, rien d'autre.
     assert_eq!(nodes.0["stages"].as_object().unwrap().len(), 7);
     let notes = json_of(&files, "notes.json");
@@ -294,6 +284,10 @@ fn livre_debut_menu_fin_d_histoire() {
     let nodes = Nodes::of(&files);
     assert_eq!(nodes.start(), (ROOT_MENU.to_string(), 0));
     let o = nodes.action(ROOT_MENU);
+    // Retour sur le menu d'ouverture : sortie, pas de chapitre lancé.
+    for opt in &o {
+        assert_exit(&nodes, opt);
+    }
     let (e1, e2) = (nodes.played_by(&o[0]), nodes.played_by(&o[1]));
     assert_eq!(nodes.next(&e1), e2);
     // Fin du livre : fin d'histoire.
@@ -340,11 +334,7 @@ fn livre_en_parties_lecture_en_profondeur() {
     );
     let last = order.last().unwrap();
     assert_eq!(nodes.target(last, "ok"), (ROOT_MENU.to_string(), 0));
-    // Reprise : les chapitres dans l'ordre de lecture, rang dans l'inventaire.
-    assert_eq!(nodes.action(RESUME_ACTION), order);
-    for (i, ch) in order.iter().enumerate() {
-        assert_eq!(item_number(&nodes, ch), Some(i as u64), "{}", title(ch));
-    }
+    assert_no_inventory(&nodes);
 
     // Menu des chapitres : un niveau par partie.
     let r = nodes.action(ROOT_MENU);
@@ -353,7 +343,7 @@ fn livre_en_parties_lecture_en_profondeur() {
         ["P", "X", "Y"]
     );
     for o in &r {
-        assert_eq!(nodes.raw(o, "home"), &resume_home());
+        assert_exit(&nodes, o);
     }
     let (x, xi) = nodes.target(&r[1], "ok");
     assert_eq!(xi, 0);
@@ -456,10 +446,7 @@ fn livre_dans_un_recueil_debut_chapitre() {
     for o in nodes.action(&pm) {
         assert_eq!(nodes.target(&o, "home"), (bm.clone(), 1));
     }
-    // Pas d'inventaire ni de reprise : réservés au livre racine.
-    assert!(nodes.0.get("inventory").is_none());
-    assert!(nodes.0["actions"].get(RESUME_ACTION).is_none());
-    assert!(item_number(&nodes, &c1).is_none());
+    assert_no_inventory(&nodes);
     // Image de l'option du livre : son premier chapitre.
     assert_eq!(nodes.stage(&r[1])["image"], "e002.png");
 }
@@ -507,7 +494,6 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
         json!({"ok": true, "home": true, "autoplay": true})
     );
     assert_eq!(nodes.target(&n1, "home"), (ROOT_MENU.to_string(), 0));
-    assert_eq!(item_number(&nodes, &n1), Some(0));
     let e1 = nodes.next(&n1);
     assert_eq!(nodes.stage(&e1)["audio"], "e001.mp3");
     // Chapitre 2 : pas de titre lu, joué directement ; chapitre 3 : annoncé.
@@ -517,8 +503,6 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     assert_eq!(nodes.stage(&n3)["audio"], "t003.mp3");
     let e3 = nodes.next(&n3);
     assert_eq!(nodes.stage(&e3)["audio"], "e003.mp3");
-    // La reprise va au chapitre, sans annonce.
-    assert_eq!(nodes.action(RESUME_ACTION), [e1, e2, e3]);
     // Le titre lu sert à l'option et à l'annonce : une seule copie dans l'archive.
     assert_eq!(nodes.stage(&o[0])["audio"], "t001.mp3");
     let audios: Vec<&String> = files.keys().filter(|k| k.starts_with("audios/")).collect();
@@ -580,9 +564,11 @@ fn livre_d_un_seul_chapitre() {
         let nodes = Nodes::of(&files);
         let (p1, _) = nodes.start();
         let e1 = nodes.single(&p1);
-        // Menu et reprise à une entrée : le moteur joue la scène directement.
-        assert_eq!(nodes.action(ROOT_MENU).len(), 1);
-        assert_eq!(nodes.action(RESUME_ACTION), std::slice::from_ref(&e1));
+        // Menu à une entrée : le moteur montre l'option seule (scène qui attend OK).
+        let o = nodes.action(ROOT_MENU);
+        assert_eq!(o.len(), 1);
+        assert_eq!(nodes.played_by(&o[0]), e1);
+        assert_exit(&nodes, &o[0]);
         match end {
             BookEnd::Menu => assert_eq!(nodes.target(&e1, "ok"), (ROOT_MENU.to_string(), 0)),
             BookEnd::End => assert!(nodes.raw(&e1, "ok").is_null()),
@@ -723,8 +709,7 @@ fn bornes_parametrees() {
     assert_eq!(summary.stages, 607);
     let nodes = Nodes::of(&read_zip(&fx.out()));
     assert_graph(&nodes.0);
-    assert_eq!(nodes.action(RESUME_ACTION).len(), 300);
-    assert_eq!(nodes.0["inventory"][0]["maxNumber"], 300);
+    assert_eq!(nodes.action(ROOT_MENU).len(), 6);
 
     // Chaque borne reçue est appliquée, avec son message.
     let tight = |f: &dyn Fn(&mut Limits)| {
@@ -813,8 +798,7 @@ fn nodes_lua(package: &telmi2flam::package::Package) -> String {
 }
 
 /// Livre racine en parties, annoncé, puis livre dans un recueil : convertis par le port Rust
-/// du convertisseur sans avertissement ; l'inventaire caché et la reprise sont repris tels
-/// quels dans `nodes.lua`.
+/// du convertisseur sans avertissement.
 #[test]
 fn livres_convertis_par_la_crate_telmi2flam_sans_avertissement() {
     let mut fx = Fixture::new();
@@ -835,8 +819,7 @@ fn livres_convertis_par_la_crate_telmi2flam_sans_avertissement() {
         package.warnings
     );
     let lua = nodes_lua(&package);
-    assert!(lua.contains("indexItem = 0"), "{lua}");
-    assert!(lua.contains("display = 2"), "{lua}");
+    assert!(!lua.contains("inventory = {"), "{lua}");
     if let Some(dir) = std::env::var_os("FLAM_DUMP_NODES_LUA") {
         fs::write(Path::new(&dir).join("livre_racine.lua"), &lua).unwrap();
     }

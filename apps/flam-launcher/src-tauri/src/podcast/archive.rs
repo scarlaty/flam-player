@@ -54,14 +54,8 @@
 //!   → action `qN` → `eN`. Sans titre lu, pas d'annonce ;
 //! - retour depuis une option d'une partie → niveau du dessus, focalisé sur la partie ;
 //!   depuis le premier niveau : livre placé dans un recueil → le recueil, focalisé sur le
-//!   livre ; **livre racine → le chapitre quitté** (Q2). Le graphe Telmi est statique : le
-//!   chapitre en cours est retenu par un objet d'inventaire caché ([`CHAPTER_ITEM`],
-//!   `display: 2`, donc pas d'entrée « Inventaire »), affecté à son rang (0, 1, …) par chaque
-//!   scène de chapitre et d'annonce (`items`), et le retour est `{action: "r0", indexItem: 0}`,
-//!   où `r0` liste les scènes des chapitres dans l'ordre de lecture. Le chapitre reprend **à
-//!   son début** : `story.lua` efface la position (`seekposition`) quand on quitte une scène
-//!   par `home` et quand on y entre par le graphe ; reprendre à l'endroit quitté demande une
-//!   évolution du moteur (gelé pour la parité) ;
+//!   livre ; **livre racine → retour par défaut du moteur** (menu Start, sortie de
+//!   l'histoire), comme depuis le menu racine d'un recueil, y compris avec `debut = menu` ;
 //! - un recueil dans un livre est refusé ([`ArchiveError::CollectionInBook`]) ; un
 //!   [`MenuEntry::Submenu`] en mode chapitres dans un livre est une partie (seul son
 //!   `annoncer` compte).
@@ -78,9 +72,8 @@
 //!   ([`Limits::PODCAST`] = constantes `MAX_*` pour [`write_archive`]).
 //! - **Graphe** : chaque transition mène à une action existante ; toute scène de lecture
 //!   (épisode, chapitre, annonce) a un `home` vers son option ; seules les options du menu
-//!   racine d'un recueil gardent le retour par défaut du moteur ; un chapitre n'a `ok: null`
-//!   que s'il est le dernier d'un livre `fin = fin` ; l'inventaire et `r0` n'existent que pour
-//!   un livre racine.
+//!   racine (recueil ou livre racine) gardent le retour par défaut du moteur ; un chapitre n'a
+//!   `ok: null` que s'il est le dernier d'un livre `fin = fin` ; pas d'inventaire.
 //! - L'audio est copié par blocs, jamais chargé entier en mémoire.
 
 use std::collections::HashSet;
@@ -590,17 +583,7 @@ struct Graph<'a> {
     options: usize,
     categories: usize,
     limits: Limits,
-    /// Livre à chapitres à la racine : nombre de chapitres. L'objet d'inventaire caché
-    /// [`CHAPTER_ITEM`] retient alors le rang du chapitre en cours (Q2).
-    chapter_item: Option<usize>,
 }
-
-/// Action du livre racine qui reprend le chapitre en cours : ses entrées sont les scènes des
-/// chapitres, dans l'ordre de lecture ; on y entre par `indexItem` = [`CHAPTER_ITEM`].
-const RESUME_ACTION: &str = "r0";
-/// Objet d'inventaire (caché, `display: 2`) qui retient le rang (0, 1, …) du chapitre en cours
-/// du livre racine.
-const CHAPTER_ITEM: usize = 0;
 
 /// Transition Telmi `{action, index}`.
 fn trans(action: &str, index: usize) -> Value {
@@ -638,7 +621,6 @@ enum Sub<'c> {
     /// Partie d'un livre : ses chapitres s'ajoutent à ceux du livre.
     Part {
         announce: bool,
-        root: bool,
         chapters: &'c mut Vec<Chapter>,
     },
 }
@@ -764,19 +746,14 @@ impl<'a> Graph<'a> {
             Sub::Book(settings) => {
                 self.book(head.entries, &sub, depth + 1, Some(parent), settings)?
             }
-            Sub::Part {
-                announce,
-                root,
-                chapters,
-            } => {
+            Sub::Part { announce, chapters } => {
                 let home = trans(parent.0, parent.1);
                 let image = self.chapter_menu(
                     head.entries,
                     &sub,
                     depth + 1,
-                    &home,
+                    Some(&home),
                     announce,
-                    root,
                     chapters,
                 )?;
                 (image, trans(&sub, 0))
@@ -935,22 +912,17 @@ impl<'a> Graph<'a> {
         parent: Option<(&str, usize)>,
         settings: ChapterSettings,
     ) -> Result<(String, Value), ArchiveError> {
-        let root = parent.is_none();
         // Retour depuis le premier niveau du menu des chapitres : le recueil qui contient le
-        // livre (focalisé sur lui) ; pour le livre racine, le chapitre quitté (Q2), retrouvé
-        // par l'objet d'inventaire qui retient son rang.
-        let home = match parent {
-            Some((pa, pi)) => trans(pa, pi),
-            None => json!({ "action": RESUME_ACTION, "indexItem": CHAPTER_ITEM }),
-        };
+        // livre (focalisé sur lui) ; pour le livre racine, retour par défaut du moteur (menu
+        // Start, sortie de l'histoire), comme depuis le menu racine d'un recueil.
+        let home = parent.map(|(pa, pi)| trans(pa, pi));
         let mut chapters = Vec::new();
         let image = self.chapter_menu(
             entries,
             action,
             depth,
-            &home,
+            home.as_ref(),
             settings.announce,
-            root,
             &mut chapters,
         )?;
         // Enchaînement en profondeur : les parties sont traversées sans arrêt.
@@ -973,21 +945,12 @@ impl<'a> Graph<'a> {
         if let Some(st) = self.stages.get_mut(&last.stage) {
             st["ok"] = end;
         }
-        if root {
-            let list = chapters
-                .iter()
-                .map(|c| json!({ "stage": c.stage }))
-                .collect();
-            self.actions
-                .insert(RESUME_ACTION.into(), Value::Array(list));
-            self.chapter_item = Some(chapters.len());
-        }
         Ok((image, start))
     }
 
     /// Un niveau du menu des chapitres (`action`, niveau `depth`) : une option par chapitre,
-    /// un sous-menu par partie. `home` = retour depuis ses options ; `announce` = réglage
-    /// `annoncer` hérité ; `root` = livre racine (objet d'inventaire du chapitre en cours).
+    /// un sous-menu par partie. `home` = retour depuis ses options (`None` : retour par défaut
+    /// du moteur) ; `announce` = réglage `annoncer` hérité.
     /// Les chapitres sont ajoutés à `chapters` dans l'ordre de lecture ; leur `ok` est posé par
     /// [`Graph::book`].
     #[allow(clippy::too_many_arguments)]
@@ -996,9 +959,8 @@ impl<'a> Graph<'a> {
         entries: &'a [MenuEntry],
         action: &str,
         depth: usize,
-        home: &Value,
+        home: Option<&Value>,
         announce: bool,
-        root: bool,
         chapters: &mut Vec<Chapter>,
     ) -> Result<String, ArchiveError> {
         self.check_menu(entries, depth)?;
@@ -1011,22 +973,15 @@ impl<'a> Graph<'a> {
             let (image, ok, text, spoken) = match entry {
                 MenuEntry::Episode(ep) => {
                     let (n, image, text, spoken) = self.episode(ep, "Chapitre")?;
-                    // Rang du chapitre dans le livre racine, retenu par l'inventaire.
-                    let items = root.then(
-                        || json!([{ "type": 2, "item": CHAPTER_ITEM, "number": chapters.len() }]),
-                    );
                     let stage = format!("e{n}");
                     let entry_action = format!("p{n}");
-                    let mut st = json!({
+                    let st = json!({
                         "image": image,
                         "audio": episode_file(n, "mp3"),
                         "ok": null, // posé par `book`
                         "home": trans(action, i),
                         "control": playing_control(),
                     });
-                    if let Some(items) = &items {
-                        st["items"] = items.clone();
-                    }
                     self.stages.insert(stage.clone(), st);
                     self.notes.insert(stage.clone(), json!({ "title": text }));
                     match spoken.as_ref().filter(|_| announce) {
@@ -1034,16 +989,13 @@ impl<'a> Graph<'a> {
                         Some(title) => {
                             let intro = format!("n{n}");
                             let then = format!("q{n}");
-                            let mut st = json!({
+                            let st = json!({
                                 "image": image,
                                 "audio": title,
                                 "ok": trans(&then, 0),
                                 "home": trans(action, i),
                                 "control": playing_control(),
                             });
-                            if let Some(items) = items {
-                                st["items"] = items;
-                            }
                             self.stages.insert(intro.clone(), st);
                             self.actions
                                 .insert(entry_action.clone(), json!([{ "stage": intro }]));
@@ -1076,7 +1028,6 @@ impl<'a> Graph<'a> {
                     depth,
                     Sub::Part {
                         announce,
-                        root,
                         chapters: &mut *chapters,
                     },
                 )?,
@@ -1101,7 +1052,6 @@ impl<'a> Graph<'a> {
                         depth,
                         Sub::Part {
                             announce: settings.announce,
-                            root,
                             chapters: &mut *chapters,
                         },
                     )?
@@ -1110,7 +1060,11 @@ impl<'a> Graph<'a> {
             if first_image.is_none() {
                 first_image = Some(image.clone());
             }
-            self.insert_option(&option, image, spoken, ok, home.clone(), true, text);
+            let (home, control_home) = match home {
+                Some(h) => (h.clone(), true),
+                None => (Value::Null, false),
+            };
+            self.insert_option(&option, image, spoken, ok, home, control_home, text);
             options.push(json!({ "stage": option }));
         }
         self.actions
@@ -1367,20 +1321,11 @@ fn write_zip(
             Ok(())
         }
     };
-    let mut nodes = json!({
+    let nodes = json!({
         "startAction": trans(START_ACTION, 0),
         "stages": Value::Object(graph.stages.clone()),
         "actions": Value::Object(graph.actions.clone()),
     });
-    if let Some(chapters) = graph.chapter_item {
-        // Objet caché (`display: 2`) : pas d'entrée « Inventaire » dans le menu Start.
-        nodes["inventory"] = json!([{
-            "name": "Chapitre",
-            "initialNumber": 0,
-            "maxNumber": chapters,
-            "display": 2,
-        }]);
-    }
     let jsons = [
         ("metadata.json", metadata_json(pack)),
         ("nodes.json", nodes),
