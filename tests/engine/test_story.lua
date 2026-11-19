@@ -555,6 +555,39 @@ boot(bookR2, true); menuPick()
 check("CHAP chapitre quitte devenu inconnu : reprise du noeud sauve", lastModule.name == "carousel"
       and state.chapter_left == nil, lastModule.name)
 
+-- id du chapitre quitte absent du pack mis a jour : reprise du noeud sauve
+leaveChapter2(bookR)
+back_callback()
+local bookR4 = bookNodes(true)
+bookR4.stages.e2 = nil
+boot(bookR4, true); menuPick()
+check("CHAP chapitre quitte supprime du pack : reprise du noeud sauve", lastModule.name == "carousel"
+      and state.chapter_left == nil, lastModule.name)
+
+-- livre dans un recueil : un episode ecoute ensuite (sans role) oublie le
+-- chapitre quitte ; Reprendre reprend l'episode, pas le chapitre
+local bookR3 = bookNodes(true)
+bookR3.stages.x = { image = "x.lif", audio = "x.mp3", ok = { action = "m0", index = 2 },
+                    home = { action = "m0", index = 2 }, ctrl = CTRLP }
+bookR3.stages.o3.ok = { action = "px" }
+bookR3.actions.px = { { stage = "x" } }
+leaveChapter2(bookR3)
+lastModule.args.choices[3].cb()
+check("CHAP episode sans role apres un chapitre quitte", lastModule.args.audio_path == "x.mp3"
+      and state.chapter_left == nil, state.chapter_left)
+state.visited_funs.x.seekposition = 5
+boot(bookR3, true); menuPick()   -- veille pendant l'episode, Reprendre
+check("CHAP Reprendre -> l'episode, pas le chapitre quitte", lastModule.args.audio_path == "x.mp3"
+      and seek("x") == 5, lastModule.args.audio_path)
+check("CHAP chapitre quitte garde sa position mais n'est plus repris", seek("e2") == 42)
+
+-- retour pendant une annonce (role "title") : rien n'est retenu
+boot(bookR); menuPick(); audioEnd(); audioEnd()
+state.visited_funs.n3.seekposition = 1
+back_callback()
+check("CHAP retour pendant l'annonce : position de l'annonce effacee", seek("n3") == nil, seek("n3"))
+check("CHAP retour pendant l'annonce : pas de chapitre quitte", state.chapter_left == nil, state.chapter_left)
+
 -- Non-regression : meme graphe SANS role = comportement historique
 leaveChapter2(bookN)
 check("CHAP sans role : position effacee par Home", seek("e2") == nil, seek("e2"))

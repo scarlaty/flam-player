@@ -507,7 +507,6 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     assert_eq!(nodes.stage(&e1)["audio"], "e001.mp3");
     // L'option mène au chapitre sans l'annonce (son titre lu vient d'être entendu).
     assert_eq!(nodes.played_by(&o[0]), e1);
-    assert_eq!(nodes.played_by(&o[2]), "e3");
     // Chapitre 2 : pas de titre lu, joué directement ; chapitre 3 : annoncé.
     let e2 = nodes.next(&e1);
     assert_eq!(nodes.stage(&e2)["audio"], "e002.mp3");
@@ -515,6 +514,7 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     assert_eq!(nodes.stage(&n3)["audio"], "t003.mp3");
     let e3 = nodes.next(&n3);
     assert_eq!(nodes.stage(&e3)["audio"], "e003.mp3");
+    assert_eq!(nodes.played_by(&o[2]), e3, "option 3 : sans l'annonce n3");
     // Le titre lu sert à l'option et à l'annonce : une seule copie dans l'archive.
     assert_eq!(nodes.stage(&o[0])["audio"], "t001.mp3");
     let audios: Vec<&String> = files.keys().filter(|k| k.starts_with("audios/")).collect();
