@@ -493,6 +493,25 @@ end
 local bookR, bookN = bookNodes(true), bookNodes(false)
 
 leaveChapter2(bookR)
+boot(bookN); menuPick()
+check("CHAP sans role : image de la scene", lastModule.args.image_background_path == "e1.lif",
+      lastModule.args.image_background_path)
+boot(bookR)
+local savedImg, realSet = nil, Global.progression.setProgression
+Global.progression.setProgression = function(p)
+    if p.chapterData then savedImg = p.chapterData.img end
+    return realSet(p)
+end
+menuPick()
+Global.progression.setProgression = realSet
+check("CHAP progression garde l'image du chapitre", savedImg == "e1.lif", savedImg)
+check("CHAP role chapter : ecran noir pendant le chapitre", lastModule.args.audio_path == "e1.mp3"
+      and lastModule.args.image_background_path == "empty.lif", lastModule.args.image_background_path)
+audioEnd(); audioEnd()
+check("CHAP role title : image pendant le titre lu", lastModule.args.audio_path == "t3.mp3"
+      and lastModule.args.image_background_path == "e3.lif", lastModule.args.image_background_path)
+
+leaveChapter2(bookR)
 check("CHAP Home -> menu des chapitres focalise sur C2", lastModule.name == "carousel" and lastModule.args.index == 2,
       lastModule.name)
 check("CHAP position du chapitre quitte gardee", seek("e2") == 42, seek("e2"))

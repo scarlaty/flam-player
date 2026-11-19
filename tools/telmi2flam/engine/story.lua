@@ -457,7 +457,9 @@ function enterStage(id, isResume)
     end
     Global.load_module("audio-player", "1_0_0").create({
         audio_path = st.audio,   -- nil : scene image seule (attend OK)
-        image_background_path = st.image or "empty.lif",
+        -- role "chapter" : ecran noir pendant le chapitre (l'image a accompagne
+        -- son titre lu) ; elle reste celle de la progression (Reprendre).
+        image_background_path = (role ~= "chapter" and st.image) or "empty.lif",
         image_path = "empty.lif",
         image_foreground_path = "empty.lif",
         song_name = "",
