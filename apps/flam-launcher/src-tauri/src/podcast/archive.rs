@@ -43,7 +43,12 @@
 //!
 //! - chapitre = scène `autoplay` `eN` dont `ok` mène au chapitre suivant, parties
 //!   traversées (action `pN` du suivant) ; `home` → son option dans le menu de sa partie,
-//!   focalisée ; valider une option → action `pN` du chapitre, puis la suite ;
+//!   focalisée ; valider une option → le chapitre (sans son annonce : le titre lu de
+//!   l'option vient d'être entendu), puis la suite ;
+//! - `role` (extension lue par `story.lua`, transmise par `telmi2flam`) : `"chapter"` sur
+//!   chaque chapitre (quitté par le retour, il garde sa position : « Reprendre l'histoire »
+//!   et son option le reprennent là), `"title"` sur les annonces et les options (titre lu
+//!   hors jauge) ; jamais dans un recueil, donc les podcasts sont inchangés ;
 //! - fin du dernier chapitre ([`BookEnd`]) : `menu` → premier niveau du menu des chapitres,
 //!   sur sa première option ; `fin` → `ok: null`, fin d'histoire ;
 //! - démarrage ([`ChapterStart`]) : `chapitre` → action `pN` du premier chapitre, `menu` →
@@ -51,7 +56,8 @@
 //!   du recueil qui contient le livre ;
 //! - annonce (`annoncer`, réglage du livre ou de la partie) : si le chapitre a un titre lu,
 //!   `pN` → scène `nN` (titre lu `tNNN.mp3` sur l'image du chapitre, `autoplay`, même `home`)
-//!   → action `qN` → `eN`. Sans titre lu, pas d'annonce ;
+//!   → action `qN` → `eN` ; l'option du chapitre mène à `qN`. Sans titre lu, pas
+//!   d'annonce ;
 //! - retour depuis une option d'une partie → niveau du dessus, focalisé sur la partie ;
 //!   depuis le premier niveau : livre placé dans un recueil → le recueil, focalisé sur le
 //!   livre ; **livre racine → retour par défaut du moteur** (menu Start, sortie de
@@ -590,6 +596,12 @@ fn trans(action: &str, index: usize) -> Value {
     json!({ "action": action, "index": index })
 }
 
+/// `role` d'une scène de livre (extension lue par `story.lua`, transmise par `telmi2flam`) :
+/// chapitre, repris à sa position après un retour (`home`).
+const ROLE_CHAPTER: &str = "chapter";
+/// `role` d'une scène de livre qui ne joue qu'un titre lu (annonce, option) : hors jauge.
+const ROLE_TITLE: &str = "title";
+
 /// Contrôles d'une scène d'épisode, de chapitre ou d'annonce.
 fn playing_control() -> Value {
     json!({ "ok": true, "home": true, "autoplay": true })
@@ -981,10 +993,13 @@ impl<'a> Graph<'a> {
                         "ok": null, // posé par `book`
                         "home": trans(action, i),
                         "control": playing_control(),
+                        "role": ROLE_CHAPTER,
                     });
                     self.stages.insert(stage.clone(), st);
                     self.notes.insert(stage.clone(), json!({ "title": text }));
-                    match spoken.as_ref().filter(|_| announce) {
+                    // Action qui joue le chapitre sans annonce : celle de son option (le titre
+                    // lu vient d'y être entendu, et le chapitre quitté y reprend à sa position).
+                    let direct = match spoken.as_ref().filter(|_| announce) {
                         // Annonce : titre lu sur l'image du chapitre, puis le chapitre.
                         Some(title) => {
                             let intro = format!("n{n}");
@@ -995,22 +1010,26 @@ impl<'a> Graph<'a> {
                                 "ok": trans(&then, 0),
                                 "home": trans(action, i),
                                 "control": playing_control(),
+                                "role": ROLE_TITLE,
                             });
                             self.stages.insert(intro.clone(), st);
                             self.actions
                                 .insert(entry_action.clone(), json!([{ "stage": intro }]));
-                            self.actions.insert(then, json!([{ "stage": stage }]));
+                            self.actions
+                                .insert(then.clone(), json!([{ "stage": stage }]));
+                            then
                         }
                         None => {
                             self.actions
                                 .insert(entry_action.clone(), json!([{ "stage": stage }]));
+                            entry_action.clone()
                         }
-                    }
+                    };
                     chapters.push(Chapter {
                         stage,
-                        entry: entry_action.clone(),
+                        entry: entry_action,
                     });
-                    (image, trans(&entry_action, 0), text, spoken)
+                    (image, trans(&direct, 0), text, spoken)
                 }
                 MenuEntry::Category {
                     name,
@@ -1065,6 +1084,11 @@ impl<'a> Graph<'a> {
                 None => (Value::Null, false),
             };
             self.insert_option(&option, image, spoken, ok, home, control_home, text);
+            // Option jouée comme scène (menu d'une seule option) : son titre lu n'est ni un
+            // chapitre de la jauge ni la position de reprise.
+            if let Some(st) = self.stages.get_mut(&option) {
+                st["role"] = json!(ROLE_TITLE);
+            }
             options.push(json!({ "stage": option }));
         }
         self.actions

@@ -108,7 +108,8 @@ RUNTIME_UPDATES = {
     # #620 : le carrousel ne retient plus que les sources des vignettes affichees
     "script/carousel_1_0_0.lua":
         (16961, "839f3f0fa4c56d8c94696caffd3fcfa551575f55ad67007d546f54082e6bd8c8"),
-    # #659 : "Quitter" du menu retour Telmi ramene au menu Start sans rien effacer
+    # #659 : "Quitter" du menu retour Telmi ramene au menu Start sans rien effacer ; puis
+    # livres a chapitres (`role`, reprise du chapitre quitte) : meme etat au gel
     "script/story.lua":
         (23263, "af101eb44ed50a0212212d36ce68038a0b9c0ea827b4d0a9bcb9775db8e48826"),
 }

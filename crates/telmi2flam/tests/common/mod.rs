@@ -24,6 +24,8 @@ pub const UPDATED: &[(&str, &[u8])] = &[
         include_bytes!("../data/runtime_frozen/script/carousel_1_0_0.lua"),
     ),
     // #659 : « Quitter » du menu retour Telmi ramène au menu Start sans rien effacer.
+    // Puis livres à chapitres (`role`, reprise du chapitre quitté à sa position) : même
+    // contenu au gel, le candidat porte toujours `engine/story.lua` du dépôt.
     (
         "script/story.lua",
         include_bytes!("../data/runtime_frozen/script/story.lua"),

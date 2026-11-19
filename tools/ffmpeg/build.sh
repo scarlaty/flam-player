@@ -76,7 +76,7 @@ conf=(
   --disable-swscale --enable-ffmpeg --enable-ffprobe
   --enable-libmp3lame --enable-encoder=libmp3lame,pcm_s16le
   --enable-decoder=$decoders --enable-demuxer=$demuxers --enable-parser=$parsers
-  --enable-muxer=mp3,wav,null --enable-filter=$filters
+  --enable-muxer=mp3,wav,null,image2pipe --enable-filter=$filters
   --enable-indev=lavfi --enable-protocol=file
   --extra-cflags="-I$prefix/include" --extra-ldflags="-L$prefix/lib -static -static-libgcc"
 )
