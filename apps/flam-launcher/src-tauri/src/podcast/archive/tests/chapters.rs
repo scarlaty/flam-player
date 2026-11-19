@@ -864,6 +864,53 @@ fn livres_convertis_par_la_crate_telmi2flam_sans_avertissement() {
     }
 }
 
+/// Générateur du paquet d'essai sur la Flam (reprise d'un chapitre à sa position) : livre de
+/// 2 parties × 3 chapitres, annoncés. `FLAM_ESSAI_DIR` contient `c1..c6.mp3/png` (chapitres),
+/// `t1..t6.mp3` (titres lus), `p1/p2.mp3` (parties), `titre.mp3`, `couverture.png` ; l'archive
+/// Telmi est écrite à côté (`livre-essai.zip`), à convertir avec `telmi2flam`.
+/// `cargo test paquet_d_essai_flam -- --ignored`.
+#[test]
+#[ignore = "générateur manuel (FLAM_ESSAI_DIR)"]
+fn paquet_d_essai_flam() {
+    let dir = PathBuf::from(std::env::var_os("FLAM_ESSAI_DIR").expect("FLAM_ESSAI_DIR"));
+    let chapter = |n: usize| {
+        MenuEntry::Episode(PackEpisode {
+            title: format!("Chapitre {n}"),
+            audio: dir.join(format!("c{n}.mp3")),
+            image: Some(dir.join(format!("c{n}.png"))),
+            title_audio: Some(dir.join(format!("t{n}.mp3"))),
+        })
+    };
+    let part = |p: usize| MenuEntry::Category {
+        name: format!("Partie {p}"),
+        entries: (3 * p - 2..=3 * p).map(chapter).collect(),
+        audio: Some(dir.join(format!("p{p}.mp3"))),
+        image: None,
+    };
+    let menu = vec![part(1), part(2)];
+    let p = Pack {
+        uuid: Uuid::parse_str("5d0c7a1e-8b2f-4c3d-9e4f-a1b2c3d4e5f6").unwrap(),
+        metadata: PackMetadata {
+            title: "Essai chapitres".into(),
+            subtitle: "Reprise à la position".into(),
+            age: 3,
+            description: default_description(&menu),
+        },
+        cover: Some(dir.join("couverture.png")),
+        menu,
+        title_audio: Some(dir.join("titre.mp3")),
+    };
+    let out = dir.parent().unwrap().join("livre-essai.zip");
+    write_archive_with(
+        &p,
+        &options(chapters(ChapterStart::Chapter, BookEnd::Menu, true)),
+        &out,
+        &never,
+    )
+    .unwrap();
+    assert_graph(&json_of(&read_zip(&out), "nodes.json"));
+}
+
 /// Comme `binaire_convertit_et_valide_l_archive`, pour un livre à chapitres en parties :
 /// binaire `telmi2flam.exe` livré, puis `validate.py`. Ignoré sans eux (voir ce test).
 #[test]
