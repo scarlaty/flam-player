@@ -23,6 +23,12 @@ export const EDITOR_LABEL_PREFIX = "editor-";
 /** Événement : création lancée depuis un éditeur (tâche à suivre, `TASK_EVENT`). */
 export const EDITOR_TASK_EVENT = "authoring:task";
 
+/** Événement : le dossier a changé ailleurs (lot 9, `editor_watch::EVENT_CHANGED`). */
+export const FOLDER_CHANGED_EVENT = "authoring:folder-changed";
+
+/** Événement : le dossier a disparu (lot 9, `editor_watch::EVENT_MISSING`). */
+export const FOLDER_MISSING_EVENT = "authoring:folder-missing";
+
 /** Fin d'une histoire ou d'un livre (miroir de `Fin`). */
 export type FolderFin = "menu" | "suivante" | "fin";
 
@@ -289,4 +295,33 @@ export async function onEditorTask(
   } catch {
     return () => {};
   }
+}
+
+/**
+ * Écoute un événement de la surveillance du dossier sur **cette** fenêtre : le backend l'envoie
+ * à la seule fenêtre de l'éditeur concernée (un écouteur global le recevrait aussi d'ailleurs).
+ */
+function onWindowEvent(event: string, handler: () => void): Promise<() => void> {
+  try {
+    return getCurrentWindow()
+      .listen(event, () => handler())
+      .catch(() => () => {});
+  } catch {
+    return Promise.resolve(() => {});
+  }
+}
+
+/** Le dossier de cet éditeur a changé ailleurs (Explorateur, autre programme). */
+export function onFolderChanged(handler: () => void): Promise<() => void> {
+  return onWindowEvent(FOLDER_CHANGED_EVENT, handler);
+}
+
+/** Le dossier de cet éditeur a disparu (supprimé, renommé, clé USB retirée). */
+export function onFolderMissing(handler: () => void): Promise<() => void> {
+  return onWindowEvent(FOLDER_MISSING_EVENT, handler);
+}
+
+/** Ferme la fenêtre de l'éditeur (son éditeur est oublié par le backend). */
+export function closeEditorWindow(): Promise<void> {
+  return getCurrentWindow().close();
 }
