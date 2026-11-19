@@ -315,7 +315,12 @@ export function EditorScreen() {
       <div className="fl-editor__status" role="status" aria-live="polite">
         {status}
       </div>
-      {missing && <FolderMissingBanner onError={setError} />}
+      {missing && (
+        <FolderMissingBanner
+          uuid={view.report.installed_version !== null ? view.report.uuid : null}
+          onError={setError}
+        />
+      )}
       {error && (
         <Banner tone="danger" role="alert" className="fl-editor__error">
           <p>{error}</p>

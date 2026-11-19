@@ -99,16 +99,26 @@ let current: EditorView;
 let calls: string[] = [];
 /** Fenêtre rendue par `authoring_editor_open`. */
 let openedIn = "editor-2";
+/** Réponse de `authoring_relocate` (sinon erreur levée). */
+let relocated: unknown = "D:\\Histoires\\Loup (résolu)";
+let openedPath: string | null = null;
 
 beforeEach(() => {
   clearThumbnailCache();
   current = makeView([chat, chien]);
   calls = [];
   openedIn = "editor-2";
+  relocated = "D:\\Histoires\\Loup (résolu)";
+  openedPath = null;
   mockWindows("editor-1");
   mockIPC(
-    (cmd) => {
+    (cmd, args) => {
       calls.push(cmd);
+      if (cmd === "authoring_relocate") {
+        if (typeof relocated !== "string") throw relocated;
+        return relocated;
+      }
+      if (cmd === "authoring_editor_open") openedPath = (args as { path: string }).path;
       if (cmd === "authoring_editor_view") return current;
       if (cmd === "plugin:dialog|open") return "D:\\Histoires\\Loup";
       if (cmd === "authoring_editor_open")
@@ -178,3 +188,52 @@ slowIt("le même dossier revenu entre-temps : la fenêtre reste ouverte", async 
   });
   expect(calls).not.toContain("plugin:window|close");
 });
+
+const installedView = (): EditorView => {
+  const base = makeView([chat, chien]);
+  return { ...base, report: { ...base.report, uuid: "u-1", installed_version: 2 } };
+};
+
+slowIt(
+  "histoire de Mes histoires : le dossier choisi y est retenu avant l'ouverture",
+  async () => {
+    current = installedView();
+    await openOn("Le chat");
+    await act(() => emit(FOLDER_MISSING_EVENT));
+    fireEvent.click(await screen.findByRole("button", { name: text.watch.choose }));
+    await waitFor(() => expect(calls).toContain("plugin:window|close"));
+    expect(calls.indexOf("authoring_relocate")).toBeLessThan(
+      calls.indexOf("authoring_editor_open"),
+    );
+    expect(openedPath).toBe("D:\\Histoires\\Loup (résolu)");
+  },
+);
+
+slowIt(
+  "dossier choisi qui n'est pas celui de l'histoire : message, rien d'ouvert",
+  async () => {
+    current = installedView();
+    relocated = { kind: "authoring", code: "uuid_mismatch", message: "x" };
+    await openOn("Le chat");
+    await act(() => emit(FOLDER_MISSING_EVENT));
+    fireEvent.click(await screen.findByRole("button", { name: text.watch.choose }));
+    expect(
+      await screen.findByText(t.authoringFolder.errors.uuidMismatch),
+    ).toBeInTheDocument();
+    expect(calls).not.toContain("authoring_editor_open");
+    expect(calls).not.toContain("plugin:window|close");
+  },
+);
+
+slowIt(
+  "histoire installée autrement : rien à retenir, le dossier choisi s'ouvre",
+  async () => {
+    current = installedView();
+    relocated = { kind: "authoring", code: "not_from_folder", message: "x" };
+    await openOn("Le chat");
+    await act(() => emit(FOLDER_MISSING_EVENT));
+    fireEvent.click(await screen.findByRole("button", { name: text.watch.choose }));
+    await waitFor(() => expect(calls).toContain("plugin:window|close"));
+    expect(openedPath).toBe("D:\\Histoires\\Loup");
+  },
+);
