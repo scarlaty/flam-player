@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect } from "vitest";
 import type { EditorNode, EditorUpdate, EditorView, Stamp } from "../../../api/editor";
@@ -244,6 +244,10 @@ slowIt("Ctrl+Z annule hors des champs, pas dans un champ de saisie", async () =>
       },
     }),
   );
+  // Effets passifs (écouteur de Ctrl+Z) installés avant de taper, même sous charge.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
   const field = screen.getByLabelText("Titre de l'histoire");
   fireEvent.keyDown(field, { key: "z", ctrlKey: true });
   expect(called("authoring_editor_undo")).toHaveLength(0);

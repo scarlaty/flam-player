@@ -1348,6 +1348,7 @@ export const fr = {
       oneAudio: "Un seul fichier audio à la fois : rien n'a été copié.",
       busy: "Une opération est en cours : réessayez dans un instant.",
       dialog: "Fermez d'abord la fenêtre ouverte : rien n'a été copié.",
+      missing: "Le dossier de l'histoire est introuvable : rien n'a été fait.",
       gone: "Cet élément n'existe plus dans le dossier : rien n'a été fait.",
       invalid: "Un menu ne peut pas aller dans lui-même ni dans un de ses sous-menus.",
     },

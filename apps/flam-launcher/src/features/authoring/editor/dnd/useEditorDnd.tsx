@@ -43,9 +43,13 @@ export interface EditorDndOptions {
   view: EditorView | null;
   selectedId: string;
   collapsed: ReadonlySet<string>;
+  /** Opération en cours ou relecture du dossier à venir (vue peut-être périmée). */
   busy: boolean;
-  /** Un dialogue est ouvert : aucun dépôt ni déplacement. */
-  blocked: boolean;
+  /**
+   * Raison d'un refus durable (dialogue ouvert, dossier disparu) : aucun dépôt ni déplacement,
+   * ce message est affiché ; `null` sinon.
+   */
+  blocked: string | null;
   run: (
     action: () => Promise<EditorUpdate>,
     say?: (label: string) => string,
@@ -144,9 +148,9 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
 
   const dropFiles = useCallback(
     (paths: string[], point: Point) => {
-      if (blocked) {
-        // Dialogue ouvert : le dépôt natif ne doit pas le contourner.
-        setError(text.refuse.dialog);
+      if (blocked !== null) {
+        // Dialogue ouvert, dossier disparu : le dépôt natif ne doit pas passer outre.
+        setError(blocked);
         return;
       }
       const plan = planAt(paths, point);
@@ -197,7 +201,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
   useFileDrop(
     {
       onHover: (drag) => {
-        const plan = drag && !blocked ? planAt(drag.paths, drag.point) : null;
+        const plan = drag && blocked === null ? planAt(drag.paths, drag.point) : null;
         const next = plan
           ? { plan, key: JSON.stringify([plan.hint, hoverText(plan)]) }
           : null;
@@ -212,9 +216,13 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
   const onTreeDrop = useCallback(
     (id: string, title: string, plan: TreeMovePlan) => {
       if (!view) return;
-      if (busy && (plan.kind === "reorder" || plan.kind === "move")) {
-        // Une opération (Ctrl+Z…) a commencé pendant le glissement.
-        setError(text.refuse.busy);
+      if (
+        (busy || blocked !== null) &&
+        (plan.kind === "reorder" || plan.kind === "move")
+      ) {
+        // Une opération (Ctrl+Z…), une relecture ou la disparition du dossier est arrivée
+        // pendant le glissement.
+        setError(blocked ?? text.refuse.busy);
         refocusTree();
         return;
       }
@@ -253,7 +261,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
         }
       }
     },
-    [view, busy, run, select, refocusTree, announce, setError, text],
+    [view, busy, blocked, run, select, refocusTree, announce, setError, text],
   );
 
   const getTree = useCallback(
@@ -264,7 +272,7 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
     getTree,
     root: view?.report.root ?? EMPTY_ROOT,
     isOpen,
-    disabled: busy || blocked || view === null,
+    disabled: busy || blocked !== null || view === null,
     onStart: (id, title) => {
       setError(null);
       select(id);
@@ -293,9 +301,9 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
       hint,
       invalid,
       draggingId: drag?.id ?? null,
-      disabled: busy,
+      disabled: busy || blocked !== null,
     };
-  }, [drag, hover, treeDrag.onPointerDown, busy]);
+  }, [drag, hover, treeDrag.onPointerDown, busy, blocked]);
 
   const hintKind = hover?.plan.hint?.kind;
   const panelZone = hintKind === "image" || hintKind === "titleAudio" ? hintKind : null;

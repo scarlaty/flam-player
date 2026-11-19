@@ -118,7 +118,11 @@ export function EditorScreen() {
     setView(next);
     setSelectedId((id) => nodeForPath(next.report.root, id).id);
   }, []);
-  const { missing } = useFolderWatch({ busy, onView: onWatchedView, onNotice: announce });
+  const { missing, reading } = useFolderWatch({
+    busy,
+    onView: onWatchedView,
+    onNotice: announce,
+  });
   const missingRef = useRef(false);
   useEffect(() => {
     missingRef.current = missing;
@@ -197,8 +201,13 @@ export function EditorScreen() {
     view,
     selectedId: node?.id ?? "",
     collapsed,
-    busy,
-    blocked: ask !== null,
+    // Relecture à venir : la place visée pourrait venir d'une vue périmée (lot 9).
+    busy: busy || reading,
+    blocked: missing
+      ? t.authoringDnd.refuse.missing
+      : ask !== null
+        ? t.authoringDnd.refuse.dialog
+        : null,
     run,
     select: setSelectedId,
     refocusTree,

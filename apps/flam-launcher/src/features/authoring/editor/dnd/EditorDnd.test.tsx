@@ -1,7 +1,23 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { emit as emitEvent } from "@tauri-apps/api/event";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, vi } from "vitest";
-import type { EditorNode, EditorUpdate, EditorView, Stamp } from "../../../../api/editor";
+import {
+  FOLDER_CHANGED_EVENT,
+  FOLDER_MISSING_EVENT,
+  type EditorNode,
+  type EditorUpdate,
+  type EditorView,
+  type Stamp,
+} from "../../../../api/editor";
 import { slowIt, tolerateLoadInAsyncUtils } from "../../../../test/timeouts";
 import { EditorScreen } from "../EditorScreen";
 import { clearThumbnailCache } from "../Thumbnail";
@@ -127,28 +143,39 @@ const called = (cmd: string) => calls.filter((c) => c.cmd === cmd);
 /** Id rendu par une copie (un élément existant de la vue simulée). */
 const importedId = "Animaux/01 Le chat.mp3";
 
+/** Relecture du dossier suspendue (lot 9) : la vue n'est rendue qu'à `release()`. */
+let viewGate: Promise<void> | null = null;
+
 function backend(view: EditorView) {
   calls = [];
-  mockIPC((cmd, args) => {
-    calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> });
-    if (cmd === "authoring_editor_view") return view;
-    if (cmd.startsWith("authoring_editor_")) {
-      // Copie : le backend rend les éléments copiés (rien pour un format refusé).
-      const sources =
-        cmd === "authoring_editor_import"
-          ? ((args as { sources?: string[] }).sources ?? [])
-          : [];
-      const update: EditorUpdate = {
-        label: "Opération",
-        ids: sources.some((s) => s.endsWith(".mp3")) ? [importedId] : [],
-        skipped: [],
-        trashed: null,
-        view,
-      };
-      return update;
-    }
-    return null;
-  });
+  viewGate = null;
+  mockWindows("editor-1");
+  mockIPC(
+    async (cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> });
+      if (cmd === "authoring_editor_view") {
+        if (viewGate) await viewGate;
+        return view;
+      }
+      if (cmd.startsWith("authoring_editor_")) {
+        // Copie : le backend rend les éléments copiés (rien pour un format refusé).
+        const sources =
+          cmd === "authoring_editor_import"
+            ? ((args as { sources?: string[] }).sources ?? [])
+            : [];
+        const update: EditorUpdate = {
+          label: "Opération",
+          ids: sources.some((s) => s.endsWith(".mp3")) ? [importedId] : [],
+          skipped: [],
+          trashed: null,
+          view,
+        };
+        return update;
+      }
+      return null;
+    },
+    { shouldMockEvents: true },
+  );
 }
 
 /*
@@ -195,6 +222,8 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(layout);
 });
 afterEach(() => {
+  // Démonter avant de retirer les simulations : les écouteurs de la fenêtre se désabonnent.
+  cleanup();
   clearMocks();
   vi.restoreAllMocks();
 });
@@ -423,4 +452,46 @@ slowIt("fichiers : image et titre lu sur les zones du panneau", async () => {
   });
   const tree = screen.getByRole("tree");
   expect(within(tree).getAllByRole("treeitem").length).toBeGreaterThan(0);
+});
+
+/** Laisse les abonnements aux événements de la fenêtre s'installer. */
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+slowIt("dossier disparu : dépôts et glissements refusés", async () => {
+  await open();
+  await settle();
+  await act(() => emitEvent(FOLDER_MISSING_EVENT));
+  await waitFor(() => expect(grip("Le chien")).toHaveAttribute("data-disabled", "true"));
+  await emit({ type: "drop", paths: ["C:\\x.mp3"], position: { x: 10, y: 60 } });
+  await waitFor(() =>
+    expect(document.body).toHaveTextContent("Le dossier de l'histoire est introuvable"),
+  );
+  drag(grip("Le chien"), 140, [130, 84]);
+  expect(document.querySelector(".fl-editor-dnd__ghost")).toBeNull();
+  fireEvent.pointerUp(window, { pointerId: 1, clientX: 10, clientY: 84 });
+  expect(called("authoring_editor_import")).toHaveLength(0);
+  expect(called("authoring_editor_reorder")).toHaveLength(0);
+});
+
+slowIt("relecture du dossier en attente : dépôt refusé, puis accepté", async () => {
+  await open();
+  await settle();
+  let release = () => {};
+  viewGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  await act(() => emitEvent(FOLDER_CHANGED_EVENT));
+  await emit({ type: "drop", paths: ["C:\\x.mp3"], position: { x: 10, y: 60 } });
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Une opération est en cours",
+  );
+  expect(called("authoring_editor_import")).toHaveLength(0);
+  await act(async () => release());
+  await waitFor(() => expect(grip("Le chien")).toHaveAttribute("data-disabled", "false"));
+  await emit({ type: "drop", paths: ["C:\\x.mp3"], position: { x: 10, y: 60 } });
+  await waitFor(() => expect(called("authoring_editor_import")).toHaveLength(1));
 });
