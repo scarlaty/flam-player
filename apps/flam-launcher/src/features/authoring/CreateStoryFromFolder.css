@@ -1,0 +1,18 @@
+.fl-authoring {
+  display: grid;
+  gap: 12px;
+  font-size: 1.05rem;
+}
+
+.fl-authoring__count {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.fl-authoring__lines {
+  margin: 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: 4px;
+}

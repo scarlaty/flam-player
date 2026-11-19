@@ -471,6 +471,7 @@ async fn reprise_au_demarrage_et_balayage_des_dossiers_temporaires() {
                 created_at: 1,
                 validator: Validator::default(),
                 pack: None,
+                folder: None,
                 replace_format: true,
             }],
         },

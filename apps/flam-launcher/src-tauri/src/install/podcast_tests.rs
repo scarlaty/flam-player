@@ -504,6 +504,7 @@ fn queued_pack(ctx_dir: &Path, fault_title: &str) -> (PackJob, String) {
                 created_at: 1,
                 validator: Validator::default(),
                 pack: Some(job.clone()),
+                folder: None,
             }],
         },
     )

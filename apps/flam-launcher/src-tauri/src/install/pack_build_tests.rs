@@ -184,6 +184,7 @@ impl Ctx {
             cancel: watch::channel(false).0,
             validator: Default::default(),
             pack: None,
+            folder: None,
             replace_format: false,
             started: true,
         });
@@ -235,6 +236,7 @@ impl Ctx {
             workdir: &self.workdir,
             backend: &backend,
             cancel: &cancel,
+            source: BuildSource::Podcast,
         }
         .build(spec, cover, titles, None)
         .await
@@ -256,6 +258,7 @@ fn spec(items: Vec<LocalItem>, menu: Vec<MenuNode>) -> PackSpec {
         metadata: metadata(),
         items,
         menu,
+        options: ArchiveOptions::default(),
     }
 }
 
@@ -267,6 +270,8 @@ fn menu() -> Vec<MenuNode> {
             name: "Chapitres".into(),
             entries: vec![MenuNode::Item(1), MenuNode::Item(2)],
             image: Some(2),
+            mode: None,
+            picture: None,
         },
     ]
 }
@@ -454,7 +459,9 @@ async fn titres_lus_synthetises_ou_fournis() {
         ctx.item("c.mp3", "Trois"),
     ];
     // Titre lu fourni par la source (MP3 conforme).
-    items[0].title_audio = Some(ctx.source("titre-un.mp3", &mp3_bytes()));
+    let mut provided = mp3_bytes();
+    provided.extend_from_slice(b"fourni");
+    items[0].title_audio = Some(ctx.source("titre-un.mp3", &provided));
     let spec = spec(items, menu());
 
     // Sans synthèse : seul le titre fourni est lu, pas de `title.mp3`.
@@ -468,7 +475,8 @@ async fn titres_lus_synthetises_ou_fournis() {
     assert!(audios["Deux"].is_null() && audios["Chapitres"].is_null());
     assert!(!files.contains_key("title.mp3"));
 
-    // Avec synthèse : chaque option et le pack ont leur titre lu, de 0 à 10 %.
+    // Avec synthèse : chaque option et le pack ont leur titre lu, de 0 à 10 % ; le titre fourni
+    // reste celui de « Un ».
     let ctx = Ctx::new();
     let archive = ctx
         .build(
@@ -489,8 +497,10 @@ async fn titres_lus_synthetises_ou_fournis() {
         .filter(|(p, _)| p == "speech")
         .map(|(_, v)| *v)
         .collect();
-    // Titre du pack, Un, Chapitres, Deux, Trois.
-    assert_eq!(speech, [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]);
+    // Titre du pack, Chapitres, Deux, Trois : « Un » a un titre fourni, jamais proposé à la
+    // voix (sinon un échec de synthèse avertirait « option muette » à tort).
+    assert_eq!(speech, [0.0, 2.5, 5.0, 7.5, 10.0]);
+    assert!(files["audios/t001.mp3"].ends_with(b"fourni"));
     assert!(phases.windows(2).all(|w| w[0].1 <= w[1].1), "{phases:?}");
 }
 
@@ -575,7 +585,7 @@ async fn mp3_deja_conforme_repris_sans_conversion_et_trop_gros_retire() {
     };
     items[2].audio = ItemAudio::Ready {
         mp3: big,
-        bytes: MAX_AUDIO_BYTES + 1,
+        bytes: archive::MAX_AUDIO_BYTES + 1,
     };
     let backend = Arc::new(Local::default());
     let archive = ctx

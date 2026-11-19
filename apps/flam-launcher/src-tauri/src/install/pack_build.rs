@@ -1,6 +1,6 @@
 //! Fabrication d'un pack à partir de **fichiers locaux** : étape commune aux packs de podcasts
-//! (`install::podcast`, après les téléchargements) et à la future création d'histoires sur
-//! dossier (note `docs/creation-dossier.md` § 11, lot 4).
+//! (`install::podcast`, après les téléchargements) et aux histoires faites d'un dossier
+//! (`authoring::build`, note `docs/creation-dossier.md` § 11, lots 4 et 5).
 //!
 //! Le module ne connaît ni flux RSS ni épisode : un pack y est une liste d'éléments
 //! ([`LocalItem`] : audio local, titre, image facultative, titre lu facultatif) rangés dans un
@@ -30,7 +30,7 @@
 //!   originaux téléchargés dans le dossier de travail (`*.audio`, `*.img`) sont supprimés avant
 //!   l'archive.
 //! - **Retraits** (P7) : un élément sans audio ([`ItemAudio::Missing`]), dont la conversion
-//!   échoue ou dont le MP3 dépasse [`MAX_AUDIO_BYTES`] est retiré du pack, cité dans
+//!   échoue ou dont le MP3 dépasse [`Limits::max_audio_bytes`] est retiré du pack, cité dans
 //!   [`PackStatus::dropped`](super::podcast::PackStatus) et dans la description ; une catégorie
 //!   vidée est retirée. Convertisseur indisponible ou erreur disque générale : arrêt du pack.
 //! - **Cache des MP3** (#460) : au mieux, ses erreurs ne font jamais échouer le pack ; les
@@ -52,7 +52,7 @@ use super::{lock, InstallService, TaskState};
 use crate::catalog::blocking;
 use crate::ffmpeg::Verified;
 use crate::podcast::archive::{
-    self, MenuEntry, Pack, PackEpisode, PackMetadata, MAX_AUDIO_BYTES, MAX_TOTAL_AUDIO_BYTES,
+    self, ArchiveOptions, Limits, MenuEntry, MenuMode, Pack, PackEpisode, PackMetadata,
 };
 use crate::podcast::artwork::{self, Artwork, ArtworkError, ArtworkKind};
 use crate::podcast::fetch::{self, Workdir};
@@ -172,7 +172,66 @@ pub enum MenuNode {
         /// Image choisie (N5 c) : celle de l'élément de ce rang, s'il est dans la catégorie et
         /// garde une image ; sinon image automatique et avertissement.
         image: Option<usize>,
+        /// Mode propre (`MenuEntry::Submenu`, histoires sur dossier) ; `None` : la catégorie
+        /// hérite du mode de son menu (`MenuEntry::Category`, podcasts).
+        mode: Option<MenuMode>,
+        /// Image propre du sous-menu (`_image.*` d'un dossier), de format quelconque :
+        /// convertie par [`PackBuild::pictures`], prioritaire sur `image`. Ne sert qu'avec un
+        /// `mode` (podcasts : toujours `None`).
+        picture: Option<PathBuf>,
     },
+}
+
+/// Source du pack : choisit les mots des messages montrés à l'utilisateur (un pack de
+/// podcasts parle d'**épisodes**, une histoire sur dossier d'**histoires**), sans changer ceux
+/// des podcasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuildSource {
+    #[default]
+    Podcast,
+    Folder,
+}
+
+impl BuildSource {
+    /// ffmpeg embarqué indisponible.
+    fn converter_missing(self, why: &str) -> String {
+        match self {
+            Self::Podcast => format!(
+                "ffmpeg embarqué indisponible, nécessaire pour convertir les épisodes du pack \
+                 (réinstallez Flam Launcher) : {why}"
+            ),
+            Self::Folder => format!(
+                "ffmpeg embarqué indisponible, nécessaire pour convertir l'audio de l'histoire \
+                 (réinstallez Flam Launcher) : {why}"
+            ),
+        }
+    }
+
+    /// Aucun élément gardé après la conversion audio.
+    fn nothing_converted(self, titles: &str) -> String {
+        match self {
+            Self::Podcast => format!(
+                "aucun épisode utilisable (téléchargement ou conversion en échec) : {titles}"
+            ),
+            Self::Folder => format!("aucune histoire utilisable (conversion en échec) : {titles}"),
+        }
+    }
+
+    /// Arborescence vide après les retraits.
+    fn nothing_left(self) -> &'static str {
+        match self {
+            Self::Podcast => "aucun épisode utilisable dans le pack",
+            Self::Folder => "aucune histoire utilisable",
+        }
+    }
+
+    /// En-tête de la liste des éléments retirés, dans la description.
+    fn failures_head(self) -> &'static str {
+        match self {
+            Self::Podcast => archive::FAILURES_HEAD,
+            Self::Folder => "Histoires non incluses (échec de la conversion) :",
+        }
+    }
 }
 
 impl MenuNode {
@@ -207,9 +266,8 @@ pub struct LocalItem {
     /// Image source locale, de format quelconque (convertie en 640 × 480) ; illisible ou
     /// absente : image de repli (D13).
     pub image: Option<PathBuf>,
-    /// MP3 conforme du titre lu fourni par la source ; un titre synthétisé le remplace. (Lot 5 :
-    /// ne pas demander la synthèse d'un titre fourni, sinon son échec avertit « option muette »
-    /// alors que le titre fourni reste lu.)
+    /// MP3 conforme du titre lu fourni par la source. La synthèse ne le remplace jamais : un
+    /// élément qui en a un n'est pas proposé à la voix ([`PackBuild::speak_titles`]).
     pub title_audio: Option<PathBuf>,
     /// Clé du cache des MP3 convertis ; `None` : l'élément n'y passe pas.
     pub cache_key: Option<EntryKey>,
@@ -225,6 +283,8 @@ pub struct PackSpec {
     pub items: Vec<LocalItem>,
     /// Menu racine.
     pub menu: Vec<MenuNode>,
+    /// Mode du menu racine et bornes de l'archive (podcasts : [`ArchiveOptions::default`]).
+    pub options: ArchiveOptions,
 }
 
 /// Titres lus demandés (#462) : voix choisie (`None` : voix française par défaut).
@@ -258,13 +318,17 @@ pub struct Images {
 }
 
 /// Panne du convertisseur audio : fatale pour le pack entier, jamais comptée comme un échec
-/// d'élément.
+/// d'élément (message des podcasts).
 pub(super) fn converter_unavailable(err: AppError) -> AppError {
+    converter_unavailable_for(BuildSource::Podcast, err)
+}
+
+/// [`converter_unavailable`] avec les mots de `source`.
+pub(crate) fn converter_unavailable_for(source: BuildSource, err: AppError) -> AppError {
     match err {
-        AppError::ConverterUnavailable(why) => AppError::ConverterUnavailable(format!(
-            "ffmpeg embarqué indisponible, nécessaire pour convertir les épisodes du pack \
-             (réinstallez Flam Launcher) : {why}"
-        )),
+        AppError::ConverterUnavailable(why) => {
+            AppError::ConverterUnavailable(source.converter_missing(&why))
+        }
         other => other,
     }
 }
@@ -272,7 +336,7 @@ pub(super) fn converter_unavailable(err: AppError) -> AppError {
 /// Erreur de conversion qui arrête tout le pack au lieu de retirer l'élément : convertisseur
 /// indisponible, ou erreur disque générale (hors délai d'un élément, `TimedOut`). Les erreurs
 /// disque propres à un élément arrivent ici en `Conversion` (`io_failed`) et le retirent.
-fn is_fatal_conversion(err: &AppError) -> bool {
+pub(crate) fn is_fatal_conversion(err: &AppError) -> bool {
     match err {
         AppError::ConverterUnavailable(_) => true,
         AppError::Io(e) => e.kind() != std::io::ErrorKind::TimedOut,
@@ -291,7 +355,7 @@ pub(super) fn drop_reason(err: &AppError) -> String {
 
 impl InstallService {
     /// Avancement de la préparation de la tâche `id`.
-    pub(super) fn emit_phase(&self, id: &str, percent: f64, phase: &str) {
+    pub(crate) fn emit_phase(&self, id: &str, percent: f64, phase: &str) {
         self.emit(super::InstallProgress {
             task_id: id.to_string(),
             state: TaskState::Preparing,
@@ -303,7 +367,7 @@ impl InstallService {
     }
 
     /// Nombre d'éléments et titres retirés de la tâche `id` (avertissements gardés).
-    pub(super) fn set_pack_status(&self, id: &str, episodes: usize, dropped: Vec<String>) {
+    pub(crate) fn set_pack_status(&self, id: &str, episodes: usize, dropped: Vec<String>) {
         let mut tasks = lock(&self.0.tasks);
         if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
             let warnings = slot
@@ -340,12 +404,14 @@ pub(super) struct Prepared {
 }
 
 /// Étapes de fabrication d'un pack de la tâche `id`, dans `workdir`.
-pub(super) struct PackBuild<'a, B: ?Sized> {
+pub(crate) struct PackBuild<'a, B: ?Sized> {
     pub service: &'a InstallService,
     pub id: &'a str,
     pub workdir: &'a Path,
     pub backend: &'a Arc<B>,
     pub cancel: &'a watch::Receiver<bool>,
+    /// Mots des messages ([`BuildSource`]).
+    pub source: BuildSource,
 }
 
 impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
@@ -358,7 +424,8 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
 
     /// Toutes les étapes, pour des éléments déjà locaux : titres lus si `titles` est donné,
     /// audio, images (couverture tirée de `cover`), archive. Rend le chemin de l'archive.
-    // Point d'entrée de la source « dossier » (lot 5) ; essayé dans `pack_build_tests.rs`.
+    // Enchaînement de référence des étapes ; essayé dans `pack_build_tests.rs` (la source
+    // « dossier » les appelle une à une : `authoring::build`).
     #[cfg_attr(not(test), allow(dead_code))]
     pub async fn build(
         &self,
@@ -376,6 +443,7 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                     &spec.items,
                     &spec.metadata.title,
                     titles.voice.as_deref(),
+                    &HashSet::new(),
                 )
                 .await?
             }
@@ -384,24 +452,36 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
         // Annulation déjà demandée : aucune conversion lancée.
         self.cancelled()?;
         let converted = self
-            .convert_audio(&spec.items, cache, Vec::new(), super::now_secs())
+            .convert_audio(
+                &spec.items,
+                &spec.options.limits,
+                cache,
+                Vec::new(),
+                super::now_secs(),
+            )
             .await?;
         self.begin_images();
+        let mut spec = spec.clone();
+        self.pictures(&mut spec.menu).await?;
         let images = self.images(&converted, cover).await?;
-        self.write_archive(spec, converted, images, &spoken, warnings)
+        self.write_archive(&spec, converted, images, &spoken, warnings)
             .await
     }
 
     /// Titres lus (#462) : voix choisie (repli sur la voix par défaut avec un avertissement),
     /// puis synthèse et conversion de chaque titre (titre du pack, puis options dans l'ordre de
-    /// l'archive). Rend les MP3 produits et les avertissements de voix ; voir
-    /// [`pack_speech::speak`] pour les arrêts.
+    /// l'archive). Ne sont **pas** proposés à la voix : les emplacements de `provided` (titres
+    /// lus fournis par la source pour le pack ou une catégorie) et les éléments qui ont déjà un
+    /// titre lu ([`LocalItem::title_audio`]) : sinon un échec de synthèse avertirait « option
+    /// muette » alors que le titre fourni reste lu. Rend les MP3 produits et les avertissements
+    /// de voix ; voir [`pack_speech::speak`] pour les arrêts.
     pub async fn speak_titles(
         &self,
         menu: &[MenuNode],
         items: &[LocalItem],
         pack_title: &str,
         voice: Option<&str>,
+        provided: &HashSet<TitleKey>,
     ) -> AppResult<(SpokenTitles, Vec<String>)> {
         self.service.emit_phase(self.id, 0.0, "speech");
         let synth = self.backend.speech();
@@ -409,9 +489,13 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
             let (synth, requested) = (synth.clone(), voice.map(str::to_string));
             blocking(move || pack_speech::choose_voice(&synth, requested.as_deref())).await??
         };
-        let titles = pack_speech::menu_titles(menu, pack_title, &|n| {
-            items.get(n).map(|item| item.title.clone())
+        let mut titles = pack_speech::menu_titles(menu, pack_title, &|n| {
+            items
+                .get(n)
+                .filter(|item| item.title_audio.is_none())
+                .map(|item| item.title.clone())
         });
+        titles.retain(|t| !provided.contains(&t.key));
         // Avancement par titre (0 à SPEECH_PERCENT, #487) ; durée réelle journalisée (nombres
         // seulement, jamais de texte ni de voix).
         let started = std::time::Instant::now();
@@ -448,6 +532,7 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
     pub async fn convert_audio(
         &self,
         items: &[LocalItem],
+        limits: &Limits,
         cache: Option<&CacheAccess>,
         mut to_cache: Vec<mp3cache::Store>,
         now: u64,
@@ -484,7 +569,7 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                 // `MAX_AUDIO_BYTES` (`CacheAccess::lookup` la supprime, #466) ; filet pour une
                 // autre source.
                 ItemAudio::Ready { mp3, bytes } => {
-                    if *bytes <= MAX_AUDIO_BYTES {
+                    if *bytes <= limits.max_audio_bytes {
                         audio_total += bytes;
                         kept.push(Kept {
                             rank: n,
@@ -492,7 +577,7 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                             image: item.image.clone(),
                         });
                     } else {
-                        tracing::warn!(episode = n, "épisode retiré du pack : MP3 trop volumineux");
+                        tracing::warn!(item = n, "élément retiré du pack : MP3 trop volumineux");
                         dropped.push(n);
                     }
                 }
@@ -502,7 +587,7 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                         continue;
                     };
                     match result {
-                        Ok(bytes) if bytes <= MAX_AUDIO_BYTES => {
+                        Ok(bytes) if bytes <= limits.max_audio_bytes => {
                             audio_total += bytes;
                             if let Some(key) = &item.cache_key {
                                 to_cache.push(mp3cache::Store {
@@ -522,19 +607,19 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                         // (`audio_too_large`), branche inatteignable avec le convertisseur réel.
                         Ok(_) => {
                             tracing::warn!(
-                                episode = n,
-                                "épisode retiré du pack : MP3 trop volumineux"
+                                item = n,
+                                "élément retiré du pack : MP3 trop volumineux"
                             );
                             dropped.push(n);
                         }
                         Err(AppError::Cancelled) => return Err(AppError::Cancelled),
                         Err(err) if is_fatal_conversion(&err) => {
-                            return Err(converter_unavailable(err))
+                            return Err(converter_unavailable_for(self.source, err))
                         }
                         Err(err) => {
                             tracing::warn!(
-                                episode = n,
-                                "épisode retiré du pack : {}",
+                                item = n,
+                                "élément retiré du pack : {}",
                                 drop_reason(&err)
                             );
                             dropped.push(n);
@@ -564,12 +649,12 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                 .filter_map(|&n| items.get(n).map(|item| archive::label(&item.title, "?")))
                 .collect();
             let more = if dropped.len() > 3 { ", …" } else { "" };
-            return Err(AppError::DownloadInvalid(format!(
-                "aucun épisode utilisable (téléchargement ou conversion en échec) : {}{more}",
-                titles.join(", ")
-            )));
+            return Err(AppError::DownloadInvalid(
+                self.source
+                    .nothing_converted(&format!("{}{more}", titles.join(", "))),
+            ));
         }
-        if audio_total > MAX_TOTAL_AUDIO_BYTES {
+        if audio_total > limits.max_total_audio_bytes {
             return Err(AppError::DownloadInvalid(format!(
                 "audio converti trop volumineux : {} Mo",
                 audio_total.div_ceil(1_000_000)
@@ -615,6 +700,77 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
         Ok(Images { items, cover })
     }
 
+    /// Images propres des sous-menus ([`MenuNode::Category::picture`]) converties en PNG
+    /// 640 × 480 dans le dossier de travail (`menu-NNNN.png`, par ordre du parcours) ; chaque
+    /// `picture` désigne ensuite son PNG. Illisible : `None` (image automatique, D13).
+    pub async fn pictures(&self, menu: &mut [MenuNode]) -> AppResult<()> {
+        fn collect(menu: &[MenuNode], out: &mut Vec<PathBuf>) {
+            for node in menu {
+                if let MenuNode::Category {
+                    entries, picture, ..
+                } = node
+                {
+                    if let Some(src) = picture {
+                        out.push(src.clone());
+                    }
+                    collect(entries, out);
+                }
+            }
+        }
+        fn assign(menu: &mut [MenuNode], pngs: &mut std::vec::IntoIter<Option<PathBuf>>) {
+            for node in menu {
+                if let MenuNode::Category {
+                    entries, picture, ..
+                } = node
+                {
+                    if picture.is_some() {
+                        *picture = pngs.next().flatten();
+                    }
+                    assign(entries, pngs);
+                }
+            }
+        }
+        self.cancelled()?;
+        let mut sources = Vec::new();
+        collect(menu, &mut sources);
+        if sources.is_empty() {
+            return Ok(());
+        }
+        let dir = self.workdir.to_path_buf();
+        let converter = self.backend.clone();
+        let flag = self.cancel.clone();
+        let pngs = blocking(move || {
+            let mut out = Vec::with_capacity(sources.len());
+            for (n, src) in sources.iter().enumerate() {
+                if *flag.borrow() {
+                    return Err(AppError::Cancelled);
+                }
+                let dest = dir.join(format!("menu-{n:04}.png"));
+                let png =
+                    read_bounded(src, fetch::MAX_IMAGE_BYTES).and_then(|bytes| {
+                        match converter.convert_artwork(&bytes, ArtworkKind::Episode) {
+                            Ok(art) => Some(art.png),
+                            Err(err) => {
+                                tracing::warn!("image de menu ignorée : {err}");
+                                None
+                            }
+                        }
+                    });
+                match png {
+                    Some(png) => {
+                        std::fs::write(&dest, png)?;
+                        out.push(Some(dest));
+                    }
+                    None => out.push(None),
+                }
+            }
+            Ok::<_, AppError>(out)
+        })
+        .await??;
+        assign(menu, &mut pngs.into_iter());
+        Ok(())
+    }
+
     /// Archive Telmi (phase `archive`, 90 %) : arborescence (éléments retirés sautés,
     /// catégories vidées retirées), titres lus, avertissements de la tâche, description
     /// (par défaut : liste des titres ; éléments retirés ajoutés). Rend le chemin de l'archive.
@@ -654,9 +810,7 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
         );
         mute_shifted_categories(&spec.menu, &used, spoken, &mut menu);
         if menu.is_empty() {
-            return Err(AppError::DownloadInvalid(
-                "aucun épisode utilisable dans le pack".into(),
-            ));
+            return Err(AppError::DownloadInvalid(self.source.nothing_left().into()));
         }
         // Avertissements des seuls titres muets qui restent dans le pack (un élément retiré
         // n'en a plus besoin).
@@ -683,7 +837,11 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
                 title: metadata.title.clone(),
                 subtitle: metadata.subtitle.clone(),
                 age: metadata.age,
-                description: archive::with_failures(&description, &converted.dropped_titles),
+                description: fit_description(archive::with_failures_under(
+                    &description,
+                    &converted.dropped_titles,
+                    self.source.failures_head(),
+                )),
             },
             cover,
             menu,
@@ -692,7 +850,8 @@ impl<B: BuildBackend + ?Sized + 'static> PackBuild<'_, B> {
         let archive_path = self.workdir.join(ARCHIVE_NAME);
         let dest = archive_path.clone();
         let flag = self.cancel.clone();
-        blocking(move || archive::write_archive(&pack, &dest, &|| *flag.borrow()))
+        let options = spec.options;
+        blocking(move || archive::write_archive_with(&pack, &options, &dest, &|| *flag.borrow()))
             .await?
             .map_err(|err| match err {
                 archive::ArchiveError::Cancelled => AppError::Cancelled,
@@ -763,6 +922,27 @@ pub(super) fn convert_artwork(
     Ok((pngs, cover_png))
 }
 
+/// Description bornée à [`archive::MAX_DESCRIPTION_BYTES`] : au-delà (centaines d'histoires
+/// aux titres longs), seules les premières lignes entières sont gardées, suivies de `…`. En deçà,
+/// inchangée (podcasts : jamais atteint).
+fn fit_description(description: String) -> String {
+    let max = archive::MAX_DESCRIPTION_BYTES;
+    if description.len() <= max {
+        return description;
+    }
+    let mut out = String::new();
+    for line in description.lines() {
+        // Place pour la ligne, son saut et la marque finale.
+        if out.len() + line.len() + "\n…".len() + 1 > max {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push('…');
+    out
+}
+
 /// Lit au plus `max` octets (`None` si absent, illisible ou plus gros).
 fn read_bounded(path: &Path, max: u64) -> Option<Vec<u8>> {
     use std::io::Read;
@@ -806,6 +986,8 @@ pub(super) fn build_menu(
                 name,
                 entries,
                 image,
+                mode,
+                picture,
             } => {
                 // Avant le retrait des éléments de la catégorie.
                 let chosen: Option<Option<PathBuf>> = image.map(|n| {
@@ -828,11 +1010,22 @@ pub(super) fn build_menu(
                         }
                         None => None,
                     };
-                    out.push(MenuEntry::Category {
-                        name: name.trim().to_string(),
-                        entries,
-                        audio: spoken.audio.get(&key).cloned(),
-                        image,
+                    let (name, audio) = (name.trim().to_string(), spoken.audio.get(&key).cloned());
+                    out.push(match mode {
+                        None => MenuEntry::Category {
+                            name,
+                            entries,
+                            audio,
+                            image,
+                        },
+                        Some(mode) => MenuEntry::Submenu {
+                            name,
+                            entries,
+                            audio,
+                            image,
+                            picture: picture.clone(),
+                            mode: *mode,
+                        },
                     });
                     used.insert(key);
                 }
@@ -876,7 +1069,9 @@ fn mute_shifted_categories(
     }
     fn audios<'a>(menu: &'a mut [MenuEntry], out: &mut Vec<&'a mut Option<PathBuf>>) {
         for entry in menu {
-            if let MenuEntry::Category { entries, audio, .. } = entry {
+            if let MenuEntry::Category { entries, audio, .. }
+            | MenuEntry::Submenu { entries, audio, .. } = entry
+            {
                 out.push(audio);
                 audios(entries, out);
             }
