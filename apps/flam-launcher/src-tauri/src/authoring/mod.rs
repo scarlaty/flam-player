@@ -20,6 +20,9 @@
 pub mod build;
 pub mod commands;
 pub mod identity;
+pub mod images;
+pub mod ops;
 pub mod root;
 pub mod settings;
+pub mod title_card;
 pub mod tree;

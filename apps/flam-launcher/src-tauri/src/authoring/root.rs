@@ -116,7 +116,7 @@ fn check_shape(root: &Path) -> Result<(), ScanError> {
 /// Vrai si Win32 (hors forme `\\?\`) ne désigne pas ce composant tel quel : nom finissant par un
 /// point ou une espace, ou nom de périphérique réservé (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`9`,
 /// `LPT1`-`9`, extension comprise : `nul.txt`).
-fn win32_alters(name: &str) -> bool {
+pub(crate) fn win32_alters(name: &str) -> bool {
     if name.ends_with(['.', ' ']) {
         return true;
     }

@@ -1170,13 +1170,16 @@ export function DeviceProvider({
           true,
           expectedOfKey(expectedKey),
         );
-        bumpReload();
         return { cleanupPending: report.cleanup_pending };
       } catch (caught) {
         // Autre Flam branchée : l'état affiché n'est plus le sien, il est relu.
         if (toAppError(caught).kind === DEVICE_CHANGED) retry();
         throw caught;
       } finally {
+        // Succès ou échec : la liste affichée suit l'index réel de la Flam (une histoire sortie
+        // de l'index dont le dossier est resté occupé apparaît « Non listée », à retirer de
+        // nouveau).
+        bumpReload();
         setRemoving(false);
       }
     },

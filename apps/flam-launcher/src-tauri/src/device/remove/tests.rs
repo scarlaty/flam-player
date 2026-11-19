@@ -585,6 +585,24 @@ fn suppression_partielle_reprise_depuis_la_corbeille() {
     assert_eq!(device.index(IndexKind::Visible), [A]);
 }
 
+/// Opérations réelles sans attente entre deux essais (la fenêtre du renommage dure environ 10 s).
+#[cfg(windows)]
+struct NoWait;
+
+#[cfg(windows)]
+impl TrashFs for NoWait {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealTrashFs.rename(from, to)
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_file(path)
+    }
+    fn sleep(&self, _delay: Duration) {}
+}
+
 /// Dossier verrouillé (renommage impossible) : l'index est réécrit, le dossier reste entier
 /// et devient un orphelin signalé.
 #[cfg(windows)]
@@ -598,8 +616,8 @@ fn dossier_verrouille_devient_orphelin() {
         .share_mode(0)
         .open(device.root().join(STORIES_DIR).join(B).join("ni"))
         .unwrap();
-    let err = remove(&device, B).unwrap_err();
-    assert!(matches!(err, RemoveError::FolderLeft(_)), "{err}");
+    let err = remove_using(&device, &NoWait).unwrap_err();
+    assert!(matches!(err, RemoveError::FolderBusy(_)), "{err}");
     assert_eq!(device.index(IndexKind::Visible), [A, C]);
     assert!(device.has_story(STORIES_DIR, B));
     assert_eq!(
@@ -1134,4 +1152,154 @@ fn echange_avant_la_suppression_rapporte_un_retrait_reussi() {
     // La prochaine opération sur la Flam d'origine vide la corbeille.
     remove(&device, C).unwrap();
     assert_eq!(device.trash_entries(), 0);
+}
+
+/// Renommages refusés (verrou passager) les `fails` premières fois ; suppressions réelles.
+/// `swap_after` : la relecture de `.mdf` rend celui d'une autre Flam à partir de cette lecture.
+struct LockedRename {
+    fails: usize,
+    swap_after: Option<usize>,
+    renames: Cell<usize>,
+    reads: Cell<usize>,
+    slept: Cell<Duration>,
+}
+
+impl LockedRename {
+    fn new(fails: usize, swap_after: Option<usize>) -> Self {
+        Self {
+            fails,
+            swap_after,
+            renames: Cell::new(0),
+            reads: Cell::new(0),
+            slept: Cell::new(Duration::ZERO),
+        }
+    }
+}
+
+impl TrashFs for LockedRename {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let n = self.renames.get();
+        self.renames.set(n + 1);
+        if n < self.fails {
+            return Err(io::Error::from_raw_os_error(5));
+        }
+        RealTrashFs.rename(from, to)
+    }
+    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_dir_all(path)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        RealTrashFs.remove_file(path)
+    }
+    fn sleep(&self, delay: Duration) {
+        self.slept.set(self.slept.get() + delay);
+    }
+    fn read_mdf_once(&self, root: &Path) -> Result<zeroize::Zeroizing<Vec<u8>>, TransferError> {
+        let n = self.reads.get();
+        self.reads.set(n + 1);
+        match self.swap_after {
+            Some(at) if n >= at => Ok(zeroize::Zeroizing::new(
+                crate::device::guard::tests::mdf_v2_known(),
+            )),
+            _ => read_mdf(root),
+        }
+    }
+}
+
+/// Retrait de B avec les opérations `ops`.
+fn remove_using(device: &Device, ops: &dyn TrashFs) -> Result<RemoveReport, RemoveError> {
+    remove_with(
+        device.root(),
+        &DeviceLock::new(),
+        B,
+        true,
+        &test_ctx(),
+        ops,
+        &mut |_| Ok(()),
+    )
+}
+
+/// Dossier d'une grosse histoire tenu plusieurs secondes (antivirus, Explorateur) : au-delà de
+/// la seconde des autres écritures, le renommage est encore réessayé et le retrait aboutit.
+#[test]
+fn verrou_de_plusieurs_secondes_sur_le_dossier_reessaye() {
+    let device = Device::new();
+    // 12 refus : au-delà des 8 essais (environ 1 s) de `retry_transient`.
+    let ops = LockedRename::new(12, None);
+    let report = remove_using(&device, &ops).unwrap();
+    assert_eq!(report.folders_removed, 1);
+    assert!(!report.cleanup_pending, "{report:?}");
+    assert_eq!(ops.renames.get(), 13);
+    assert!(
+        ops.slept.get() > Duration::from_secs(1),
+        "{:?}",
+        ops.slept.get()
+    );
+    assert!(!device.root().join(STORIES_DIR).join(B).exists());
+    assert!(!device.root().join(TRASH_DIR).exists());
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+    device.assert_others_intact(B);
+}
+
+/// Verrou qui ne se relâche pas : environ 10 s d'essais, puis `FolderBusy` (message qui dit
+/// quoi faire) ; l'histoire est hors de l'index, son dossier entier, et un nouveau retrait,
+/// verrou levé, la termine.
+#[test]
+fn verrou_persistant_sur_le_dossier_laisse_un_orphelin_entier() {
+    let device = Device::new();
+    let ops = LockedRename::new(usize::MAX, None);
+    let err = remove_using(&device, &ops).unwrap_err();
+    assert!(matches!(err, RemoveError::FolderBusy(_)), "{err}");
+    let message = err.to_string();
+    for expected in [
+        "Explorateur",
+        "Non listée",
+        "environ 10 s",
+        "rien n'a été effacé",
+    ] {
+        assert!(message.contains(expected), "{expected} : {message}");
+    }
+    assert_eq!(ops.renames.get(), FOLDER_MOVE_DELAYS_MS.len() + 1);
+    assert_eq!(ops.slept.get(), Duration::from_millis(10_000));
+    assert!(matches!(AppError::from(err), AppError::Io(_)));
+    assert_eq!(device.index(IndexKind::Visible), [A, C]);
+    assert!(device.has_story(STORIES_DIR, B));
+    assert_eq!(device.trash_entries(), 0);
+    assert_eq!(
+        find_orphans(device.root()).unwrap(),
+        [Orphan {
+            id: B.into(),
+            hidden: false
+        }]
+    );
+    // Verrou levé : « Retirer » sur l'histoire « Non listée » termine le travail.
+    let report = remove(&device, B).unwrap();
+    assert!(!report.index_updated);
+    assert_eq!(report.folders_removed, 1);
+    assert!(!device.root().join(STORIES_DIR).join(B).exists());
+    assert!(find_orphans(device.root()).unwrap().is_empty());
+    device.assert_others_intact(B);
+}
+
+/// #577 : Flam échangée pendant les nouveaux essais du renommage : `.mdf` est relu avant chacun,
+/// rien n'est renommé sur l'autre Flam, le retrait s'arrête (`DeviceChangedDuring`).
+#[test]
+fn flam_echangee_pendant_les_essais_du_renommage_rien_n_est_renomme() {
+    // Lectures de `.mdf` avant le premier essai du renommage : corbeille, index, relecture,
+    // renommage (4).
+    for extra in 0..4 {
+        let device = Device::new();
+        let ops = LockedRename::new(usize::MAX, Some(4 + extra));
+        let err = remove_using(&device, &ops).unwrap_err();
+        assert!(
+            matches!(err, RemoveError::DeviceChangedDuring),
+            "essai {extra} : {err}"
+        );
+        // Un essai par relecture réussie de la Flam d'origine.
+        assert_eq!(ops.renames.get(), extra + 1, "essai {extra}");
+        assert!(device.has_story(STORIES_DIR, B));
+        assert_eq!(device.index(IndexKind::Visible), [A, C]);
+        assert_eq!(device.trash_entries(), 0);
+        device.assert_others_intact(B);
+    }
 }

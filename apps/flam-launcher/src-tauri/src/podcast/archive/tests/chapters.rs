@@ -265,6 +265,9 @@ fn livre_simple_debut_chapitre_fin_menu() {
         );
         // Retour depuis le menu des chapitres : sortie de l'histoire (menu Start).
         assert_exit(&nodes, opt);
+        // Rôles lus par le moteur : chapitre repris à sa position, option hors jauge.
+        assert_eq!(nodes.stage(ch)["role"], "chapter");
+        assert_eq!(nodes.stage(opt)["role"], "title");
     }
     assert_no_inventory(&nodes);
     // Entrée + 3 options + 3 chapitres, rien d'autre.
@@ -448,6 +451,12 @@ fn livre_dans_un_recueil_debut_chapitre() {
         assert_eq!(nodes.target(&o, "home"), (bm.clone(), 1));
     }
     assert_no_inventory(&nodes);
+    // Rôles : sur les scènes du livre seulement, jamais sur celles du recueil.
+    assert_eq!(nodes.stage(&c1)["role"], "chapter");
+    assert_eq!(nodes.stage(&bo[0])["role"], "title");
+    for st in [&r[0], &r[1], &r[2], &nodes.played_by(&r[0])] {
+        assert!(nodes.stage(st).get("role").is_none(), "{st}");
+    }
     // Image de l'option du livre : son premier chapitre.
     assert_eq!(nodes.stage(&r[1])["image"], "e002.png");
 }
@@ -486,8 +495,8 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     // Démarrage : annonce du chapitre 1, puis le chapitre.
     let (p1, _) = nodes.start();
     let n1 = nodes.single(&p1);
-    assert_eq!(nodes.played_by(&o[0]), n1);
     let st = nodes.stage(&n1);
+    assert_eq!(st["role"], "title", "annonce hors jauge");
     assert_eq!(st["audio"], "t001.mp3");
     assert_eq!(st["image"], "e001.png");
     assert_eq!(
@@ -497,6 +506,8 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     assert_eq!(nodes.target(&n1, "home"), (ROOT_MENU.to_string(), 0));
     let e1 = nodes.next(&n1);
     assert_eq!(nodes.stage(&e1)["audio"], "e001.mp3");
+    // L'option mène au chapitre sans l'annonce (son titre lu vient d'être entendu).
+    assert_eq!(nodes.played_by(&o[0]), e1);
     // Chapitre 2 : pas de titre lu, joué directement ; chapitre 3 : annoncé.
     let e2 = nodes.next(&e1);
     assert_eq!(nodes.stage(&e2)["audio"], "e002.mp3");
@@ -504,6 +515,7 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     assert_eq!(nodes.stage(&n3)["audio"], "t003.mp3");
     let e3 = nodes.next(&n3);
     assert_eq!(nodes.stage(&e3)["audio"], "e003.mp3");
+    assert_eq!(nodes.played_by(&o[2]), e3, "option 3 : sans l'annonce n3");
     // Le titre lu sert à l'option et à l'annonce : une seule copie dans l'archive.
     assert_eq!(nodes.stage(&o[0])["audio"], "t001.mp3");
     let audios: Vec<&String> = files.keys().filter(|k| k.starts_with("audios/")).collect();
@@ -821,6 +833,10 @@ fn livres_convertis_par_la_crate_telmi2flam_sans_avertissement() {
     );
     let lua = nodes_lua(&package);
     assert!(!lua.contains("inventory = {"), "{lua}");
+    // `role` transmis au moteur ; l'annonce et les options hors de la jauge : 5 chapitres.
+    assert!(lua.contains("role = \"chapter\""), "{lua}");
+    assert!(lua.contains("role = \"title\""), "{lua}");
+    assert!(lua.contains("totalChapters = 5,"), "{lua}");
     if let Some(dir) = std::env::var_os("FLAM_DUMP_NODES_LUA") {
         fs::write(Path::new(&dir).join("livre_racine.lua"), &lua).unwrap();
     }
@@ -847,6 +863,53 @@ fn livres_convertis_par_la_crate_telmi2flam_sans_avertissement() {
         )
         .unwrap();
     }
+}
+
+/// Générateur du paquet d'essai sur la Flam (reprise d'un chapitre à sa position) : livre de
+/// 2 parties × 3 chapitres, annoncés. `FLAM_ESSAI_DIR` contient `c1..c6.mp3/png` (chapitres),
+/// `t1..t6.mp3` (titres lus), `p1/p2.mp3` (parties), `titre.mp3`, `couverture.png` ; l'archive
+/// Telmi est écrite à côté (`livre-essai.zip`), à convertir avec `telmi2flam`.
+/// `cargo test paquet_d_essai_flam -- --ignored`.
+#[test]
+#[ignore = "générateur manuel (FLAM_ESSAI_DIR)"]
+fn paquet_d_essai_flam() {
+    let dir = PathBuf::from(std::env::var_os("FLAM_ESSAI_DIR").expect("FLAM_ESSAI_DIR"));
+    let chapter = |n: usize| {
+        MenuEntry::Episode(PackEpisode {
+            title: format!("Chapitre {n}"),
+            audio: dir.join(format!("c{n}.mp3")),
+            image: Some(dir.join(format!("c{n}.png"))),
+            title_audio: Some(dir.join(format!("t{n}.mp3"))),
+        })
+    };
+    let part = |p: usize| MenuEntry::Category {
+        name: format!("Partie {p}"),
+        entries: (3 * p - 2..=3 * p).map(chapter).collect(),
+        audio: Some(dir.join(format!("p{p}.mp3"))),
+        image: None,
+    };
+    let menu = vec![part(1), part(2)];
+    let p = Pack {
+        uuid: Uuid::parse_str("5d0c7a1e-8b2f-4c3d-9e4f-a1b2c3d4e5f6").unwrap(),
+        metadata: PackMetadata {
+            title: "Essai chapitres".into(),
+            subtitle: "Reprise à la position".into(),
+            age: 3,
+            description: default_description(&menu),
+        },
+        cover: Some(dir.join("couverture.png")),
+        menu,
+        title_audio: Some(dir.join("titre.mp3")),
+    };
+    let out = dir.parent().unwrap().join("livre-essai.zip");
+    write_archive_with(
+        &p,
+        &options(chapters(ChapterStart::Chapter, BookEnd::Menu, true)),
+        &out,
+        &never,
+    )
+    .unwrap();
+    assert_graph(&json_of(&read_zip(&out), "nodes.json"));
 }
 
 /// Comme `binaire_convertit_et_valide_l_archive`, pour un livre à chapitres en parties :

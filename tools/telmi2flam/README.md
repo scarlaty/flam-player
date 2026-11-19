@@ -1171,6 +1171,23 @@ nécessaires pour que l'histoire **charge sur le device**) :
   La **fin** d'histoire (`endStory`) remet la progression et ces champs à zéro : le menu
   propose de nouveau **Démarrer**. Le menu contextuel `M` (« Reprendre l'histoire »,
   `LateralResume`) reprend ou démarre de la même façon.
+- **Livres à chapitres** (extension du launcher, *opt-in* : champ `role` d'une scène de
+  `nodes.json`, transmis tel quel dans `nodes.lua` ; une histoire sans `role` garde le
+  comportement ci-dessus) :
+  - `role = "chapter"` : quitté par la transition `home`, le chapitre **garde** sa position
+    (`seekposition`) et devient le chapitre quitté (`state.chapter_left`, persisté comme
+    `home_origin`). **Reprendre l'histoire** (après sortie ou veille dans le menu des
+    chapitres) le reprend à cette position au lieu du nœud sauvé ; y revenir par le menu des
+    chapitres aussi. Entrer dans un autre chapitre efface le chapitre quitté et repart du
+    début ; `Démarrer` et la fin d'histoire l'effacent. Pendant la lecture d'un chapitre
+    (scène avec audio), l'écran est **noir** : l'image accompagne son titre lu (option ou
+    annonce) et reste celle de l'écran « Reprendre » ;
+  - `role = "title"` : titre lu (option affichée seule, annonce d'un chapitre) : position
+    seule, pas un chapitre de la jauge ; `totalChapters` ne le compte pas ;
+  - autre valeur : ignorée (`role` absent). La clé `role` est **réservée** à cette
+    extension : une histoire Telmi tierce qui l'emploierait avec ces valeurs en changerait
+    le comportement ;
+  - toute autre scène écoutée (hors `role = "title"`) oublie le chapitre quitté.
 - **Stages sans audio** : `autoplay` (ex. `backStage` TELMI) ou sans image → on enchaîne
   directement la transition `ok` (nœud de passage, garde anti-boucle `MAX_PASS`) ; image
   non `autoplay` → affichée par `audio-player` sans audio, en attente de OK.
