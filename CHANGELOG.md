@@ -7,6 +7,19 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+### Ajouté
+
+- Éditeur d'histoires sur dossier : à partir d'un dossier de fichiers audio (et d'images) de
+  votre PC, le launcher fabrique une histoire pour la Flam. « Créer une histoire depuis un
+  dossier » (dans Mes histoires) ouvre une fenêtre d'édition : on ajoute des fichiers ou on les
+  glisse depuis l'Explorateur, on réordonne, on renomme, on choisit les images et les titres lus
+  (complétés automatiquement : pochette du fichier audio ou image avec le titre, voix Windows),
+  avec annulation et corbeille. Deux organisations : un recueil de petites histoires, ou un livre
+  à chapitres qui s'enchaînent, avec un menu des chapitres, et le chapitre quitté qui reprend à
+  sa position. Le dossier est surveillé pendant l'édition, et « Modifier » et « Actualiser » le
+  retrouvent depuis Mes histoires (« Choisir le dossier » s'il a été déplacé). Voir
+  [le guide](apps/flam-launcher/docs/guide-editeur.md). Non essayé sur une Flam à ce jour.
+
 ### Corrigé
 
 - Retirer de la Flam une grosse histoire (par exemple une histoire Telmi convertie) n'échoue plus
