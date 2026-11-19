@@ -1328,6 +1328,39 @@ export const fr = {
     contradictionHint:
       "Simple avertissement : l'envoi, le retrait et l'ordre restent possibles. Ce contrôle peut se tromper (histoire d'un autre outil dont le titre est en Latin-1 ou très court). Si une histoire envoyée ne se lit pas sur la Flam, notez la version et l'état affichés ici dans votre retour de test.",
   },
+  /** Glisser-déposer de l'éditeur d'histoires (lot 8, docs/creation-dossier.md § 4.3). */
+  authoringDnd: {
+    grip: "Glisser pour déplacer",
+    dropHere: {
+      import: (menu: string) => `Copier ici, dans « ${menu} »`,
+      image: (title: string) => `Image de « ${title} »`,
+      titleAudio: (title: string) => `Titre lu de « ${title} »`,
+    },
+    refuse: {
+      nowhere:
+        "Déposez sur un menu de l'arbre (ou entre deux éléments), sur l'image ou sur le titre lu de l'élément choisi.",
+      formats:
+        "Formats non acceptés : rien n'a été copié. Audio : mp3, m4a, aac, ogg, opus, wav, flac ; images : png, jpg, bmp, webp ; ou un dossier.",
+      notImage: "Ce n'est pas une image (png, jpg, bmp, webp) : rien n'a été copié.",
+      oneImage: "Une seule image à la fois : rien n'a été copié.",
+      notAudio:
+        "Ce n'est pas un fichier audio (mp3, m4a, aac, ogg, opus, wav, flac) : rien n'a été copié.",
+      oneAudio: "Un seul fichier audio à la fois : rien n'a été copié.",
+      busy: "Une opération est en cours : réessayez dans un instant.",
+      dialog: "Fermez d'abord la fenêtre ouverte : rien n'a été copié.",
+      missing: "Le dossier de l'histoire est introuvable : rien n'a été fait.",
+      gone: "Cet élément n'existe plus dans le dossier : rien n'a été fait.",
+      invalid: "Un menu ne peut pas aller dans lui-même ni dans un de ses sous-menus.",
+    },
+    copied: (menu: string) => `Copié dans « ${menu} ».`,
+    started: (title: string) =>
+      `Déplacement de « ${title} » : relâchez à la place voulue, ou Échap pour annuler.`,
+    cancelled: (title: string) => `Déplacement de « ${title} » annulé.`,
+    stayed: (title: string) => `« ${title} » est resté à sa place.`,
+    reordered: (title: string, menu: string) =>
+      `« ${title} » rangé à sa nouvelle place dans « ${menu} ».`,
+    moved: (title: string, menu: string) => `« ${title} » déplacé dans « ${menu} ».`,
+  },
   /**
    * Histoire faite d'un dossier, suites du lot 5 (docs/creation-dossier.md § 8) : erreurs par
    * code, « Choisir le dossier », textes dédiés du rapport.
@@ -1598,6 +1631,17 @@ export const fr = {
       n === 1
         ? "1 fichier n'a pas été copié (format non accepté)."
         : `${n} fichiers n'ont pas été copiés (format non accepté).`,
+    /** Surveillance du dossier (lot 9, § 4.5). */
+    watch: {
+      changed: "Le dossier a changé dans l'Explorateur : l'affichage est à jour.",
+      back: "Le dossier est de nouveau accessible : l'affichage est à jour.",
+      missing: "Dossier introuvable : l'éditeur passe en lecture seule.",
+      missingTitle: "Dossier introuvable",
+      missingHelp:
+        "Le dossier a été supprimé, renommé ou déplacé, ou la clé USB a été retirée. Rien ne peut être modifié. Rebranchez la clé, ou choisissez le dossier à son nouvel emplacement.",
+      choose: "Choisir le dossier",
+      pickTitle: "Nouvel emplacement du dossier de l'histoire",
+    },
     error: {
       changed:
         "Le dossier a changé entre-temps (modifié ailleurs) : rien n'a été fait. L'affichage est à jour, réessayez.",

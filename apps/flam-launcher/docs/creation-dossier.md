@@ -182,7 +182,12 @@ Windows avec le glisser-déposer HTML5 du reste du launcher (§ 2).
 
 - Le dossier est surveillé (`watch.rs`) tant que l'éditeur est ouvert. Un changement fait dans
   l'Explorateur ou par un autre programme relance la lecture du dossier et met l'arbre à jour,
-  sans perdre la sélection si l'élément existe encore.
+  sans perdre la sélection si l'élément existe encore (sinon son menu est sélectionné).
+  **Fait** (lot 9, `authoring/editor_watch.rs`) : surveillance récursive sans suivre les
+  liens, anti-rebond de 400 ms ; `.flam/`, les temporaires des écritures atomiques et les
+  changements faits par l'éditeur lui-même (pendant l'opération et 500 ms après) sont
+  ignorés. Dossier supprimé, renommé ou clé retirée : l'éditeur passe en lecture seule avec
+  « Choisir le dossier » ; s'il revient, la surveillance reprend.
 - Avant d'agir, chaque opération vérifie l'état attendu (fichier présent, taille et date
   inchangées). Sinon : pas d'action, lecture du dossier relancée, message.
 - Fichier JSON abîmé ou modifié à la main : lu avec tolérance (§ 6), jamais écrasé sans

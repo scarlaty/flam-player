@@ -1,20 +1,17 @@
-import { useContext, useEffect } from "react";
-import { onEditorTask } from "../../../api/editor";
+import { useCallback, useContext, useEffect } from "react";
+import { onEditorRelocated, onEditorTask } from "../../../api/editor";
 import { StoriesContext } from "../../stories/StoriesContext";
 
-/**
- * Fenêtre principale : une création lancée depuis un éditeur rejoint le panneau des tâches
- * (événement `authoring:task`), comme une création lancée ici.
- */
-export function EditorTaskBridge() {
-  const stories = useContext(StoriesContext);
-  const track = stories?.trackTask;
-
+/** Abonnement à un événement des éditeurs, retiré au démontage. */
+function useEditorEvent<T>(
+  subscribe: (handler: (value: T) => void) => Promise<() => void>,
+  handler: ((value: T) => void) | undefined,
+) {
   useEffect(() => {
-    if (!track) return;
+    if (!handler) return;
     let stop: (() => void) | null = null;
     let alive = true;
-    void onEditorTask(track).then((unlisten) => {
+    void subscribe(handler).then((unlisten) => {
       if (alive) stop = unlisten;
       else unlisten();
     });
@@ -22,7 +19,19 @@ export function EditorTaskBridge() {
       alive = false;
       stop?.();
     };
-  }, [track]);
+  }, [subscribe, handler]);
+}
 
+/**
+ * Fenêtre principale : une création lancée depuis un éditeur rejoint le panneau des tâches
+ * (événement `authoring:task`), comme une création lancée ici ; une histoire qui a retenu un
+ * nouveau dossier depuis un éditeur (`authoring:relocated`, lot 9) fait relire Mes histoires.
+ */
+export function EditorTaskBridge() {
+  const stories = useContext(StoriesContext);
+  useEditorEvent(onEditorTask, stories?.trackTask);
+  const refresh = stories?.refreshInstalled;
+  const reread = useCallback(() => void refresh?.(), [refresh]);
+  useEditorEvent<void>(onEditorRelocated, refresh ? reread : undefined);
   return null;
 }

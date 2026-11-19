@@ -57,6 +57,16 @@ export interface ItemPanelProps {
   onAskDelete: (id: string) => void;
   onAddFiles: (menu: string) => void;
   onNewMenu: (parent: string) => void;
+  /** Zone surlignée pendant un dépôt de fichiers (lot 8). */
+  dropZone?: "image" | "titleAudio" | null;
+}
+
+/** Attributs d'une zone de dépôt de fichiers du panneau (lot 8, `data-dnd-zone`). */
+function dropZoneProps(zone: "image" | "titleAudio", active: string | null | undefined) {
+  return {
+    "data-dnd-zone": zone,
+    className: `fl-editor-panel__section${active === zone ? " fl-editor-dnd__zone--active" : ""}`,
+  };
 }
 
 /** Panneau de l'élément choisi (§ 4.1) : titre, image, titre lu, rangement, réglages. */
@@ -274,7 +284,7 @@ function StoryDetails({ view, busy, run, titleRef }: ItemPanelProps) {
   );
 }
 
-function ImageSection({ view, node, busy, run }: ItemPanelProps) {
+function ImageSection({ view, node, busy, run, dropZone }: ItemPanelProps) {
   const text = t.authoringEditor.panel;
   const shown = imageOf(node);
   const isRoot = node.id === "";
@@ -300,7 +310,7 @@ function ImageSection({ view, node, busy, run }: ItemPanelProps) {
   }
 
   return (
-    <div className="fl-editor-panel__section">
+    <div {...dropZoneProps("image", dropZone)}>
       <h3>{isRoot ? text.coverImage : text.image}</h3>
       <div className="fl-editor-panel__media">
         <Thumbnail
@@ -355,7 +365,7 @@ function ImageSection({ view, node, busy, run }: ItemPanelProps) {
   );
 }
 
-function TitleAudioSection({ view, node, busy, run }: ItemPanelProps) {
+function TitleAudioSection({ view, node, busy, run, dropZone }: ItemPanelProps) {
   const text = t.authoringEditor.panel;
   const [speaking, setSpeaking] = useState(false);
   const [voiceError, setVoiceError] = useState(false);
@@ -392,7 +402,7 @@ function TitleAudioSection({ view, node, busy, run }: ItemPanelProps) {
   }
 
   return (
-    <div className="fl-editor-panel__section">
+    <div {...dropZoneProps("titleAudio", dropZone)}>
       <h3>{text.titleAudio}</h3>
       {file ? (
         <p>{text.titleAudioFile(file.split("/").pop() ?? file)}</p>
