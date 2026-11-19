@@ -78,7 +78,8 @@ end
 --     "chapitre quitte" (state.chapter_left, persiste comme home_origin) :
 --     "Reprendre l'histoire" (menu Start, apres sortie ou veille dans le menu des
 --     chapitres) le reprend a cette position, et y revenir par le menu des
---     chapitres aussi. Tout autre chapitre repart du debut.
+--     chapitres aussi. Tout autre chapitre repart du debut ; toute autre scene
+--     ecoutee (hors titre lu) oublie le chapitre quitte.
 --   role = "title"   : titre lu (option affichee seule, annonce d'un chapitre) :
 --     position seule, pas un chapitre de la jauge (totalChapters l'exclut aussi).
 local function roleOf(st)
@@ -401,7 +402,9 @@ function enterStage(id, isResume)
         if not isResume and not keep and state.visited_funs and state.visited_funs[id] then
             state.visited_funs[id].seekposition = nil
         end
-        if role == "chapter" then state.chapter_left = nil end
+        -- Tout contenu ecoute (chapitre, episode d'un recueil...) remplace le
+        -- chapitre quitte ; un titre lu (role "title") ne le remplace pas.
+        if role ~= "title" then state.chapter_left = nil end
     else
         -- noeud de passage (ex. backStage) : pur routage, PAS un chapitre.
         -- Position seule (isStoryStarted reste vrai => plancher .prog>=1 assure

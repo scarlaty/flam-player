@@ -1182,7 +1182,10 @@ nécessaires pour que l'histoire **charge sur le device**) :
     début ; `Démarrer` et la fin d'histoire l'effacent ;
   - `role = "title"` : titre lu (option affichée seule, annonce d'un chapitre) : position
     seule, pas un chapitre de la jauge ; `totalChapters` ne le compte pas ;
-  - autre valeur : ignorée (`role` absent).
+  - autre valeur : ignorée (`role` absent). La clé `role` est **réservée** à cette
+    extension : une histoire Telmi tierce qui l'emploierait avec ces valeurs en changerait
+    le comportement ;
+  - toute autre scène écoutée (hors `role = "title"`) oublie le chapitre quitté.
 - **Stages sans audio** : `autoplay` (ex. `backStage` TELMI) ou sans image → on enchaîne
   directement la transition `ok` (nœud de passage, garde anti-boucle `MAX_PASS`) ; image
   non `autoplay` → affichée par `audio-player` sans audio, en attente de OK.
