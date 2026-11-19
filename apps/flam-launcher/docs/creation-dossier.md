@@ -2,7 +2,7 @@
 
 > **Statut : implémenté, essais sur la Flam à faire** (2026-11-19). Le mainteneur a validé
 > l'objectif (§ 1), les modes recueil et chapitres (§ 5) et les recommandations Q1 à Q8 (§ 12).
-> Les lots 1 à 7 et 10 sont faits ; les lots 8 et 9 sont en PR (§ 11.3). Restent les essais sur la Flam (§ 13), qui confirmeront
+> Les lots 1 à 10 sont faits (§ 11.3). Restent les essais sur la Flam (§ 13), qui confirmeront
 > les limites (§ 9). Guide utilisateur : [guide-editeur.md](guide-editeur.md).
 
 Légende :
@@ -398,7 +398,7 @@ L'éditeur **modifie les fichiers de l'utilisateur** : c'est la partie la plus s
 
 ### 11.3 État d'avancement
 
-Les PR vont de #662 (note de conception) à #675.
+Les PR vont de #662 (note de conception) à #676 (guide).
 
 | Lot | Contenu                                    | État                                                                      |
 | --- | ------------------------------------------ | ------------------------------------------------------------------------- |
@@ -409,8 +409,8 @@ Les PR vont de #662 (note de conception) à #675.
 | 5   | Un dossier fait à la main devient histoire | Fait (#670), suites (#673) : relance, dossier déplacé, cache              |
 | 6   | Opérations, journal, corbeille             | Fait (#671)                                                               |
 | 7   | Fenêtre de l'éditeur                       | Fait (#672)                                                               |
-| 8   | Glisser-déposer                            | PR #674                                                                   |
-| 9   | Surveillance du dossier                    | PR #675                                                                   |
+| 8   | Glisser-déposer                            | Fait (#674)                                                               |
+| 9   | Surveillance du dossier                    | Fait (#675)                                                               |
 | 10  | Pochette extraite, image avec le titre     | Fait (#669)                                                               |
 | 11  | Essais sur la Flam, guide utilisateur      | Guide fait ([guide-editeur.md](guide-editeur.md)) ; essais à faire (§ 13) |
 
