@@ -14,6 +14,7 @@
 //! suivants (§ 11.2).
 
 pub mod images;
+pub mod ops;
 pub mod root;
 pub mod settings;
 pub mod title_card;
