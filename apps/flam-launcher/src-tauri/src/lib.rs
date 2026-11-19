@@ -1,6 +1,7 @@
 //! Backend Rust de flam-launcher. Voir `apps/flam-launcher/README.md` pour l'architecture.
 
 mod app;
+pub mod authoring;
 pub mod cache;
 pub mod catalog;
 pub mod compat;
