@@ -102,6 +102,7 @@ export type AuthoringErrorCode =
   | "retry_unavailable"
   | "folder_changed"
   | "uuid_mismatch"
+  | "read_only_folder"
   | "not_from_folder";
 
 /** Code de création porté par `error` (`kind = "authoring"`), sinon `null`. */

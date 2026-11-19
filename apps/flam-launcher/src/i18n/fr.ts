@@ -1348,6 +1348,8 @@ export const fr = {
         "Le dossier a changé depuis l'échec : utilisez « Actualiser » sur l'histoire.",
       uuidMismatch:
         "Ce dossier n'est pas celui de cette histoire : choisissez le dossier qui contient son fichier _histoire.json.",
+      readOnlyFolder:
+        "Le dossier de cette histoire était en lecture seule : déplacé, il ne peut pas être reconnu. Créez une nouvelle histoire depuis ce dossier.",
       notFromFolder: "Cette histoire n'a pas été créée depuis un dossier.",
     },
     missingTitle: "Dossier introuvable",

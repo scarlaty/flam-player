@@ -50,6 +50,9 @@ pub mod code {
     pub const FOLDER_CHANGED: &str = "folder_changed";
     /// « Choisir le dossier » : le dossier choisi porte un autre identifiant, ou aucun.
     pub const UUID_MISMATCH: &str = "uuid_mismatch";
+    /// « Choisir le dossier » : l'uuid était gardé par le launcher (dossier en lecture seule),
+    /// le dossier déplacé ne peut pas être reconnu.
+    pub const READ_ONLY_FOLDER: &str = "read_only_folder";
     /// « Choisir le dossier » : histoire non installée, ou pas faite d'un dossier.
     pub const NOT_FROM_FOLDER: &str = "not_from_folder";
 }
@@ -328,11 +331,23 @@ pub async fn authoring_retry(
 pub async fn authoring_relocate(
     config: State<'_, ConfigState>,
     install: State<'_, InstallService>,
+    catalog: State<'_, crate::catalog::CatalogService>,
     uuid: String,
     path: String,
 ) -> AppResult<String> {
     let read = read(&config, &install, &path).await?;
-    check_relocation(&read.identity, &uuid)?;
+    if let Err(err) = check_relocation(&read.identity, &uuid) {
+        // Uuid gardé par le launcher pour l'ancien chemin (dossier en lecture seule) : le
+        // dossier déplacé ne le porte pas, il ne peut pas être reconnu (§ 8).
+        if read.identity.uuid.is_none() && remembered_elsewhere(&config, &install, &uuid).await {
+            return Err(refused(
+                code::READ_ONLY_FOLDER,
+                "l'identifiant de cette histoire était gardé par le launcher (dossier en lecture \
+                 seule) : le dossier déplacé ne peut pas être reconnu",
+            ));
+        }
+        return Err(err);
+    }
     let base = read.scan.base.clone();
     // Une création en cours publierait l'ancien chemin en se terminant.
     if install.has_active(&uuid, &base) {
@@ -342,6 +357,9 @@ pub async fn authoring_relocate(
         ));
     }
     let location = base.to_string_lossy().into_owned();
+    // Index de la bibliothèque sous le cache : pas de déplacement ni de vidage du cache pendant
+    // l'écriture (même portillon que `library_remove`).
+    let _gate = catalog.cache_gate().read_owned().await;
     install
         .relocate_folder_story(&uuid, &location)
         .await
@@ -355,9 +373,36 @@ pub async fn authoring_relocate(
     Ok(location)
 }
 
+/// Vrai si l'uuid `uuid` est gardé par le launcher pour le dossier que retient « Mes
+/// histoires » (dossier en lecture seule, § 8).
+async fn remembered_elsewhere(config: &ConfigState, install: &InstallService, uuid: &str) -> bool {
+    let Ok(library) = install.library_list().await else {
+        return false;
+    };
+    let Some(old) = library
+        .iter()
+        .find(|e| e.uuid == uuid && e.source.source_id == build::SOURCE_ID)
+        .map(|e| PathBuf::from(&e.source.download_url))
+    else {
+        return false;
+    };
+    let _guard = config.guard();
+    Registry::new(&config.dir)
+        .find(&old)
+        .is_some_and(|r| r.uuid == uuid)
+}
+
 /// Le dossier lu (identité `identity`) est celui de l'histoire `uuid` : sinon `uuid_mismatch`.
+/// Le dossier d'origine existe encore avec cet uuid (`Conflict::Copied`) : le dossier choisi en
+/// est une copie, refusée (`conflict_copied`).
 pub fn check_relocation(identity: &Identity, uuid: &str) -> AppResult<()> {
     if identity.uuid.as_deref() == Some(uuid) {
+        if let Some(Conflict::Copied { .. }) = identity.conflict {
+            return Err(refused(
+                code::CONFLICT_COPIED,
+                "le dossier d'origine de cette histoire existe encore : ce dossier en est une copie",
+            ));
+        }
         Ok(())
     } else {
         Err(refused(
@@ -444,6 +489,8 @@ mod tests {
     #[test]
     fn choisir_le_dossier_exige_le_meme_uuid() {
         check_relocation(&identity(Some(UUID), None), UUID).unwrap();
+        let err = check_relocation(&identity(Some(UUID), copied()), UUID).unwrap_err();
+        assert_eq!(code_of(err), code::CONFLICT_COPIED);
         for uuid in [None, Some("6d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d")] {
             let err = check_relocation(&identity(uuid, None), UUID).unwrap_err();
             assert_eq!(code_of(err), code::UUID_MISMATCH);

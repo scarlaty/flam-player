@@ -149,6 +149,10 @@ pub fn path_of(base: &Path, id: &str) -> PathBuf {
         .fold(base.to_path_buf(), |path, part| path.join(part))
 }
 
+/// Audio source au plus d'une histoire qui passe par le cache des MP3 : la moitié du plafond
+/// du cache, partagé avec les podcasts.
+pub const MAX_CACHED_AUDIO_BYTES: u64 = mp3cache::MAX_CACHE_BYTES / 2;
+
 /// Source du cache des MP3 de l'histoire `uuid` (`podcasts/<source>/mp3/` du cache).
 pub fn cache_source_id(uuid: &str) -> String {
     format!("authoring-{uuid}")

@@ -87,6 +87,8 @@ export function errorText(error: AppError): string {
       return errors.folderChanged;
     case "uuid_mismatch":
       return errors.uuidMismatch;
+    case "read_only_folder":
+      return errors.readOnlyFolder;
     case "not_from_folder":
       return errors.notFromFolder;
     default:

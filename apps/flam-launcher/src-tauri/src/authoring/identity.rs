@@ -289,13 +289,15 @@ pub fn decide(identity: &Identity, choice: Option<ConflictChoice>) -> AppResult<
     };
     match (&identity.conflict, choice) {
         (_, Some(ConflictChoice::NewStory)) => return Ok(fresh()),
-        (Some(Conflict::Foreign { title }), _) => return Err(AppError::Authoring {
-            code: code::CONFLICT_FOREIGN,
-            message: format!(
+        (Some(Conflict::Foreign { title }), _) => {
+            return Err(AppError::Authoring {
+                code: code::CONFLICT_FOREIGN,
+                message: format!(
                 "l'identifiant de ce dossier est déjà celui de « {title} », installée depuis une \
                      autre source : choisissez « Nouvelle histoire »"
             ),
-        }),
+            })
+        }
         (Some(Conflict::Copied { .. }), None) => return Err(AppError::Authoring {
             code: code::CONFLICT_COPIED,
             message:

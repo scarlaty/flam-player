@@ -5,6 +5,7 @@ import type {
 } from "../../api/install";
 import type { Task, TaskKind, TaskState } from "../../components";
 import { t } from "../../i18n";
+import { errorText } from "../authoring/problemText";
 import { ownText } from "../../i18n/lookup";
 import type { StoryProgress } from "../library/storyState";
 import { formatBytes } from "../validation";
@@ -107,6 +108,13 @@ export function toPanelTask(task: InstallTask, detail?: TaskDetail): Task {
  * qui ne répond plus) reste affiché sous le texte traduit, sur une ligne à part.
  */
 export function taskErrorMessage(error: TaskError): string {
+  // Création depuis un dossier : texte d'après le code, jamais le message (chemins).
+  if (error.kind === "authoring")
+    return errorText({
+      kind: error.kind,
+      message: error.message,
+      code: error.code ?? undefined,
+    });
   // Le code vient du convertisseur : texte libre, jamais une clé héritée (`constructor`, `__proto__`).
   const text =
     error.kind === "conversion" && error.code

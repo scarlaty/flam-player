@@ -283,12 +283,17 @@ impl InstallService {
             }
         };
         // Cache des MP3 (§ 8) : seuls les fichiers audio modifiés depuis la création précédente
-        // sont reconvertis.
-        let cache = backend
-            .mp3_cache(
-                tc.cache_root.clone(),
-                BTreeSet::from([folder_build::cache_source_id(&job.uuid)]),
-            )
+        // sont reconvertis. Le cache est partagé avec les podcasts (plafond commun) : une
+        // histoire dont l'audio dépasse `folder_build::MAX_CACHED_AUDIO_BYTES` n'y passe pas
+        // (elle le viderait sans y tenir, et les packs suivants l'en évinceraient).
+        let cache = (scan.audio_bytes <= folder_build::MAX_CACHED_AUDIO_BYTES)
+            .then(|| {
+                backend.mp3_cache(
+                    tc.cache_root.clone(),
+                    BTreeSet::from([folder_build::cache_source_id(&job.uuid)]),
+                )
+            })
+            .flatten()
             .map(|c| c.with_cancel(cancel.clone()));
         let stage = PackBuild {
             service: self,

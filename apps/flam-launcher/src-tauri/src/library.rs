@@ -1150,9 +1150,9 @@ impl Library {
         let _lock = self.lock_within(self.lock_timeout)?;
         let (mut stories, untrusted) = self.reconcile_state()?;
         if untrusted {
-            return Err(AppError::Validation(
-                "index de la bibliothèque à vérifier : dossier de l'histoire non modifié".into(),
-            ));
+            return Err(AppError::Io(std::io::Error::other(
+                "index de la bibliothèque à vérifier : dossier de l'histoire non modifié",
+            )));
         }
         let Some(entry) = stories.iter_mut().find(|e| e.uuid == uuid) else {
             return Err(AppError::NotFound(format!(
@@ -1310,6 +1310,7 @@ pub async fn library_remove(
     config: State<'_, ConfigState>,
     catalog: State<'_, CatalogService>,
     player: State<'_, PlayerService>,
+    podcasts: State<'_, crate::podcast::source::PodcastService>,
     uuid: String,
     purge_saves: Option<bool>,
 ) -> AppResult<()> {
@@ -1323,19 +1324,28 @@ pub async fn library_remove(
     let _gate = catalog.cache_gate().read_owned().await;
     let players = player.inner().clone();
     let installs = service.inner().clone();
+    let root = cache_root.clone();
+    let id = uuid.clone();
     blocking(move || {
         remove_story(
             &installs,
             &players,
-            &cache_root,
+            &root,
             &saves_root,
-            &uuid,
+            &id,
             purge_saves,
             |_: &LibraryEntry, _: Option<&Path>| Ok(()),
         )
     })
     .await??;
     drop(_gate);
+    // Histoire faite d'un dossier : son cache des MP3 (`podcasts/authoring-<uuid>/`) part avec
+    // elle, sous le verrou de sa source (au mieux, après le portillon relâché : `purge_source`
+    // le reprend).
+    let source_id = crate::authoring::build::cache_source_id(&uuid);
+    if let Err(err) = podcasts.purge_source(&cache_root, &source_id).await {
+        tracing::warn!("cache des MP3 de l'histoire non purgé : {}", err.kind());
+    }
     Ok(())
 }
 
