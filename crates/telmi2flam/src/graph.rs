@@ -281,6 +281,35 @@ impl ItemOp {
     }
 }
 
+/// Rôle d'un stage dans un livre à chapitres (extension du launcher, champ `role` de
+/// `nodes.json`, transmis tel quel dans `nodes.lua` ; voir `engine/story.lua`). Absent pour
+/// toute autre histoire : le paquet est alors identique à celui d'avant cette extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// `"chapter"` : chapitre, repris à sa position après un retour (`home`).
+    Chapter,
+    /// `"title"` : titre lu (option seule, annonce) : pas un chapitre de la jauge.
+    Title,
+}
+
+impl Role {
+    /// `role` d'un stage : une autre valeur, ou un autre type, est ignorée.
+    fn parse(v: Option<&Value>) -> Option<Self> {
+        match v {
+            Some(Value::Str(s)) if s == "chapter" => Some(Role::Chapter),
+            Some(Value::Str(s)) if s == "title" => Some(Role::Title),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Role::Chapter => "chapter",
+            Role::Title => "title",
+        }
+    }
+}
+
 /// Stage converti, dans l'ordre des clés de Python.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stage {
@@ -293,6 +322,8 @@ pub struct Stage {
     pub reset: bool,
     /// Label du choix (carrousel), vide si aucun.
     pub text: String,
+    /// Rôle dans un livre à chapitres (après `text` dans `nodes.lua`), absent sinon.
+    pub role: Option<Role>,
 }
 
 impl Stage {
@@ -329,6 +360,9 @@ impl Stage {
         }
         if !self.text.is_empty() {
             t.push(("text", Lua::Str(self.text.clone())));
+        }
+        if let Some(role) = self.role {
+            t.push(("role", Lua::Str(role.name().to_owned())));
         }
         table(t)
     }
@@ -504,6 +538,7 @@ pub fn convert_graph(
                 items,
                 reset,
                 text,
+                role: Role::parse(st.get("role")),
             },
         );
     }
@@ -600,7 +635,9 @@ impl Start {
 
 /// Chapitres : stages avec audio qui peuvent être joués comme scène (`enterStage` de
 /// `story.lua`) : cible d'une action à une seule entrée, d'une action à conditions, ou stage
-/// autoplay. Indicateur par stage, dans l'ordre de `graph.stages`.
+/// autoplay. Un stage de rôle [`Role::Title`] (titre lu d'un livre à chapitres) n'en est pas
+/// un : le moteur ne le compte pas dans la jauge. Indicateur par stage, dans l'ordre de
+/// `graph.stages`.
 fn chapters(graph: &Graph) -> Vec<bool> {
     let mut playable = vec![false; graph.stages.len()];
     for lst in graph.actions.values() {
@@ -617,7 +654,7 @@ fn chapters(graph: &Graph) -> Vec<bool> {
         .stages
         .values()
         .zip(playable)
-        .map(|(st, p)| p && st.audio.is_some())
+        .map(|(st, p)| p && st.audio.is_some() && st.role != Some(Role::Title))
         .collect()
 }
 
@@ -872,6 +909,7 @@ mod tests {
             items: Vec::new(),
             reset: false,
             text: String::new(),
+            role: None,
         }
     }
 
@@ -1106,6 +1144,70 @@ mod tests {
         let lua = String::from_utf8(lua).unwrap();
         assert!(lua.contains("image = \"y.png.lif\"") && !lua.contains("audio ="));
         assert!(lua.contains("totalChapters = 1,"));
+    }
+
+    /// Livre à chapitres du launcher : `role` transmis tel quel, titre lu hors de
+    /// `totalChapters` ; valeur inconnue ignorée ; sans `role`, sortie inchangée.
+    #[test]
+    fn role_des_livres_a_chapitres() {
+        struct Named;
+        impl Assets for Named {
+            fn image(&mut self, n: &str, _: &str, _: bool) -> Result<Option<String>, ConvError> {
+                Ok(Some(format!("{n}.lif")))
+            }
+            fn audio(&mut self, n: &str, _: &str) -> Result<Option<String>, ConvError> {
+                Ok(Some(n.to_owned()))
+            }
+        }
+        let lua = |roles: [&str; 3]| {
+            let role = |r: &str| {
+                if r.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#", "role": {r}"#)
+                }
+            };
+            let json = format!(
+                r#"{{"stages": {{
+                    "e1": {{"audio": "e1.mp3", "control": {{"autoplay": true}},
+                            "ok": {{"action": "q"}}{}}},
+                    "n2": {{"audio": "t2.mp3", "control": {{"autoplay": true}},
+                            "ok": {{"action": "r"}}{}}},
+                    "e2": {{"audio": "e2.mp3", "control": {{"autoplay": true}}{}}}}},
+                  "actions": {{"p": [{{"stage": "e1"}}], "q": [{{"stage": "n2"}}],
+                               "r": [{{"stage": "e2"}}]}},
+                  "startAction": {{"action": "p"}}}}"#,
+                role(roles[0]),
+                role(roles[1]),
+                role(roles[2]),
+            );
+            let nodes = load_json(json.as_bytes(), "nodes.json").unwrap();
+            let src = Sources::new(&nodes).unwrap();
+            let graph =
+                convert_graph(&src, &Object::new(), &mut Replaced::new(), &mut Named).unwrap();
+            let header = Header {
+                title: "T",
+                subtitle: "",
+                title_image: None,
+                title_audio: None,
+                selector: "carousel",
+            };
+            let out = nodes_lua(&header, &graph, &Start::new(&src).unwrap()).unwrap();
+            (graph, String::from_utf8(out).unwrap())
+        };
+        let (graph, with) = lua([r#""chapter""#, r#""title""#, r#""chapter""#]);
+        assert_eq!(graph.stages["e1"].role, Some(Role::Chapter));
+        assert_eq!(graph.stages["n2"].role, Some(Role::Title));
+        assert!(with.contains("role = \"chapter\""), "{with}");
+        assert!(with.contains("role = \"title\""), "{with}");
+        assert!(with.contains("totalChapters = 2,"), "{with}");
+        // Sans role : l'annonce compte, aucune clé `role`.
+        let (_, without) = lua(["", "", ""]);
+        assert!(without.contains("totalChapters = 3,") && !without.contains("role"));
+        // Valeur ou type inconnus : ignorés, comme sans role.
+        let (graph, odd) = lua([r#""livre""#, "1", "null"]);
+        assert!(graph.stages.values().all(|st| st.role.is_none()));
+        assert_eq!(odd, without);
     }
 
     #[test]
