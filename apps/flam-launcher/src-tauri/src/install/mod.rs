@@ -36,6 +36,7 @@
 pub mod convert;
 pub mod download;
 pub mod pack;
+pub mod pack_build;
 pub mod pack_speech;
 pub mod podcast;
 pub mod studio;
@@ -1238,6 +1239,21 @@ impl InstallService {
                 return Err(err);
             }
         };
+        self.produce_prepared(id, prepared, tc, staged, cancel)
+            .await
+    }
+
+    /// Archive de pack préparée (`pack_build`) : conversion vers `staged`, puis suppression du
+    /// dossier de travail (hors runtime), quelle que soit l'issue (N8 a). Renvoie l'entrée à
+    /// publier.
+    async fn produce_prepared(
+        &self,
+        id: &str,
+        prepared: pack_build::Prepared,
+        tc: &Toolchain,
+        staged: &Path,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> AppResult<(StoryEntry, Produced)> {
         // D5 : le `.plain.pk` à venir (environ la taille de l'archive) reste réservé jusqu'à la
         // fin de la conversion.
         let size = tokio::fs::metadata(&prepared.archive)

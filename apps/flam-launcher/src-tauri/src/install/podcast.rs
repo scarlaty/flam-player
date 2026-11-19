@@ -33,9 +33,13 @@
 //!   puis les titres sont synthétisés **avant les téléchargements** ; titre isolé en échec :
 //!   muet et avertissement (`PackStatus::warnings`) ; premier titre ou plus de la moitié en
 //!   échec : arrêt `tts_failed`.
+//! - **Étape commune** ([`pack_build`](super::pack_build)) : à partir des fichiers téléchargés
+//!   (ou servis par le cache), la conversion audio, les images, les titres lus et l'archive sont
+//!   faits par l'étape partagée avec les autres sources de packs ; restent ici la composition,
+//!   les flux, D5, les téléchargements, la recherche dans le cache et le choix de la couverture.
 //! - `library.json` n'est jamais touché ici : seule la publication existante l'écrit.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -46,13 +50,15 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::watch;
 
-use super::pack_speech::{self, SpokenTitles, TitleKey};
+use super::pack_build::{
+    converter_unavailable, ItemAudio, LocalItem, MenuNode, PackBuild, PackSpec, Prepared,
+    ARCHIVE_NAME, SPEECH_PERCENT,
+};
+use super::pack_speech::{self, SpokenTitles};
 use super::{child_of, converter_engine, is_task_id, lock, InstallService, TaskState, Toolchain};
 use crate::catalog::blocking;
 use crate::ffmpeg::Verified;
-use crate::podcast::archive::{
-    self, MenuEntry, Pack, PackEpisode, PackMetadata, MAX_AUDIO_BYTES, MAX_TOTAL_AUDIO_BYTES,
-};
+use crate::podcast::archive::{self, MAX_AUDIO_BYTES};
 use crate::podcast::artwork::{self, Artwork, ArtworkError, ArtworkKind};
 use crate::podcast::fetch::{self, Item, Progress, Report, Workdir};
 use crate::podcast::mp3cache::{self, CacheAccess, EntryKey, Hit, Wanted};
@@ -73,17 +79,12 @@ pub const WORK_DIR: &str = "podcast-work";
 pub const PACK_SOURCE_ID: &str = "podcast-pack";
 /// Version fixe d'un pack (P3).
 pub const PACK_VERSION: u32 = 1;
-/// Archive Telmi, dans le dossier de travail.
-const ARCHIVE_NAME: &str = "pack.zip";
 /// D5 : facteur d'espace disque (originaux, MP3, archive, `.plain.pk`, § 10).
 const DISK_FACTOR: u64 = 4;
 /// D5 : taille comptée pour un épisode sans taille ni durée annoncées.
 const UNKNOWN_EPISODE_BYTES: u64 = 50_000_000;
 /// D5 : marge fixe.
 const DISK_MARGIN: u64 = 200_000_000;
-/// Part de la préparation réservée aux titres lus (#487) : 0 à 10 %, les téléchargements
-/// suivent de 10 à 60 %.
-const SPEECH_PERCENT: f64 = 10.0;
 /// Délai du téléchargement de la couverture.
 const COVER_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -176,11 +177,7 @@ pub trait PackBackend: Send + Sync {
         &'a self,
         cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<Verified>> {
-        Box::pin(async move {
-            let ff = crate::ffmpeg::Ffmpeg::locate(&crate::settings::Environment::current())?;
-            let mut cancel = cancel.clone();
-            ff.verify(crate::ffmpeg::Tool::Ffmpeg, &mut cancel).await
-        })
+        Box::pin(super::pack_build::live_title_encoder(cancel))
     }
     /// Conversion d'un titre synthétisé en MP3 `dest` par `encoder` ; taille du MP3.
     fn title_mp3<'a>(
@@ -190,10 +187,9 @@ pub trait PackBackend: Send + Sync {
         dest: &'a Path,
         cancel: &'a watch::Receiver<bool>,
     ) -> BoxFuture<'a, AppResult<u64>> {
-        Box::pin(async move {
-            let mut cancel = cancel.clone();
-            speech::wav_to_mp3_verified(encoder, wav, dest, &mut cancel).await
-        })
+        Box::pin(super::pack_build::live_title_mp3(
+            encoder, wav, dest, cancel,
+        ))
     }
 }
 
@@ -303,18 +299,6 @@ impl PackBackend for LivePackBackend {
     }
 }
 
-/// Panne du convertisseur audio : ffmpeg ou ffprobe absent, ou empreinte fausse. Fatale pour le
-/// pack entier (aucun épisode ne pourrait être converti), jamais comptée comme un échec d'épisode.
-fn converter_unavailable(err: AppError) -> AppError {
-    match err {
-        AppError::ConverterUnavailable(why) => AppError::ConverterUnavailable(format!(
-            "ffmpeg embarqué indisponible, nécessaire pour convertir les épisodes du pack \
-             (réinstallez Flam Launcher) : {why}"
-        )),
-        other => other,
-    }
-}
-
 /// Vérifie une fois l'empreinte de ffmpeg **et** de ffprobe, avant tout téléchargement : la
 /// conversion des épisodes lance les deux. Le hachage s'interrompt à l'annulation
 /// (`AppError::Cancelled`).
@@ -331,25 +315,8 @@ pub(super) async fn verify_converter(
     Ok(())
 }
 
-/// Erreur de conversion qui arrête tout le pack au lieu de retirer l'épisode : convertisseur
-/// indisponible, ou erreur disque générale (hors délai d'un épisode, `TimedOut`). Les erreurs
-/// disque propres à un épisode arrivent ici en `Conversion` (`io_failed`) et retirent l'épisode.
-fn is_fatal_conversion(err: &AppError) -> bool {
-    match err {
-        AppError::ConverterUnavailable(_) => true,
-        AppError::Io(e) => e.kind() != std::io::ErrorKind::TimedOut,
-        _ => false,
-    }
-}
-
-/// Motif journalisé d'un épisode retiré : genre de l'erreur et, pour une conversion, son code
-/// stable. Ni URL ni titre.
-pub(super) fn drop_reason(err: &AppError) -> String {
-    match err {
-        AppError::Conversion { code, .. } => format!("{} ({code})", err.kind()),
-        _ => err.kind().to_string(),
-    }
-}
+#[cfg(test)]
+pub(super) use super::pack_build::drop_reason;
 
 /// Efface le brouillon de `dir` si sa révision n'a pas avancé depuis la création du pack : un
 /// brouillon commencé ensuite n'est jamais effacé.
@@ -487,13 +454,6 @@ pub fn sweep_workdirs(cache_root: &Path, orphans: &dyn Fn(Vec<String>) -> Vec<St
             tracing::warn!("dossier de travail orphelin {name} non supprimé : {err}");
         }
     }
-}
-
-/// Résultat de la préparation : archive écrite, entrée à publier, épisodes retirés.
-pub(super) struct Prepared {
-    pub workdir: Workdir,
-    pub archive: PathBuf,
-    pub entry: StoryEntry,
 }
 
 /// Épisode retenu de la composition, avec son flux.
@@ -769,17 +729,6 @@ impl InstallService {
         .await
     }
 
-    fn emit_phase(&self, id: &str, percent: f64, phase: &str) {
-        self.emit(super::InstallProgress {
-            task_id: id.to_string(),
-            state: TaskState::Preparing,
-            percent: Some(percent),
-            received: None,
-            total: None,
-            phase: Some(phase.to_string()),
-        });
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn prepare_in(
         &self,
@@ -814,10 +763,41 @@ impl InstallService {
         }
         self.set_pack_status(id, chosen.len(), Vec::new());
 
+        // Étape commune (`pack_build`) : épisodes désignés par leur rang dans `chosen`.
+        let ranks: HashMap<&EpisodeRef, usize> = chosen
+            .iter()
+            .enumerate()
+            .map(|(n, c)| (c.reference, n))
+            .collect();
+        let tree = menu_tree(&job.composition.menu, &ranks);
+        let mut items: Vec<LocalItem> = chosen
+            .iter()
+            .map(|c| LocalItem {
+                title: c.episode.title.clone(),
+                audio: ItemAudio::Missing,
+                image: None,
+                title_audio: None,
+                cache_key: None,
+            })
+            .collect();
+        let stage = PackBuild {
+            service: self,
+            id,
+            workdir: workdir.path(),
+            backend,
+            cancel,
+        };
+
         // Titres lus (#462) : avant tout téléchargement, pour qu'une voix inutilisable arrête
         // la création sans rien télécharger.
-        let (spoken, mut warnings) = if job.composition.titles_audio {
-            self.speak_titles(id, job, &chosen, &metadata, workdir, backend, cancel)
+        let (spoken, warnings) = if job.composition.titles_audio {
+            stage
+                .speak_titles(
+                    &tree,
+                    &items,
+                    &metadata.title,
+                    job.composition.titles_voice.as_deref(),
+                )
                 .await?
         } else {
             (SpokenTitles::default(), Vec::new())
@@ -840,7 +820,7 @@ impl InstallService {
             );
         }
         // `id` : rang ; `feed` : uuid de la source. Jamais d'URL ni de titre (D11).
-        let items: Vec<Item> = chosen
+        let fetch_items: Vec<Item> = chosen
             .iter()
             .enumerate()
             .filter(|(n, _)| !hits.contains_key(n))
@@ -881,25 +861,19 @@ impl InstallService {
                 }
             })
         };
-        let fetched = if items.is_empty() {
+        let fetched = if fetch_items.is_empty() {
             // Tout vient du cache.
             Report::default()
         } else {
             backend
-                .fetch(&items, workdir, concurrency, cancel.clone(), progress)
+                .fetch(&fetch_items, workdir, concurrency, cancel.clone(), progress)
                 .await
                 .map_err(explain_fetch_error)?
         };
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
         }
-        let mut dropped: Vec<usize> = Vec::new();
         let rank = |item_id: &str| -> Option<usize> { item_id.strip_prefix('e')?.parse().ok() };
-        for d in &fetched.dropped {
-            if let Some(n) = rank(&d.id) {
-                dropped.push(n);
-            }
-        }
         // Plafond D1 sur les tailles réelles (le front compte 0 les tailles inconnues).
         let total: u64 = fetched.fetched.iter().map(|f| f.audio_bytes).sum();
         if total > MAX_PACK_BYTES {
@@ -944,107 +918,33 @@ impl InstallService {
             return Err(AppError::Cancelled);
         }
 
-        // 2. Audio (60 à 85 %).
-        self.emit_phase(id, 60.0, "audio");
-        let mut ready: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
-        let mut conversions = Vec::new();
-        for f in &fetched.fetched {
-            let Some(n) = rank(&f.id) else { continue };
-            let mp3 = workdir.path().join(format!("ep-{n:04}.mp3"));
-            conversions.push((f.audio.clone(), mp3.clone()));
-            ready.push((n, mp3, f.image.clone()));
+        // 2. Audio (60 à 85 %), par l'étape commune : MP3 servis par le cache (jamais au-delà
+        // de `MAX_AUDIO_BYTES` : `CacheAccess::lookup` supprime une telle entrée, #466), fichiers
+        // téléchargés à convertir ; un épisode perdu au téléchargement reste `Missing` (retiré,
+        // P7).
+        for (item, key) in items.iter_mut().zip(&keys) {
+            item.cache_key = Some(key.clone());
         }
-        let results = if conversions.is_empty() {
-            Vec::new()
-        } else {
-            backend.convert_audio(conversions, cancel).await?
-        };
-        if *cancel.borrow() {
-            return Err(AppError::Cancelled);
-        }
-        let mut kept: Vec<(usize, PathBuf, Option<PathBuf>)> = Vec::new();
-        let mut audio_total = 0u64;
-        // Épisodes servis : le cache ne sert jamais une entrée au-delà de `MAX_AUDIO_BYTES`
-        // (`CacheAccess::lookup` la supprime, #466) ; aucune borne à revérifier ici.
         for &n in &hit_ranks {
             let hit = &hits[&n];
             debug_assert!(hit.mp3_bytes <= MAX_AUDIO_BYTES);
-            audio_total += hit.mp3_bytes;
-            kept.push((n, hit.mp3.clone(), hit_images.get(&n).cloned()));
+            items[n].audio = ItemAudio::Ready {
+                mp3: hit.mp3.clone(),
+                bytes: hit.mp3_bytes,
+            };
+            items[n].image = hit_images.get(&n).cloned();
         }
-        for ((n, mp3, image), result) in ready.into_iter().zip(results) {
-            match result {
-                Ok(bytes) if bytes <= MAX_AUDIO_BYTES => {
-                    audio_total += bytes;
-                    to_cache.push(mp3cache::Store {
-                        key: keys[n].clone(),
-                        mp3: mp3.clone(),
-                        image: image.clone(),
-                        image_only: false,
-                    });
-                    kept.push((n, mp3, image));
-                }
-                // Filet : `audio::convert` refuse déjà toute sortie au-delà de la borne
-                // (`audio_too_large`), cette branche est inatteignable avec le convertisseur réel.
-                Ok(_) => {
-                    tracing::warn!(episode = n, "épisode retiré du pack : MP3 trop volumineux");
-                    dropped.push(n);
-                }
-                Err(AppError::Cancelled) => return Err(AppError::Cancelled),
-                Err(err) if is_fatal_conversion(&err) => return Err(converter_unavailable(err)),
-                Err(err) => {
-                    tracing::warn!(
-                        episode = n,
-                        "épisode retiré du pack : {}",
-                        drop_reason(&err)
-                    );
-                    dropped.push(n);
-                }
-            }
+        for f in &fetched.fetched {
+            let Some(item) = rank(&f.id).and_then(|n| items.get_mut(n)) else {
+                continue;
+            };
+            item.audio = ItemAudio::Source(f.audio.clone());
+            item.image = f.image.clone();
         }
-        // Mise en cache des MP3 convertis, avant que les pochettes d'origine ne soient
-        // supprimées du dossier de travail ; puis éviction (jamais les épisodes de ce pack).
-        if let Some(cache) = cache {
-            if !to_cache.is_empty() {
-                cache.store(to_cache, now).await;
-            }
-            let protect: HashSet<(String, String)> = keys
-                .iter()
-                .map(|k| (k.source_id.clone(), k.episode_id.clone()))
-                .collect();
-            cache.evict(protect).await;
-        }
-        if *cancel.borrow() {
-            return Err(AppError::Cancelled);
-        }
-        if kept.is_empty() {
-            let titles: Vec<String> = dropped
-                .iter()
-                .take(3)
-                .filter_map(|&n| chosen.get(n).map(|c| archive::label(&c.episode.title, "?")))
-                .collect();
-            let more = if dropped.len() > 3 { ", …" } else { "" };
-            return Err(AppError::DownloadInvalid(format!(
-                "aucun épisode utilisable (téléchargement ou conversion en échec) : {}{more}",
-                titles.join(", ")
-            )));
-        }
-        if audio_total > MAX_TOTAL_AUDIO_BYTES {
-            return Err(AppError::DownloadInvalid(format!(
-                "audio converti trop volumineux : {} Mo",
-                audio_total.div_ceil(1_000_000)
-            )));
-        }
-        dropped.sort_unstable();
-        dropped.dedup();
-        let dropped_titles: Vec<String> = dropped
-            .iter()
-            .filter_map(|&n| chosen.get(n).map(|c| c.episode.title.clone()))
-            .collect();
-        self.set_pack_status(id, chosen.len(), dropped_titles.clone());
+        let converted = stage.convert_audio(&items, cache, to_cache, now).await?;
 
         // 3. Pochettes (85 à 90 %) : une image illisible ne retire pas l'épisode (D13).
-        self.emit_phase(id, 85.0, "images");
+        stage.begin_images();
         let cover_url: Option<String> = match &report.cover {
             Some(CoverChoice::Feed { source_id }) => feeds
                 .get(source_id)
@@ -1082,370 +982,70 @@ impl InstallService {
                 }
             }
         };
-        if *cancel.borrow() {
-            return Err(AppError::Cancelled);
-        }
-        let dir = workdir.path().to_path_buf();
-        let jobs: Vec<(usize, Option<PathBuf>)> =
-            kept.iter().map(|(n, _, img)| (*n, img.clone())).collect();
-        let converter = backend.clone();
-        let (pngs, cover) = blocking(move || {
-            convert_artwork(&dir, &jobs, cover_source, &|bytes, kind| {
-                converter.convert_artwork(bytes, kind)
-            })
-        })
-        .await??;
+        let images = stage.images(&converted, cover_source).await?;
 
         // 4. Archive Telmi (90 à 100 %).
-        self.emit_phase(id, 90.0, "archive");
-        let mut episodes: HashMap<usize, PackEpisode> = HashMap::new();
-        for (n, mp3, _) in kept {
-            episodes.insert(
-                n,
-                PackEpisode {
-                    title: chosen[n].episode.title.clone(),
-                    audio: mp3,
-                    image: pngs.get(&n).cloned(),
-                    title_audio: None,
-                },
-            );
-        }
-        let ranks: HashMap<&EpisodeRef, usize> = chosen
-            .iter()
-            .enumerate()
-            .map(|(n, c)| (c.reference, n))
-            .collect();
-        let mut used: HashSet<TitleKey> = HashSet::new();
-        let mut menu = build_menu(
-            &job.composition.menu,
-            &ranks,
-            &mut episodes,
-            &spoken,
-            &mut Vec::new(),
-            &mut used,
-            &mut warnings,
-        );
-        mute_shifted_categories(&job.composition.menu, &used, &spoken, &mut menu);
-        if menu.is_empty() {
-            return Err(AppError::DownloadInvalid(
-                "aucun épisode utilisable dans le pack".into(),
-            ));
-        }
-        // Avertissements des seuls titres muets qui restent dans le pack (un épisode retiré
-        // n'en a plus besoin).
-        let title_audio = spoken.audio.get(&TitleKey::Pack).cloned();
-        warnings.extend(
-            spoken
-                .failed
-                .iter()
-                .filter(|(key, _)| *key == TitleKey::Pack || used.contains(key))
-                .map(|(key, text)| pack_speech::failure_warning(key, text)),
-        );
-        if !warnings.is_empty() {
-            self.set_pack_warnings(id, warnings);
-        }
-        let description = metadata
-            .description
-            .clone()
-            .unwrap_or_else(|| archive::default_description(&menu));
-        let pack = Pack {
-            uuid: uuid::Uuid::parse_str(&job.uuid)
-                .map_err(|_| AppError::Validation("uuid de pack invalide".into()))?,
-            metadata: PackMetadata {
-                title: metadata.title.clone(),
-                subtitle: metadata.subtitle.clone(),
-                age: metadata.age,
-                description: archive::with_failures(&description, &dropped_titles),
-            },
-            cover,
-            menu,
-            title_audio,
+        let spec = PackSpec {
+            uuid: job.uuid.clone(),
+            metadata,
+            items,
+            menu: tree,
         };
-        let archive_path = workdir.path().join(ARCHIVE_NAME);
-        let dest = archive_path.clone();
-        let flag = cancel.clone();
-        blocking(move || archive::write_archive(&pack, &dest, &|| *flag.borrow()))
-            .await?
-            .map_err(|err| match err {
-                archive::ArchiveError::Cancelled => AppError::Cancelled,
-                archive::ArchiveError::Io(e) => AppError::Io(e),
-                other => AppError::Conversion {
-                    code: "pack_archive".into(),
-                    message: other.to_string(),
-                },
-            })?;
-        let entry = pack_entry(&job.uuid, &metadata, &archive_path);
+        let archive_path = stage
+            .write_archive(&spec, converted, images, &spoken, warnings)
+            .await?;
+        let entry = pack_entry(&job.uuid, &spec.metadata, &archive_path);
         Ok((archive_path, entry))
     }
-
-    fn set_pack_status(&self, id: &str, episodes: usize, dropped: Vec<String>) {
-        let mut tasks = lock(&self.0.tasks);
-        if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
-            let warnings = slot
-                .task
-                .pack
-                .take()
-                .map(|p| p.warnings)
-                .unwrap_or_default();
-            slot.task.pack = Some(PackStatus {
-                episodes,
-                dropped,
-                warnings,
-            });
-        }
-    }
-
-    fn set_pack_warnings(&self, id: &str, warnings: Vec<String>) {
-        let mut tasks = lock(&self.0.tasks);
-        if let Some(slot) = tasks.iter_mut().find(|s| s.task.id == id) {
-            slot.task
-                .pack
-                .get_or_insert_with(PackStatus::default)
-                .warnings = warnings;
-        }
-    }
-
-    /// Titres lus (#462) : voix choisie (repli sur la voix par défaut avec un avertissement),
-    /// puis synthèse et conversion de chaque titre dans le dossier de travail. Rend les MP3
-    /// produits et les avertissements de voix ; voir [`pack_speech::speak`] pour les arrêts.
-    #[allow(clippy::too_many_arguments)]
-    async fn speak_titles(
-        &self,
-        id: &str,
-        job: &PackJob,
-        chosen: &[Chosen<'_>],
-        metadata: &ResolvedMetadata,
-        workdir: &Workdir,
-        backend: &Arc<dyn PackBackend>,
-        cancel: &watch::Receiver<bool>,
-    ) -> AppResult<(SpokenTitles, Vec<String>)> {
-        self.emit_phase(id, 0.0, "speech");
-        let synth = backend.speech();
-        let (voice, fallback) = {
-            let (synth, requested) = (synth.clone(), job.composition.titles_voice.clone());
-            blocking(move || pack_speech::choose_voice(&synth, requested.as_deref())).await??
-        };
-        let titles_by_ref: HashMap<&EpisodeRef, &str> = chosen
-            .iter()
-            .map(|c| (c.reference, c.episode.title.as_str()))
-            .collect();
-        let titles = pack_speech::titles(&job.composition, &metadata.title, &|r| {
-            titles_by_ref.get(r).map(|t| (*t).to_string())
-        });
-        // Avancement par titre (0 à SPEECH_PERCENT, #487) ; durée réelle journalisée (nombres
-        // seulement, jamais de texte ni de voix).
-        let started = std::time::Instant::now();
-        let progress = |done: usize, total: usize| {
-            if total > 0 {
-                let part = done as f64 / total as f64;
-                self.emit_phase(id, part * SPEECH_PERCENT, "speech");
-            }
-        };
-        let spoken = pack_speech::speak(
-            backend,
-            &synth,
-            &voice,
-            &titles,
-            workdir.path(),
-            cancel,
-            &progress,
-        )
-        .await?;
-        tracing::info!(
-            titles = spoken.audio.len(),
-            failed = spoken.failed.len(),
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "titres lus : étape terminée"
-        );
-        Ok((spoken, fallback.into_iter().collect()))
-    }
 }
 
-/// Décodeur de pochette ([`PackBackend::convert_artwork`]).
-pub(super) type ArtworkDecoder<'a> =
-    dyn Fn(&[u8], ArtworkKind) -> Result<Artwork, ArtworkError> + 'a;
-
-/// Convertit les pochettes (640 × 480) et la couverture (512 × 512) en PNG ; supprime les
-/// originaux. Une image illisible donne l'image de repli (D13). Bloquant.
-pub(super) fn convert_artwork(
-    dir: &Path,
-    jobs: &[(usize, Option<PathBuf>)],
-    cover: Option<PathBuf>,
-    decode: &ArtworkDecoder<'_>,
-) -> AppResult<(HashMap<usize, PathBuf>, Option<PathBuf>)> {
-    let convert = |src: &Path, kind: ArtworkKind, dest: PathBuf| -> AppResult<Option<PathBuf>> {
-        let bytes = match read_bounded(src, fetch::MAX_IMAGE_BYTES) {
-            Some(b) => b,
-            None => return Ok(None),
-        };
-        match decode(&bytes, kind) {
-            Ok(art) => {
-                std::fs::write(&dest, &art.png)?;
-                Ok(Some(dest))
-            }
-            Err(err) => {
-                tracing::warn!("pochette ignorée : {err}");
-                Ok(None)
-            }
-        }
-    };
-    let cover_png = match &cover {
-        Some(src) => convert(src, ArtworkKind::Cover, dir.join("cover.png"))?,
-        None => None,
-    };
-    let mut pngs = HashMap::new();
-    for (n, image) in jobs {
-        if let Some(src) = image {
-            if let Some(png) = convert(
-                src,
-                ArtworkKind::Episode,
-                dir.join(format!("ep-{n:04}.png")),
-            )? {
-                pngs.insert(*n, png);
-            }
-        }
-    }
-    // Originaux inutiles pour l'archive : place libérée avant son écriture.
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".audio") || name.ends_with(".img") {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-    Ok((pngs, cover_png))
-}
-
-/// Lit au plus `max` octets (`None` si absent, illisible ou plus gros).
-fn read_bounded(path: &Path, max: u64) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(max + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() as u64 <= max).then_some(bytes)
-}
-
-/// Arborescence de l'archive : épisodes retirés sautés, catégories vidées retirées (P7) ;
-/// titres lus (#462) repris de `spoken` par position dans la composition (`path`), positions
-/// gardées notées dans `used`. Image choisie d'une catégorie (N5 c) : le PNG de l'épisode
-/// désigné, pris dans `episodes` avant leur retrait ; épisode hors de la catégorie, retiré du
-/// pack ou sans image : image automatique (N5 a) et avertissement dans `warnings`.
-pub(super) fn build_menu(
-    menu: &[PackNode],
-    ranks: &HashMap<&EpisodeRef, usize>,
-    episodes: &mut HashMap<usize, PackEpisode>,
-    spoken: &SpokenTitles,
-    path: &mut Vec<usize>,
-    used: &mut HashSet<TitleKey>,
-    warnings: &mut Vec<String>,
-) -> Vec<MenuEntry> {
-    let mut out = Vec::new();
-    for (i, node) in menu.iter().enumerate() {
-        path.push(i);
-        let key = TitleKey::Node(path.clone());
-        match node {
-            PackNode::Episode(e) => {
-                if let Some(mut ep) = ranks.get(e).and_then(|n| episodes.remove(n)) {
-                    ep.title_audio = spoken.audio.get(&key).cloned();
-                    out.push(MenuEntry::Episode(ep));
-                    used.insert(key);
-                }
-            }
+/// Arbre de menus de l'étape commune ([`MenuNode`]) : chaque épisode désigné par son rang dans
+/// `ranks` (ordre de la composition). Un épisode absent de `ranks` (inatteignable pour une
+/// composition validée) reçoit un rang qu'aucun élément ne porte : il est sauté, et une image de
+/// catégorie qui le désigne donne l'image automatique avec un avertissement, comme avant.
+pub(super) fn menu_tree(menu: &[PackNode], ranks: &HashMap<&EpisodeRef, usize>) -> Vec<MenuNode> {
+    let rank = |e: &EpisodeRef| ranks.get(e).copied().unwrap_or(usize::MAX);
+    menu.iter()
+        .map(|node| match node {
+            PackNode::Episode(e) => MenuNode::Item(rank(e)),
             PackNode::Category {
                 name,
                 entries,
                 image,
-            } => {
-                // Avant le retrait des épisodes de la catégorie.
-                let chosen: Option<Option<PathBuf>> = image.as_ref().map(|e| {
-                    PackNode::contains_episode(entries, e)
-                        .then(|| ranks.get(e).and_then(|n| episodes.get(n)))
-                        .flatten()
-                        .and_then(|ep| ep.image.clone())
-                });
-                let entries = build_menu(entries, ranks, episodes, spoken, path, used, warnings);
-                if !entries.is_empty() {
-                    let image = match chosen {
-                        Some(Some(png)) => Some(png),
-                        Some(None) => {
-                            warnings.push(format!(
-                                "Image de la catégorie « {} » : l'épisode choisi n'est plus \
-                                 disponible, image automatique utilisée.",
-                                archive::label(name, "sans nom")
-                            ));
-                            None
-                        }
-                        None => None,
-                    };
-                    out.push(MenuEntry::Category {
-                        name: name.trim().to_string(),
-                        entries,
-                        audio: spoken.audio.get(&key).cloned(),
-                        image,
-                    });
-                    used.insert(key);
-                }
-            }
-        }
-        path.pop();
-    }
-    out
+            } => MenuNode::Category {
+                name: name.clone(),
+                entries: menu_tree(entries, ranks),
+                image: image.as_ref().map(rank),
+            },
+        })
+        .collect()
 }
 
-/// Titres lus « Catégorie k » (nom sans rien d'affichable, #487) : `k` est compté sur la
-/// composition, avant les retraits. Si une catégorie vidée plus haut (P7) décale la numérotation
-/// de l'archive, le titre lu ne dit plus le libellé affiché : l'option reste alors muette.
-fn mute_shifted_categories(
-    composition: &[PackNode],
-    used: &HashSet<TitleKey>,
+/// Arborescence de l'archive d'une composition, par [`menu_tree`] puis
+/// [`pack_build::build_menu`](super::pack_build::build_menu) (gardé pour les essais de l'image
+/// de catégorie, qui partent d'une composition).
+#[cfg(test)]
+pub(super) fn build_menu(
+    menu: &[PackNode],
+    ranks: &HashMap<&EpisodeRef, usize>,
+    episodes: &mut HashMap<usize, archive::PackEpisode>,
     spoken: &SpokenTitles,
-    menu: &mut [MenuEntry],
-) {
-    if spoken.numbered.is_empty() {
-        return;
-    }
-    // Catégories gardées, dans l'ordre de l'archive (une catégorie avant ses options).
-    fn kept(
-        menu: &[PackNode],
-        used: &HashSet<TitleKey>,
-        path: &mut Vec<usize>,
-        out: &mut Vec<TitleKey>,
-    ) {
-        for (i, node) in menu.iter().enumerate() {
-            path.push(i);
-            if let PackNode::Category { entries, .. } = node {
-                let key = TitleKey::Node(path.clone());
-                if used.contains(&key) {
-                    out.push(key);
-                }
-                kept(entries, used, path, out);
-            }
-            path.pop();
-        }
-    }
-    fn audios<'a>(menu: &'a mut [MenuEntry], out: &mut Vec<&'a mut Option<PathBuf>>) {
-        for entry in menu {
-            if let MenuEntry::Category { entries, audio, .. } = entry {
-                out.push(audio);
-                audios(entries, out);
-            }
-        }
-    }
-    let mut keys = Vec::new();
-    kept(composition, used, &mut Vec::new(), &mut keys);
-    let mut slots = Vec::new();
-    audios(menu, &mut slots);
-    debug_assert_eq!(keys.len(), slots.len());
-    for (rank, (key, audio)) in keys.iter().zip(slots).enumerate() {
-        if spoken.numbered.get(key).is_some_and(|&k| k != rank + 1) {
-            *audio = None;
-        }
-    }
+    path: &mut Vec<usize>,
+    used: &mut std::collections::HashSet<pack_speech::TitleKey>,
+    warnings: &mut Vec<String>,
+) -> Vec<archive::MenuEntry> {
+    super::pack_build::build_menu(
+        &menu_tree(menu, ranks),
+        episodes,
+        spoken,
+        path,
+        used,
+        warnings,
+    )
 }
+
+#[cfg(test)]
+pub(super) use super::pack_build::convert_artwork;
 
 /// Résultat de [`pack_create`] (miroir de `PackCreated` dans `src/api/install.ts`).
 #[derive(Debug, Clone, Serialize)]
