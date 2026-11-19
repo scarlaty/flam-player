@@ -21,6 +21,7 @@ import { toAppError } from "../../../api/error";
 import { Banner, Button, Dialog, RadioGroup, TextField } from "../../../components";
 import { t } from "../../../i18n";
 import { EditorHeader } from "./EditorHeader";
+import { useEditorDnd } from "./dnd/useEditorDnd";
 import { EditorTree } from "./EditorTree";
 import { editorErrorText } from "./errors";
 import { ItemPanel } from "./ItemPanel";
@@ -165,6 +166,20 @@ export function EditorScreen() {
     return () => window.removeEventListener("keydown", onKey);
   }, [view, ask, doUndo, doRedo]);
 
+  // Glisser-déposer (lot 8) : fichiers de l'Explorateur et déplacement au pointeur.
+  const refocusTree = useCallback(() => setRefocus((n) => n + 1), []);
+  const { attachRoot, ...dnd } = useEditorDnd({
+    view,
+    selectedId: node?.id ?? "",
+    collapsed,
+    busy,
+    run,
+    select: setSelectedId,
+    refocusTree,
+    announce,
+    setError,
+  });
+
   if (view === null || node === null) {
     return (
       <main className="fl-editor fl-editor--loading">
@@ -282,7 +297,10 @@ export function EditorScreen() {
   const conflict = view.report.conflict;
 
   return (
-    <main className="fl-editor">
+    <main
+      ref={attachRoot}
+      className={`fl-editor${dnd.filesOver ? " fl-editor--files-over" : ""}${dnd.tree.draggingId !== null ? " fl-editor--dragging" : ""}`}
+    >
       <EditorHeader
         view={view}
         busy={busy}
@@ -329,8 +347,9 @@ export function EditorScreen() {
               {text.tree.newMenu}
             </Button>
           </div>
-          <div className="fl-editor__tree">
+          <div className="fl-editor__tree" data-dnd-zone="tree">
             <EditorTree
+              dnd={dnd.tree}
               view={view}
               selectedId={node.id}
               onSelect={setSelectedId}
@@ -367,6 +386,7 @@ export function EditorScreen() {
         <div className="fl-editor__panel">
           <ItemPanel
             key={node.id}
+            dropZone={dnd.panelZone}
             view={view}
             node={node}
             busy={busy}
@@ -383,6 +403,7 @@ export function EditorScreen() {
         </div>
       </div>
       <ReportList view={view} onGoTo={select} />
+      {dnd.overlay}
 
       <Dialog
         open={ask !== null}

@@ -408,6 +408,59 @@ fn copie_de_deux_fichiers_de_meme_nom() {
 }
 
 #[test]
+fn copie_deposee_a_sa_place_puis_une_seule_annulation() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    for n in ["1.mp3", "2.mp3", "3.mp3"] {
+        write(dir.path(), &format!("M/{n}"), b"x");
+    }
+    write(src.path(), "b.mp3", b"b");
+    write(src.path(), "b.png", b"p");
+    write(src.path(), "Dossier/c.mp3", b"c");
+    let before = snapshot(dir.path());
+    let mut ed = open(dir.path());
+    let sources = [
+        src.path().join("b.mp3"),
+        src.path().join("b.png"),
+        src.path().join("Dossier"),
+    ];
+    let report = ed.import_at("M", &sources, Some("2.MP3")).unwrap();
+    assert_eq!(report.done.ids, ["M/b.mp3", "M/b.png", "M/Dossier"]);
+    // Les options copiées (pas l'image) prennent la place du dépôt, dans l'ordre déposé.
+    assert_eq!(
+        json(dir.path(), "M/_dossier.json")["ordre"],
+        serde_json::json!(["1.mp3", "b.mp3", "Dossier", "2.mp3", "3.mp3"])
+    );
+    assert_eq!(
+        ids(&ed.scan().unwrap(), "M"),
+        ["M/1.mp3", "M/b.mp3", "M/Dossier", "M/2.mp3", "M/3.mp3"]
+    );
+    ed.undo().unwrap();
+    assert_eq!(
+        snapshot(dir.path()),
+        before,
+        "copie et ordre défaits ensemble"
+    );
+    assert!(ed.undo().is_err(), "une seule entrée au journal");
+
+    // Option inconnue (le menu a changé) : refus avant toute copie.
+    let err = ed
+        .import_at("M", &[src.path().join("b.mp3")], Some("absent.mp3"))
+        .unwrap_err();
+    assert!(matches!(err, OpError::Refused(_)), "{err:?}");
+    assert_eq!(snapshot(dir.path()), before);
+
+    // Rien de copiable (formats refusés) : rien d'écrit, pas même l'ordre.
+    write(src.path(), "note.txt", b"t");
+    let report = ed
+        .import_at("M", &[src.path().join("note.txt")], Some("1.mp3"))
+        .unwrap();
+    assert!(report.done.ids.is_empty());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(snapshot(dir.path()), before);
+}
+
+#[test]
 fn copie_d_un_dossier_formats_acceptes_seulement() {
     let dir = tempfile::tempdir().unwrap();
     let src = tempfile::tempdir().unwrap();

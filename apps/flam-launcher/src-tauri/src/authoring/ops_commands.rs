@@ -471,6 +471,7 @@ pub enum Op {
     Import {
         menu: String,
         sources: Vec<PathBuf>,
+        before: Option<String>,
     },
     SetImage {
         target: Target,
@@ -556,8 +557,12 @@ pub fn keep_source(root: &Node, id: &str) -> Option<String> {
 /// Exécute `op` sur l'éditeur (bloquant).
 fn apply(editor: &mut Editor, op: Op) -> EditorResult<Outcome> {
     let done = match op {
-        Op::Import { menu, sources } => {
-            let report = editor.import(&menu, &sources)?;
+        Op::Import {
+            menu,
+            sources,
+            before,
+        } => {
+            let report = editor.import_at(&menu, &sources, before.as_deref())?;
             return Ok(Outcome {
                 done: report.done,
                 skipped: report.skipped,
@@ -803,7 +808,8 @@ pub async fn authoring_editor_view(
     view_of(&config, &install, &session).await
 }
 
-/// Copie des fichiers ou dossiers choisis (sources) dans le menu `menu`.
+/// Copie des fichiers ou dossiers choisis ou déposés (sources) dans le menu `menu`, avant
+/// l'option `before` (nom ; absente : à la place que donne l'ordre du menu).
 #[tauri::command]
 pub async fn authoring_editor_import(
     window: WebviewWindow,
@@ -812,16 +818,15 @@ pub async fn authoring_editor_import(
     editors: State<'_, Arc<EditorState>>,
     menu: String,
     sources: Vec<String>,
+    before: Option<String>,
 ) -> EditorResult<EditorUpdate> {
     let sources = self::sources(sources)?;
-    op_command(
-        &window,
-        &config,
-        &install,
-        &editors,
-        Op::Import { menu, sources },
-    )
-    .await
+    let op = Op::Import {
+        menu,
+        sources,
+        before,
+    };
+    op_command(&window, &config, &install, &editors, op).await
 }
 
 /// Image de `target` remplacée par une copie de `source`.

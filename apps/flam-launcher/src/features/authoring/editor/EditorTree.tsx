@@ -2,6 +2,8 @@ import { useEffect, useId, useMemo, useRef, type KeyboardEvent } from "react";
 import type { EditorNode, EditorView } from "../../../api/editor";
 import { Badge } from "../../../components";
 import { t } from "../../../i18n";
+import type { TreeDnd } from "./dnd/useEditorDnd";
+import { GRIP_ATTR, ROW_ATTR, ROW_MENU_ATTR } from "./dnd/useTreeDrag";
 import { findNode, formatSize, nodeForPath, parentOf, visibleIds } from "./model";
 import { Thumbnail } from "./Thumbnail";
 
@@ -22,6 +24,8 @@ export interface EditorTreeProps {
   onRename: (id: string) => void;
   /** Change après une opération lancée depuis l'arbre : le focus revient sur la ligne choisie. */
   refocus?: number;
+  /** Glisser-déposer (lot 8) : poignées, place surlignée. */
+  dnd?: TreeDnd;
 }
 
 const domId = (base: string, id: string) =>
@@ -125,6 +129,7 @@ export function EditorTree(props: EditorTreeProps) {
         aria-describedby={helpId}
         className="fl-editor-tree"
         onKeyDown={onKeyDown}
+        onPointerDown={props.dnd?.onPointerDown}
       >
         <Row
           node={root}
@@ -136,6 +141,7 @@ export function EditorTree(props: EditorTreeProps) {
           collapsed={collapsed}
           onSelect={onSelect}
           onToggle={onToggle}
+          dnd={props.dnd}
         />
       </ul>
     </>
@@ -152,6 +158,19 @@ interface RowProps {
   collapsed: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
+  dnd?: TreeDnd;
+}
+
+/** Classes de glisser-déposer d'une ligne. */
+function dndClasses(dnd: TreeDnd | undefined, id: string): string {
+  if (!dnd) return "";
+  let out = "";
+  if (dnd.draggingId === id) out += " fl-editor-tree__row--dragging";
+  if (dnd.hint?.id === id) {
+    out += ` fl-editor-tree__row--drop-${dnd.hint.slot}`;
+    if (dnd.invalid) out += " fl-editor-tree__row--drop-invalid";
+  }
+  return out;
 }
 
 function Row(props: RowProps) {
@@ -183,11 +202,24 @@ function Row(props: RowProps) {
       }}
     >
       <span
-        className={`fl-editor-tree__row${selected ? " fl-editor-tree__row--selected" : ""}`}
+        className={`fl-editor-tree__row${selected ? " fl-editor-tree__row--selected" : ""}${dndClasses(props.dnd, node.id)}`}
+        {...{ [ROW_ATTR]: node.id, [ROW_MENU_ATTR]: String(isMenu) }}
         style={{
           paddingInlineStart: `calc(${level - 1} * var(--space-4) + var(--space-2))`,
         }}
       >
+        {props.dnd && node.id !== "" && (
+          // Poignée pour le pointeur ; au clavier : Alt+Flèche (aide de l'arbre).
+          <span
+            className="fl-editor-tree__grip"
+            aria-hidden="true"
+            title={t.authoringDnd.grip}
+            data-disabled={props.dnd.disabled}
+            {...{ [GRIP_ATTR]: "" }}
+          >
+            ⠿
+          </span>
+        )}
         {isMenu && node.children.length > 0 ? (
           <span
             className="fl-editor-tree__twisty"

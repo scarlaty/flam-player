@@ -620,6 +620,18 @@ impl Editor {
     /// acceptés sont copiés ; un nom déjà pris reçoit un suffixe « (2) ». Bornes :
     /// [`super::ImportLimits`] (dépassées → rien n'est copié).
     pub fn import(&mut self, menu: &str, sources: &[PathBuf]) -> OpResult<ImportReport> {
+        self.import_at(menu, sources, None)
+    }
+
+    /// [`Editor::import`], les options copiées rangées avant l'option `before` (nom) du menu
+    /// (glisser-déposer, § 4.3) : `ordre` est écrit dans la même opération (une seule
+    /// annulation). `before` absent du menu : refus, rien n'est copié.
+    pub fn import_at(
+        &mut self,
+        menu: &str,
+        sources: &[PathBuf],
+        before: Option<&str>,
+    ) -> OpResult<ImportReport> {
         let menu = parse_id(menu)?;
         let limits = self.import_limits.clone();
         let label = match sources {
@@ -632,7 +644,18 @@ impl Editor {
         let (skipped, done) = self.run(label, |tx, ids| {
             let ed = tx.ed;
             let scan = ed.scan()?;
-            require_menu(&scan, &menu)?;
+            let current = child_names(require_menu(&scan, &menu)?);
+            let position = match before {
+                None => None,
+                Some(name) => Some(
+                    current
+                        .iter()
+                        .position(|n| name_key(n) == name_key(name))
+                        .ok_or_else(|| {
+                            OpError::Refused(format!("« {name} » n'est pas une option de ce menu"))
+                        })?,
+                ),
+            };
             let mut plan = Plan {
                 limits: &limits,
                 loose: Vec::new(),
@@ -677,6 +700,24 @@ impl Editor {
             })();
             ed.drop_work_slot(&work);
             result?;
+            if let (Some(position), false) = (position, ids.is_empty()) {
+                // Nouvelles options (pas les images ni les titres lus) : celles du menu relu
+                // qui n'y étaient pas, insérées à la place du dépôt.
+                let known: HashSet<String> = current.iter().map(|n| name_key(n)).collect();
+                let scan = ed.scan()?;
+                let added: Vec<String> = child_names(require_menu(&scan, &menu)?)
+                    .into_iter()
+                    .filter(|n| !known.contains(&name_key(n)))
+                    .collect();
+                if !added.is_empty() {
+                    let mut order = current;
+                    order.splice(position..position, added);
+                    tx.write_settings(&menu, |doc| {
+                        doc.folder().ordre = order;
+                        Ok(())
+                    })?;
+                }
+            }
             Ok(std::mem::take(&mut plan.skipped))
         })?;
         Ok(ImportReport { done, skipped })
