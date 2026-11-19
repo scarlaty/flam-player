@@ -18,6 +18,7 @@
 //! - L'histoire publiée remplace la précédente de même uuid (`Library::install_replacing`) et
 //!   sa source retient le dossier (`StoryEntry::download_url`, chemin résolu).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,8 +27,12 @@ use tokio::sync::watch;
 
 use super::pack_build::{BuildSource, PackBuild, Prepared};
 use super::podcast::{finish_workdir, workdir_path, PackBackend};
-use super::{converter_engine, is_task_id, lock, InstallService, InstallTask, Produced, Toolchain};
+use super::{
+    converter_engine, is_task_id, lock, InstallService, InstallTask, Produced, TaskState, Toolchain,
+};
 use crate::authoring::build::{self as folder_build, scan_limits};
+use crate::authoring::commands::code;
+use crate::authoring::identity::ConflictChoice;
 use crate::authoring::tree;
 use crate::catalog::blocking;
 use crate::library::Library;
@@ -51,6 +56,11 @@ pub struct FolderJob {
     /// préparation avec le dossier du launcher.
     #[serde(default)]
     pub forbidden: Vec<String>,
+    /// Réponse donnée au conflit d'uuid à la création (`None` : aucun conflit) : « Réessayer »
+    /// reprend « Remplacer l'autre », jamais « Nouvelle histoire »
+    /// (`authoring::commands::retry_choice`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<ConflictChoice>,
 }
 
 impl FolderJob {
@@ -60,18 +70,21 @@ impl FolderJob {
     }
 }
 
-/// Message d'un dossier devenu bloqué depuis le rapport.
-fn blocked_message(problems: &[tree::Problem]) -> String {
+/// Erreur d'un dossier devenu bloqué depuis le rapport (`blocked`).
+fn blocked(problems: &[tree::Problem]) -> AppError {
     let first: Vec<String> = problems
         .iter()
         .filter(|p| p.severity == tree::Severity::Blocking)
         .take(3)
         .map(|p| p.message.clone())
         .collect();
-    format!(
-        "le dossier ne peut plus devenir une histoire : {}",
-        first.join(" ; ")
-    )
+    AppError::Authoring {
+        code: code::BLOCKED,
+        message: format!(
+            "le dossier ne peut plus devenir une histoire : {}",
+            first.join(" ; ")
+        ),
+    }
 }
 
 impl InstallService {
@@ -101,6 +114,27 @@ impl InstallService {
                         crate::authoring::identity::path_key(Path::new(&job.folder)) == key
                     }))
         })
+    }
+
+    /// Création à relancer (« Réessayer ») : tâche « dossier » `task_id` en échec ou annulée.
+    pub fn retryable_folder(&self, task_id: &str) -> Option<FolderJob> {
+        lock(&self.0.tasks)
+            .iter()
+            .find(|s| s.task.id == task_id)
+            .filter(|s| matches!(s.task.state, TaskState::Failed | TaskState::Cancelled))
+            .and_then(|s| s.folder.clone())
+            .filter(FolderJob::is_valid)
+    }
+
+    /// Retient `folder` comme dossier de l'histoire installée `uuid` faite d'un dossier
+    /// (« Choisir le dossier », `Library::relocate_source`).
+    pub async fn relocate_folder_story(&self, uuid: &str, folder: &str) -> AppResult<()> {
+        let tc = self.toolchain().await?;
+        let (uuid, folder) = (uuid.to_string(), folder.to_string());
+        blocking(move || {
+            Library::new(&tc.cache_root).relocate_source(&uuid, folder_build::SOURCE_ID, &folder)
+        })
+        .await?
     }
 
     /// Dossier du cache effectif (refusé comme dossier d'histoire).
@@ -229,7 +263,7 @@ impl InstallService {
             .iter()
             .any(|p| p.severity == tree::Severity::Blocking)
         {
-            return Err(AppError::Validation(blocked_message(&problems)));
+            return Err(blocked(&problems));
         }
         if *cancel.borrow() {
             return Err(AppError::Cancelled);
@@ -248,6 +282,19 @@ impl InstallService {
                 .await?
             }
         };
+        // Cache des MP3 (§ 8) : seuls les fichiers audio modifiés depuis la création précédente
+        // sont reconvertis. Le cache est partagé avec les podcasts (plafond commun) : une
+        // histoire dont l'audio dépasse `folder_build::MAX_CACHED_AUDIO_BYTES` n'y passe pas
+        // (elle le viderait sans y tenir, et les packs suivants l'en évinceraient).
+        let cache = (scan.audio_bytes <= folder_build::MAX_CACHED_AUDIO_BYTES)
+            .then(|| {
+                backend.mp3_cache(
+                    tc.cache_root.clone(),
+                    BTreeSet::from([folder_build::cache_source_id(&job.uuid)]),
+                )
+            })
+            .flatten()
+            .map(|c| c.with_cancel(cancel.clone()));
         let stage = PackBuild {
             service: self,
             id,
@@ -256,7 +303,7 @@ impl InstallService {
             cancel,
             source: BuildSource::Folder,
         };
-        let archive = folder_build::prepare(&stage, plan, voice.as_deref()).await?;
+        let archive = folder_build::prepare(&stage, plan, voice.as_deref(), cache.as_ref()).await?;
         let entry = folder_build::story_entry(&job.uuid, job.version, &meta, &scan.base);
         Ok((archive, entry))
     }

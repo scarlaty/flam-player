@@ -1,5 +1,6 @@
 import type { AppError } from "../../../api/error";
 import { t } from "../../../i18n";
+import { errorText } from "../problemText";
 
 /** Message d'une erreur de l'éditeur, d'après son code stable (`OpError::code`, `AppError`). */
 export function editorErrorText(error: AppError): string {
@@ -34,6 +35,9 @@ export function editorErrorText(error: AppError): string {
     case "validation":
       // Messages du backend déjà rédigés pour l'utilisateur (« titre vide : rien à renommer »).
       return text.refused(error.message);
+    case "authoring":
+      // Création lancée depuis l'éditeur : texte d'après le code (`busy`, `conflict_copied`…).
+      return errorText(error);
     case "inconsistent":
       return text.inconsistent;
     case "io":
@@ -47,10 +51,14 @@ export function editorErrorText(error: AppError): string {
 export function openErrorText(error: AppError): string {
   const text = t.authoringEditor;
   if (error.kind === "editor_closing") return text.closing;
-  // `root_refused` couvre aussi un dossier disparu (« dossier introuvable : … »).
-  if (error.kind === "not_found" || error.message.startsWith("dossier introuvable"))
+  // Dossier refusé ou disparu : reconnu par son code (`folder_missing`, `folder_refused`).
+  if (error.code === "folder_missing" || error.kind === "not_found")
     return text.error.folderMissing;
-  if (error.kind === "root_refused" || error.kind === "link")
+  if (
+    error.code === "folder_refused" ||
+    error.kind === "root_refused" ||
+    error.kind === "link"
+  )
     return text.error.folderRefused;
   return text.openFailed;
 }

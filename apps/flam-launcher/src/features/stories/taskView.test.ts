@@ -125,6 +125,14 @@ it("traduit unsupported_format en un message clair et non technique", () => {
   expect(taskErrorMessage({ kind: "io", message: "x", code: "unsupported_format" })).toBe(
     "x",
   );
+  // Création depuis un dossier : texte d'après le code, jamais le message (chemin).
+  expect(
+    taskErrorMessage({
+      kind: "authoring",
+      message: "C:\\Secret\\x",
+      code: "folder_missing",
+    }),
+  ).toBe("Dossier introuvable : il a peut-être été déplacé ou renommé.");
 });
 
 it("traduit les échecs des titres lus (tts_*) par kind, sans clé héritée", () => {
