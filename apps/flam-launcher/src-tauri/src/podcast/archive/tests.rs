@@ -299,7 +299,9 @@ fn episode_image(menu: &[MenuEntry], n: usize) -> PathBuf {
         for e in menu {
             match e {
                 MenuEntry::Episode(ep) => out.push(ep),
-                MenuEntry::Category { entries, .. } => walk(entries, out),
+                MenuEntry::Category { entries, .. } | MenuEntry::Submenu { entries, .. } => {
+                    walk(entries, out)
+                }
             }
         }
     }
@@ -380,6 +382,12 @@ fn speak_all(fx: &mut Fixture, menu: &mut [MenuEntry], mute: &[&str]) {
                 entries,
                 audio,
                 ..
+            }
+            | MenuEntry::Submenu {
+                name,
+                entries,
+                audio,
+                ..
             } => {
                 if !mute.contains(&name.as_str()) {
                     *audio = Some(fx.title_mp3());
@@ -448,6 +456,12 @@ fn titres_lus_un_audio_par_option_et_title_mp3() {
                         out.push((&ep.title, ep.title_audio.as_deref().unwrap()))
                     }
                     MenuEntry::Category {
+                        name,
+                        entries,
+                        audio,
+                        ..
+                    }
+                    | MenuEntry::Submenu {
                         name,
                         entries,
                         audio,
@@ -1077,3 +1091,6 @@ fn read_zip_any(path: &Path) -> BTreeMap<String, Vec<u8>> {
     }
     out
 }
+
+mod chapters;
+mod golden;

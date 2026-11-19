@@ -1,17 +1,27 @@
 //! Archive Telmi synthétique d'un pack de podcasts (#216, spécification
-//! `docs/podcasts.md` § 6).
+//! `docs/podcasts.md` § 6), et d'une histoire faite d'un dossier (`docs/creation-dossier.md`
+//! § 5 : modes recueil et chapitres).
 //!
 //! Un pack est une **nouvelle histoire** (P3) : uuid aléatoire tiré une fois par l'appelant
 //! ([`new_pack_uuid`]), version fixe 1. L'arborescence de menus (N2 b) devient un graphe Telmi
-//! que `telmi2flam` convertit sans modification :
+//! que `telmi2flam` convertit sans modification.
+//!
+//! Chaque menu a un **mode** ([`MenuMode`]) : celui du menu racine est donné par
+//! [`ArchiveOptions`], une [`MenuEntry::Category`] hérite du mode de son menu, une
+//! [`MenuEntry::Submenu`] porte le sien (Q1). [`write_archive`] (podcasts) = recueil
+//! `fin = suivante` à la racine et bornes [`Limits::PODCAST`] : graphe identique, octet pour
+//! octet, à celui d'avant les modes (test `golden`).
+//!
+//! # Recueil (podcasts : toujours ce mode)
 //!
 //! - `startAction` → scène d'entrée (passage sans audio) → menu racine ;
 //! - un menu est une action à plusieurs entrées (carrousel) ; chaque option est une scène
-//!   image (audio : titre lu ou rien, voir plus bas) dont `ok` mène à l'action « jouer l'épisode » (action à une entrée) ou à
-//!   l'action du sous-menu ;
-//! - un épisode est une scène `autoplay` : à sa fin, l'épisode **suivant du même menu** (les
-//!   catégories sont sautées) ; la fin du dernier retourne à **ce menu**, focalisé sur l'épisode
-//!   joué (P8, N4 a) ;
+//!   image (audio : titre lu ou rien, voir plus bas) dont `ok` mène à l'action « jouer
+//!   l'épisode » (action à une entrée) ou à l'action du sous-menu ;
+//! - un épisode est une scène `autoplay`. À sa fin, selon [`CollectionEnd`] : `suivante`
+//!   (podcasts) → l'épisode **suivant du même menu** (les sous-menus sont sautés), la fin du
+//!   dernier retourne à **ce menu**, focalisé sur l'épisode joué (P8, N4 a) ; `menu` → ce menu,
+//!   focalisé sur l'épisode suivant (sur lui-même pour le dernier) ;
 //! - retour (`home`) : d'un épisode vers son menu, d'une option de sous-menu vers le menu
 //!   parent (focalisé sur la catégorie) ; le menu racine garde le retour par défaut du moteur ;
 //! - libellés (`notes.json`) : titres translittérés pour les polices du player
@@ -25,6 +35,31 @@
 //!   sans titre lu, `"audio": null` (`telmi2flam` met alors `silent.mp3`). Le titre lu du pack
 //!   est `title.mp3`, à la racine de l'archive. Pas d'annonce avant l'épisode.
 //!
+//! # Livre à chapitres (§ 5.3, § 5.4)
+//!
+//! Les chapitres d'un livre sont ses épisodes, **dans l'ordre du parcours en profondeur** ; ses
+//! sous-menus sont des **parties** qui ne servent qu'au menu des chapitres (un niveau par
+//! partie). Mêmes noms de fichiers que le recueil (`eNNN`, `tNNN`, `cNNN`).
+//!
+//! - chapitre = scène `autoplay` `eN` dont `ok` mène au chapitre suivant, parties
+//!   traversées (action `pN` du suivant) ; `home` → son option dans le menu de sa partie,
+//!   focalisée ; valider une option → action `pN` du chapitre, puis la suite ;
+//! - fin du dernier chapitre ([`BookEnd`]) : `menu` → premier niveau du menu des chapitres,
+//!   sur sa première option ; `fin` → `ok: null`, fin d'histoire ;
+//! - démarrage ([`ChapterStart`]) : `chapitre` → action `pN` du premier chapitre, `menu` →
+//!   menu des chapitres ; c'est la cible de la scène d'entrée (livre racine) ou de l'option
+//!   du recueil qui contient le livre ;
+//! - annonce (`annoncer`, réglage du livre ou de la partie) : si le chapitre a un titre lu,
+//!   `pN` → scène `nN` (titre lu `tNNN.mp3` sur l'image du chapitre, `autoplay`, même `home`)
+//!   → action `qN` → `eN`. Sans titre lu, pas d'annonce ;
+//! - retour depuis une option d'une partie → niveau du dessus, focalisé sur la partie ;
+//!   depuis le premier niveau : livre placé dans un recueil → le recueil, focalisé sur le
+//!   livre ; **livre racine → retour par défaut du moteur** (menu Start, sortie de
+//!   l'histoire), comme depuis le menu racine d'un recueil, y compris avec `debut = menu` ;
+//! - un recueil dans un livre est refusé ([`ArchiveError::CollectionInBook`]) ; un
+//!   [`MenuEntry::Submenu`] en mode chapitres dans un livre est une partie (seul son
+//!   `annoncer` compte).
+//!
 //! Module pur (ni réseau, ni Tauri) : les MP3 (#214) et PNG (#215) sont déjà sur le disque.
 //!
 //! # Invariants
@@ -33,7 +68,12 @@
 //!   annulation supprime le temporaire, la destination n'est jamais partielle.
 //! - **Noms d'entrées sûrs** : seulement des noms générés ici, jamais tirés d'un titre ni d'un
 //!   chemin reçu.
-//! - **Bornes** vérifiées avant toute écriture : voir les constantes `MAX_*`.
+//! - **Bornes** vérifiées avant toute écriture : celles de [`ArchiveOptions::limits`]
+//!   ([`Limits::PODCAST`] = constantes `MAX_*` pour [`write_archive`]).
+//! - **Graphe** : chaque transition mène à une action existante ; toute scène de lecture
+//!   (épisode, chapitre, annonce) a un `home` vers son option ; seules les options du menu
+//!   racine (recueil ou livre racine) gardent le retour par défaut du moteur ; un chapitre n'a
+//!   `ok: null` que s'il est le dernier d'un livre `fin = fin` ; pas d'inventaire.
 //! - L'audio est copié par blocs, jamais chargé entier en mémoire.
 
 use std::collections::HashSet;
@@ -58,7 +98,8 @@ pub const MAX_OPTIONS_PER_MENU: usize = 50;
 pub const MAX_EPISODES: usize = 50;
 /// Scènes du graphe au plus. Avec les bornes ci-dessus : 1 scène d'entrée, au plus
 /// 50 épisodes et 150 options (chaque catégorie contient au moins un épisode, donc au plus
-/// 2 catégories par épisode sur 3 niveaux), soit 201. Garde-fou pour le moteur Lua.
+/// 2 catégories par épisode sur 3 niveaux), soit 201 ; un livre à chapitres annoncés ajoute
+/// au plus une scène d'annonce par chapitre, soit 251. Garde-fou pour le moteur Lua.
 pub const MAX_STAGES: usize = 256;
 /// Taille d'un MP3 : D1 (200 Mo par épisode) × 1,25, marge du réencodage D6 (débit arrondi au
 /// multiple de 16 supérieur : au plus + 23 % pour une source d'au moins 64 kbps). Une source
@@ -115,6 +156,7 @@ pub struct PackEpisode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuEntry {
     Episode(PackEpisode),
+    /// Sous-menu qui **hérite** du mode du menu qui le contient (podcasts : toujours ce cas).
     Category {
         name: String,
         entries: Vec<MenuEntry>,
@@ -125,6 +167,190 @@ pub enum MenuEntry {
         /// premier épisode (N5 a).
         image: Option<PathBuf>,
     },
+    /// Sous-menu avec **son propre mode** (`creation-dossier.md` § 5.1, Q1) : mêmes champs que
+    /// [`MenuEntry::Category`], plus le mode et ses réglages, hérités par ses propres
+    /// catégories. Dans un recueil : un recueil (réglage `fin` différent) ou un livre à
+    /// chapitres. Dans un livre : une partie (seul `annoncer` compte, `debut` et `fin` sont ceux
+    /// du livre) ; un recueil dans un livre est refusé ([`ArchiveError::CollectionInBook`]).
+    Submenu {
+        name: String,
+        entries: Vec<MenuEntry>,
+        audio: Option<PathBuf>,
+        image: Option<PathBuf>,
+        mode: MenuMode,
+    },
+}
+
+/// Fin d'une histoire d'un recueil (§ 5.2, réglage `fin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionEnd {
+    /// `menu` : retour au menu, focalisé sur l'histoire suivante du même menu (les sous-menus
+    /// sont sautés) ; la dernière y revient focalisée sur elle-même.
+    Menu,
+    /// `suivante` : l'histoire suivante du même menu démarre (les sous-menus sont sautés) ; la
+    /// dernière ramène au menu, focalisé sur elle. Comportement des podcasts (P8, N4 a).
+    Next,
+}
+
+/// Démarrage d'un livre à chapitres (§ 5.3, réglage `debut`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChapterStart {
+    /// `chapitre` : le premier chapitre démarre directement.
+    #[default]
+    Chapter,
+    /// `menu` : le menu des chapitres s'ouvre, sur le premier.
+    Menu,
+}
+
+/// Fin d'un livre à chapitres (§ 5.3, réglage `fin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BookEnd {
+    /// `menu` : menu des chapitres du livre, focalisé sur sa première option.
+    #[default]
+    Menu,
+    /// `fin` : fin d'histoire (`ok: null`), retour au menu Start du moteur puis à la
+    /// bibliothèque. Vaut aussi pour un livre placé dans un recueil : toute l'histoire se
+    /// termine.
+    End,
+}
+
+/// Réglages d'un livre à chapitres (§ 5.3, § 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChapterSettings {
+    pub start: ChapterStart,
+    pub end: BookEnd,
+    /// `annoncer` : le titre lu du chapitre (`PackEpisode::title_audio`) est joué avant lui,
+    /// sur son image. Sans titre lu, pas d'annonce.
+    pub announce: bool,
+}
+
+/// Mode d'un menu (§ 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuMode {
+    /// Recueil : une option = une histoire ou un sous-menu (§ 5.2).
+    Collection { end: CollectionEnd },
+    /// Livre à chapitres : lecture enchaînée en profondeur, menu des chapitres (§ 5.3).
+    Chapters(ChapterSettings),
+}
+
+impl MenuMode {
+    /// Mode des packs de podcasts : recueil, `fin = suivante`.
+    pub const PODCAST: MenuMode = MenuMode::Collection {
+        end: CollectionEnd::Next,
+    };
+}
+
+impl Default for MenuMode {
+    /// [`MenuMode::PODCAST`] : le comportement historique des packs de podcasts.
+    fn default() -> Self {
+        Self::PODCAST
+    }
+}
+
+/// Bornes vérifiées par [`write_archive_with`] avant toute écriture. Les podcasts utilisent
+/// [`Limits::PODCAST`] (constantes `MAX_*`) ; une autre source fixe les siennes
+/// (`creation-dossier.md` § 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Niveaux de menus au plus, racine comprise.
+    pub max_menu_depth: usize,
+    /// Options (histoires, chapitres et sous-menus) par menu.
+    pub max_options_per_menu: usize,
+    /// Histoires (épisodes, chapitres) de toute l'archive.
+    pub max_episodes: usize,
+    /// Scènes du graphe (garde-fou pour le moteur Lua).
+    pub max_stages: usize,
+    /// Taille d'un MP3.
+    pub max_audio_bytes: u64,
+    /// Taille cumulée des MP3, titres lus compris. L'archive est un zip32 (`large_file(false)`) :
+    /// la borne doit rester **nettement sous 4 Gio**, images et JSON s'ajoutant à l'audio (ou
+    /// passer au zip64 après avoir vérifié que `telmi2flam` le lit).
+    pub max_total_audio_bytes: u64,
+}
+
+impl Limits {
+    /// Bornes des packs de podcasts.
+    pub const PODCAST: Limits = Limits {
+        max_menu_depth: MAX_MENU_DEPTH,
+        max_options_per_menu: MAX_OPTIONS_PER_MENU,
+        max_episodes: MAX_EPISODES,
+        max_stages: MAX_STAGES,
+        max_audio_bytes: MAX_AUDIO_BYTES,
+        max_total_audio_bytes: MAX_TOTAL_AUDIO_BYTES,
+    };
+
+    // Erreurs de dépassement : avec les bornes des podcasts, les variantes historiques
+    // (messages inchangés) ; avec d'autres bornes, `OverLimit` et la borne reçue.
+
+    fn podcast(&self) -> bool {
+        *self == Self::PODCAST
+    }
+
+    fn too_deep(&self, depth: usize) -> ArchiveError {
+        if self.podcast() {
+            ArchiveError::TooDeep
+        } else {
+            over("trop de niveaux de menus", depth, self.max_menu_depth)
+        }
+    }
+
+    fn too_many_options(&self, n: usize) -> ArchiveError {
+        if self.podcast() {
+            ArchiveError::TooManyOptions(n)
+        } else {
+            over("trop d'options dans un menu", n, self.max_options_per_menu)
+        }
+    }
+
+    fn too_many_episodes(&self, n: usize) -> ArchiveError {
+        if self.podcast() {
+            ArchiveError::TooManyEpisodes(n)
+        } else {
+            over("trop d'histoires ou de chapitres", n, self.max_episodes)
+        }
+    }
+
+    fn too_many_stages(&self, n: usize) -> ArchiveError {
+        if self.podcast() {
+            ArchiveError::TooManyStages(n)
+        } else {
+            over("trop de scènes", n, self.max_stages)
+        }
+    }
+
+    fn too_large(&self, total: u64) -> ArchiveError {
+        if self.podcast() {
+            ArchiveError::TooLarge(total)
+        } else {
+            ArchiveError::OverLimit {
+                what: "audio trop volumineux au total (octets)",
+                count: total,
+                max: self.max_total_audio_bytes,
+            }
+        }
+    }
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self::PODCAST
+    }
+}
+
+fn over(what: &'static str, count: usize, max: usize) -> ArchiveError {
+    ArchiveError::OverLimit {
+        what,
+        count: count as u64,
+        max: max as u64,
+    }
+}
+
+/// Réglages de construction de l'archive qui ne viennent pas du [`Pack`] : mode du menu racine
+/// et bornes. Défaut : comportement et bornes des podcasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ArchiveOptions {
+    /// Mode du menu racine, hérité par ses [`MenuEntry::Category`].
+    pub mode: MenuMode,
+    pub limits: Limits,
 }
 
 /// Pack complet à écrire.
@@ -190,6 +416,16 @@ pub enum ArchiveError {
     Zip(#[from] zip::result::ZipError),
     #[error("création de l'archive annulée")]
     Cancelled,
+    /// Borne d'une autre source que les podcasts dépassée (voir [`Limits`]) ; `what` est le
+    /// début du message (« trop de scènes »).
+    #[error("{what} : {count} (au plus {max})")]
+    OverLimit {
+        what: &'static str,
+        count: u64,
+        max: u64,
+    },
+    #[error("recueil « {0} » dans un livre à chapitres : non pris en charge")]
+    CollectionInBook(String),
 }
 
 /// Uuid d'un nouveau pack (P3) : UUID v4. Dans `metadata.json`, il est écrit en minuscules avec
@@ -214,7 +450,9 @@ fn count_episodes(menu: &[MenuEntry]) -> usize {
     menu.iter()
         .map(|e| match e {
             MenuEntry::Episode(_) => 1,
-            MenuEntry::Category { entries, .. } => count_episodes(entries),
+            MenuEntry::Category { entries, .. } | MenuEntry::Submenu { entries, .. } => {
+                count_episodes(entries)
+            }
         })
         .sum()
 }
@@ -223,7 +461,9 @@ fn collect_titles<'a>(menu: &'a [MenuEntry], out: &mut Vec<&'a str>) {
     for entry in menu {
         match entry {
             MenuEntry::Episode(e) => out.push(&e.title),
-            MenuEntry::Category { entries, .. } => collect_titles(entries, out),
+            MenuEntry::Category { entries, .. } | MenuEntry::Submenu { entries, .. } => {
+                collect_titles(entries, out)
+            }
         }
     }
 }
@@ -331,8 +571,8 @@ struct Graph<'a> {
     stages: Map<String, Value>,
     actions: Map<String, Value>,
     notes: Map<String, Value>,
-    /// Épisodes dans l'ordre de l'arborescence (parcours en profondeur) : le n-ième (à partir
-    /// de 1) a pour fichiers `eNNN.mp3` et `eNNN.png`.
+    /// Épisodes et chapitres dans l'ordre de l'arborescence (parcours en profondeur) : le
+    /// n-ième (à partir de 1) a pour fichiers `eNNN.mp3` et `eNNN.png`.
     episodes: Vec<&'a PackEpisode>,
     /// Titres lus des options (§ 12) : nom d'entrée dans `audios/` et MP3 source, dans l'ordre
     /// du parcours.
@@ -342,6 +582,7 @@ struct Graph<'a> {
     menus: usize,
     options: usize,
     categories: usize,
+    limits: Limits,
 }
 
 /// Transition Telmi `{action, index}`.
@@ -349,16 +590,56 @@ fn trans(action: &str, index: usize) -> Value {
     json!({ "action": action, "index": index })
 }
 
+/// Contrôles d'une scène d'épisode, de chapitre ou d'annonce.
+fn playing_control() -> Value {
+    json!({ "ok": true, "home": true, "autoplay": true })
+}
+
+/// Chapitre d'un livre en construction.
+struct Chapter {
+    /// Scène du chapitre (`eN`), dont `ok` mène au suivant.
+    stage: String,
+    /// Action qui le démarre (`pN`) : annonce puis chapitre, ou chapitre seul.
+    entry: String,
+}
+
+/// Sous-menu vu comme une option : champs communs à [`MenuEntry::Category`] et
+/// [`MenuEntry::Submenu`].
+struct Head<'a> {
+    name: &'a str,
+    entries: &'a [MenuEntry],
+    audio: Option<&'a Path>,
+    image: Option<&'a PathBuf>,
+}
+
+/// Ce que devient un sous-menu.
+enum Sub<'c> {
+    /// Menu d'un recueil.
+    Collection(CollectionEnd),
+    /// Livre à chapitres placé dans un recueil.
+    Book(ChapterSettings),
+    /// Partie d'un livre : ses chapitres s'ajoutent à ceux du livre.
+    Part {
+        announce: bool,
+        chapters: &'c mut Vec<Chapter>,
+    },
+}
+
+/// Option en construction : image, transition `ok`, libellé, titre lu.
+type OptionParts = (String, Value, String, Option<String>);
+
 impl<'a> Graph<'a> {
-    fn build(menu: &'a [MenuEntry]) -> Result<Self, ArchiveError> {
+    fn build(menu: &'a [MenuEntry], mode: MenuMode, limits: Limits) -> Result<Self, ArchiveError> {
         let mut g = Graph {
             total_episodes: count_episodes(menu),
+            limits,
             ..Graph::default()
         };
         if menu.is_empty() {
             return Err(ArchiveError::NoEpisode);
         }
-        // Scène d'entrée : passage (sans audio, autoplay) vers le menu racine.
+        // Scène d'entrée : passage (sans audio, autoplay) vers le menu racine, ou vers le
+        // premier chapitre d'un livre (`debut = chapitre`).
         g.stages.insert(
             START_STAGE.into(),
             json!({
@@ -371,49 +652,142 @@ impl<'a> Graph<'a> {
         );
         g.actions
             .insert(START_ACTION.into(), json!([{ "stage": START_STAGE }]));
-        g.menu(menu, ROOT_MENU, 1, None)?;
+        match mode {
+            MenuMode::Collection { end } => {
+                g.menu(menu, ROOT_MENU, 1, None, end)?;
+            }
+            MenuMode::Chapters(settings) => {
+                let (_, start) = g.book(menu, ROOT_MENU, 1, None, settings)?;
+                if let Some(st) = g.stages.get_mut(START_STAGE) {
+                    st["ok"] = start;
+                }
+            }
+        }
         if g.episodes.is_empty() {
             return Err(ArchiveError::NoEpisode);
         }
-        if g.stages.len() > MAX_STAGES {
-            return Err(ArchiveError::TooManyStages(g.stages.len()));
+        if g.stages.len() > g.limits.max_stages {
+            return Err(g.limits.too_many_stages(g.stages.len()));
         }
         Ok(g)
     }
 
-    /// Construit le menu `action` (niveau `depth`, racine = 1) ; `parent` = action du menu
-    /// parent et position de la catégorie. Rend le nom de l'image du premier épisode (N5 a).
+    /// Bornes d'un menu (niveau `depth`, racine = 1).
+    fn check_menu(&self, entries: &[MenuEntry], depth: usize) -> Result<(), ArchiveError> {
+        if depth > self.limits.max_menu_depth {
+            return Err(self.limits.too_deep(depth));
+        }
+        if entries.len() > self.limits.max_options_per_menu {
+            return Err(self.limits.too_many_options(entries.len()));
+        }
+        Ok(())
+    }
+
+    /// Enregistre un épisode ou un chapitre : rang `n` (à partir de 1), image, libellé, titre lu.
+    fn episode(
+        &mut self,
+        ep: &'a PackEpisode,
+        fallback: &str,
+    ) -> Result<(usize, String, String, Option<String>), ArchiveError> {
+        if self.episodes.len() >= self.limits.max_episodes {
+            return Err(self.limits.too_many_episodes(self.total_episodes));
+        }
+        self.episodes.push(ep);
+        let n = self.episodes.len();
+        let text = label(&ep.title, &format!("{fallback} {n}"));
+        let spoken = ep.title_audio.as_deref().map(|mp3| {
+            let file = episode_title_file(n);
+            self.title_audios.push((file.clone(), mp3));
+            file
+        });
+        Ok((n, episode_file(n, "png"), text, spoken))
+    }
+
+    /// Image d'une option de sous-menu (N5 c) : le fichier de l'épisode choisi s'il est dans le
+    /// sous-menu (rangs d'archive `first + 1` et suivants), sinon `auto` (N5 a).
+    fn chosen_image(&self, chosen: Option<&PathBuf>, first: usize, auto: String) -> String {
+        chosen
+            .and_then(|png| {
+                self.episodes[first..]
+                    .iter()
+                    .position(|ep| ep.image.as_ref() == Some(png))
+            })
+            .map_or(auto, |p| episode_file(first + p + 1, "png"))
+    }
+
+    /// Option qui ouvre un sous-menu, placée en `parent` (action du menu, position) au niveau
+    /// `depth`.
+    fn submenu(
+        &mut self,
+        head: Head<'a>,
+        parent: (&str, usize),
+        depth: usize,
+        kind: Sub<'_>,
+    ) -> Result<OptionParts, ArchiveError> {
+        self.categories += 1;
+        let k = self.categories;
+        let fallback = format!("Catégorie {k}");
+        if head.entries.is_empty() {
+            return Err(ArchiveError::EmptyCategory(one_line(head.name)));
+        }
+        // Nom lu noté avant le sous-menu : ordre du parcours (la catégorie, puis ses options).
+        let spoken = head.audio.map(|mp3| {
+            let file = category_title_file(k);
+            self.title_audios.push((file.clone(), mp3));
+            file
+        });
+        let sub = format!("m{k}");
+        let first = self.episodes.len();
+        let (image, ok) = match kind {
+            Sub::Collection(end) => (
+                self.menu(head.entries, &sub, depth + 1, Some(parent), end)?,
+                trans(&sub, 0),
+            ),
+            Sub::Book(settings) => {
+                self.book(head.entries, &sub, depth + 1, Some(parent), settings)?
+            }
+            Sub::Part { announce, chapters } => {
+                let home = trans(parent.0, parent.1);
+                let image = self.chapter_menu(
+                    head.entries,
+                    &sub,
+                    depth + 1,
+                    Some(&home),
+                    announce,
+                    chapters,
+                )?;
+                (image, trans(&sub, 0))
+            }
+        };
+        let image = self.chosen_image(head.image, first, image);
+        Ok((image, ok, label(head.name, &fallback), spoken))
+    }
+
+    /// Construit le menu de recueil `action` (niveau `depth`, racine = 1) ; `parent` = action
+    /// du menu parent et position de la catégorie ; `end` = réglage `fin` de ce menu. Rend le
+    /// nom de l'image du premier épisode (N5 a).
     fn menu(
         &mut self,
         entries: &'a [MenuEntry],
         action: &str,
         depth: usize,
         parent: Option<(&str, usize)>,
+        end: CollectionEnd,
     ) -> Result<String, ArchiveError> {
-        if depth > MAX_MENU_DEPTH {
-            return Err(ArchiveError::TooDeep);
-        }
-        if entries.len() > MAX_OPTIONS_PER_MENU {
-            return Err(ArchiveError::TooManyOptions(entries.len()));
-        }
+        self.check_menu(entries, depth)?;
         self.menus += 1;
         let mut options = Vec::with_capacity(entries.len());
-        // (scène de l'épisode, action « jouer »), dans l'ordre du menu
-        let mut played: Vec<(String, String)> = Vec::new();
+        // (scène de l'épisode, action « jouer », position de son option), dans l'ordre du menu
+        let mut played: Vec<(String, String, usize)> = Vec::new();
         let mut first_image: Option<String> = None;
         for (i, entry) in entries.iter().enumerate() {
             self.options += 1;
             let option = format!("o{}", self.options);
             let (image, ok, text, spoken) = match entry {
                 MenuEntry::Episode(ep) => {
-                    if self.episodes.len() >= MAX_EPISODES {
-                        return Err(ArchiveError::TooManyEpisodes(self.total_episodes));
-                    }
-                    self.episodes.push(ep);
-                    let n = self.episodes.len();
+                    let (n, image, text, spoken) = self.episode(ep, "Épisode")?;
                     let stage = format!("e{n}");
                     let play = format!("p{n}");
-                    let image = episode_file(n, "png");
                     self.stages.insert(
                         stage.clone(),
                         json!({
@@ -421,53 +795,53 @@ impl<'a> Graph<'a> {
                             "audio": episode_file(n, "mp3"),
                             "ok": trans(action, i), // remplacé plus bas si un suivant existe
                             "home": trans(action, i),
-                            "control": { "ok": true, "home": true, "autoplay": true },
+                            "control": playing_control(),
                         }),
                     );
-                    let text = label(&ep.title, &format!("Épisode {n}"));
                     self.notes.insert(stage.clone(), json!({ "title": text }));
                     self.actions
                         .insert(play.clone(), json!([{ "stage": stage }]));
-                    played.push((stage, play.clone()));
-                    let spoken = ep.title_audio.as_deref().map(|mp3| {
-                        let file = episode_title_file(n);
-                        self.title_audios.push((file.clone(), mp3));
-                        file
-                    });
+                    played.push((stage, play.clone(), i));
                     (image, trans(&play, 0), text, spoken)
                 }
                 MenuEntry::Category {
                     name,
                     entries,
                     audio,
-                    image: chosen,
+                    image,
+                } => self.submenu(
+                    Head {
+                        name,
+                        entries,
+                        audio: audio.as_deref(),
+                        image: image.as_ref(),
+                    },
+                    (action, i),
+                    depth,
+                    Sub::Collection(end),
+                )?,
+                MenuEntry::Submenu {
+                    name,
+                    entries,
+                    audio,
+                    image,
+                    mode,
                 } => {
-                    self.categories += 1;
-                    let k = self.categories;
-                    let fallback = format!("Catégorie {k}");
-                    if entries.is_empty() {
-                        return Err(ArchiveError::EmptyCategory(one_line(name)));
-                    }
-                    // Nom lu noté avant le sous-menu : ordre du parcours (la catégorie, puis
-                    // ses options).
-                    let spoken = audio.as_deref().map(|mp3| {
-                        let file = category_title_file(k);
-                        self.title_audios.push((file.clone(), mp3));
-                        file
-                    });
-                    let sub = format!("m{k}");
-                    let first = self.episodes.len();
-                    let image = self.menu(entries, &sub, depth + 1, Some((action, i)))?;
-                    // N5 c : le fichier d'un épisode de cette catégorie (rang d'archive).
-                    let image = chosen
-                        .as_ref()
-                        .and_then(|png| {
-                            self.episodes[first..]
-                                .iter()
-                                .position(|ep| ep.image.as_ref() == Some(png))
-                        })
-                        .map_or(image, |p| episode_file(first + p + 1, "png"));
-                    (image, trans(&sub, 0), label(name, &fallback), spoken)
+                    let kind = match *mode {
+                        MenuMode::Collection { end } => Sub::Collection(end),
+                        MenuMode::Chapters(settings) => Sub::Book(settings),
+                    };
+                    self.submenu(
+                        Head {
+                            name,
+                            entries,
+                            audio: audio.as_deref(),
+                            image: image.as_ref(),
+                        },
+                        (action, i),
+                        depth,
+                        kind,
+                    )?
                 }
             };
             if first_image.is_none() {
@@ -477,31 +851,224 @@ impl<'a> Graph<'a> {
                 Some((pa, pi)) => (trans(pa, pi), true),
                 None => (Value::Null, false),
             };
-            self.stages.insert(
-                option.clone(),
-                json!({
-                    "image": image,
-                    "audio": spoken,
-                    "ok": ok,
-                    "home": home,
-                    "control": { "ok": true, "home": control_home, "autoplay": false },
-                }),
-            );
-            self.notes.insert(option.clone(), json!({ "title": text }));
+            self.insert_option(&option, image, spoken, ok, home, control_home, text);
             options.push(json!({ "stage": option }));
         }
-        // Enchaînement (P8, N4 a) : épisode suivant du même menu ; le dernier garde le retour
-        // à ce menu posé à la création.
+        // Fin d'un épisode : `suivante` (P8, N4 a) = épisode suivant du même menu ; `menu` = ce
+        // menu, focalisé sur l'épisode suivant. Le dernier garde le retour à ce menu, focalisé
+        // sur lui, posé à la création.
         for pair in played.windows(2) {
-            let (stage, _) = &pair[0];
-            let (_, next_play) = &pair[1];
+            let (stage, _, _) = &pair[0];
+            let (_, next_play, next_option) = &pair[1];
+            let ok = match end {
+                CollectionEnd::Next => trans(next_play, 0),
+                CollectionEnd::Menu => trans(action, *next_option),
+            };
             if let Some(st) = self.stages.get_mut(stage) {
-                st["ok"] = trans(next_play, 0);
+                st["ok"] = ok;
             }
         }
         self.actions
             .insert(action.to_string(), Value::Array(options));
         // Menu non vide (vérifié par l'appelant) : au moins une option, donc une image.
+        first_image.ok_or(ArchiveError::NoEpisode)
+    }
+
+    /// Scène d'option d'un menu.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_option(
+        &mut self,
+        option: &str,
+        image: String,
+        spoken: Option<String>,
+        ok: Value,
+        home: Value,
+        control_home: bool,
+        text: String,
+    ) {
+        self.stages.insert(
+            option.to_string(),
+            json!({
+                "image": image,
+                "audio": spoken,
+                "ok": ok,
+                "home": home,
+                "control": { "ok": true, "home": control_home, "autoplay": false },
+            }),
+        );
+        self.notes
+            .insert(option.to_string(), json!({ "title": text }));
+    }
+
+    /// Construit le livre à chapitres dont le menu des chapitres est `action` (niveau
+    /// `depth`) ; `parent` = menu du recueil qui le contient et position de son option, `None`
+    /// pour le livre racine. Rend l'image du premier chapitre (N5 a) et la transition qui
+    /// démarre le livre (`debut`).
+    fn book(
+        &mut self,
+        entries: &'a [MenuEntry],
+        action: &str,
+        depth: usize,
+        parent: Option<(&str, usize)>,
+        settings: ChapterSettings,
+    ) -> Result<(String, Value), ArchiveError> {
+        // Retour depuis le premier niveau du menu des chapitres : le recueil qui contient le
+        // livre (focalisé sur lui) ; pour le livre racine, retour par défaut du moteur (menu
+        // Start, sortie de l'histoire), comme depuis le menu racine d'un recueil.
+        let home = parent.map(|(pa, pi)| trans(pa, pi));
+        let mut chapters = Vec::new();
+        let image = self.chapter_menu(
+            entries,
+            action,
+            depth,
+            home.as_ref(),
+            settings.announce,
+            &mut chapters,
+        )?;
+        // Enchaînement en profondeur : les parties sont traversées sans arrêt.
+        for pair in chapters.windows(2) {
+            if let Some(st) = self.stages.get_mut(&pair[0].stage) {
+                st["ok"] = trans(&pair[1].entry, 0);
+            }
+        }
+        let (Some(first), Some(last)) = (chapters.first(), chapters.last()) else {
+            return Err(ArchiveError::NoEpisode);
+        };
+        let end = match settings.end {
+            BookEnd::Menu => trans(action, 0),
+            BookEnd::End => Value::Null,
+        };
+        let start = match settings.start {
+            ChapterStart::Chapter => trans(&first.entry, 0),
+            ChapterStart::Menu => trans(action, 0),
+        };
+        if let Some(st) = self.stages.get_mut(&last.stage) {
+            st["ok"] = end;
+        }
+        Ok((image, start))
+    }
+
+    /// Un niveau du menu des chapitres (`action`, niveau `depth`) : une option par chapitre,
+    /// un sous-menu par partie. `home` = retour depuis ses options (`None` : retour par défaut
+    /// du moteur) ; `announce` = réglage `annoncer` hérité.
+    /// Les chapitres sont ajoutés à `chapters` dans l'ordre de lecture ; leur `ok` est posé par
+    /// [`Graph::book`].
+    #[allow(clippy::too_many_arguments)]
+    fn chapter_menu(
+        &mut self,
+        entries: &'a [MenuEntry],
+        action: &str,
+        depth: usize,
+        home: Option<&Value>,
+        announce: bool,
+        chapters: &mut Vec<Chapter>,
+    ) -> Result<String, ArchiveError> {
+        self.check_menu(entries, depth)?;
+        self.menus += 1;
+        let mut options = Vec::with_capacity(entries.len());
+        let mut first_image: Option<String> = None;
+        for (i, entry) in entries.iter().enumerate() {
+            self.options += 1;
+            let option = format!("o{}", self.options);
+            let (image, ok, text, spoken) = match entry {
+                MenuEntry::Episode(ep) => {
+                    let (n, image, text, spoken) = self.episode(ep, "Chapitre")?;
+                    let stage = format!("e{n}");
+                    let entry_action = format!("p{n}");
+                    let st = json!({
+                        "image": image,
+                        "audio": episode_file(n, "mp3"),
+                        "ok": null, // posé par `book`
+                        "home": trans(action, i),
+                        "control": playing_control(),
+                    });
+                    self.stages.insert(stage.clone(), st);
+                    self.notes.insert(stage.clone(), json!({ "title": text }));
+                    match spoken.as_ref().filter(|_| announce) {
+                        // Annonce : titre lu sur l'image du chapitre, puis le chapitre.
+                        Some(title) => {
+                            let intro = format!("n{n}");
+                            let then = format!("q{n}");
+                            let st = json!({
+                                "image": image,
+                                "audio": title,
+                                "ok": trans(&then, 0),
+                                "home": trans(action, i),
+                                "control": playing_control(),
+                            });
+                            self.stages.insert(intro.clone(), st);
+                            self.actions
+                                .insert(entry_action.clone(), json!([{ "stage": intro }]));
+                            self.actions.insert(then, json!([{ "stage": stage }]));
+                        }
+                        None => {
+                            self.actions
+                                .insert(entry_action.clone(), json!([{ "stage": stage }]));
+                        }
+                    }
+                    chapters.push(Chapter {
+                        stage,
+                        entry: entry_action.clone(),
+                    });
+                    (image, trans(&entry_action, 0), text, spoken)
+                }
+                MenuEntry::Category {
+                    name,
+                    entries,
+                    audio,
+                    image,
+                } => self.submenu(
+                    Head {
+                        name,
+                        entries,
+                        audio: audio.as_deref(),
+                        image: image.as_ref(),
+                    },
+                    (action, i),
+                    depth,
+                    Sub::Part {
+                        announce,
+                        chapters: &mut *chapters,
+                    },
+                )?,
+                MenuEntry::Submenu {
+                    name,
+                    entries,
+                    audio,
+                    image,
+                    mode,
+                } => {
+                    let MenuMode::Chapters(settings) = mode else {
+                        return Err(ArchiveError::CollectionInBook(one_line(name)));
+                    };
+                    self.submenu(
+                        Head {
+                            name,
+                            entries,
+                            audio: audio.as_deref(),
+                            image: image.as_ref(),
+                        },
+                        (action, i),
+                        depth,
+                        Sub::Part {
+                            announce: settings.announce,
+                            chapters: &mut *chapters,
+                        },
+                    )?
+                }
+            };
+            if first_image.is_none() {
+                first_image = Some(image.clone());
+            }
+            let (home, control_home) = match home {
+                Some(h) => (h.clone(), true),
+                None => (Value::Null, false),
+            };
+            self.insert_option(&option, image, spoken, ok, home, control_home, text);
+            options.push(json!({ "stage": option }));
+        }
+        self.actions
+            .insert(action.to_string(), Value::Array(options));
         first_image.ok_or(ArchiveError::NoEpisode)
     }
 }
@@ -558,7 +1125,7 @@ fn probe(path: &Path, head: &mut [u8]) -> io::Result<(u64, usize)> {
 }
 
 /// MP3 : non vide, borné, commençant par une étiquette ID3 ou une synchronisation de trame.
-fn check_audio(path: &Path) -> Result<u64, ArchiveError> {
+fn check_audio(path: &Path, max_bytes: u64) -> Result<u64, ArchiveError> {
     let bad = |reason: String| ArchiveError::InvalidAudio {
         path: shown(path),
         reason,
@@ -571,8 +1138,8 @@ fn check_audio(path: &Path) -> Result<u64, ArchiveError> {
     if n < 2 {
         return Err(bad("pas un fichier MP3".into()));
     }
-    if len > MAX_AUDIO_BYTES {
-        return Err(bad(format!("{len} octets (au plus {MAX_AUDIO_BYTES})")));
+    if len > max_bytes {
+        return Err(bad(format!("{len} octets (au plus {max_bytes})")));
     }
     let id3 = n == 3 && &head == b"ID3";
     let sync = head[0] == 0xFF && head[1] & 0xE0 == 0xE0;
@@ -614,15 +1181,16 @@ fn read_png(path: &Path) -> Result<Vec<u8>, ArchiveError> {
 /// génère les chemins des MP3 dans le dossier de travail de la tâche, un par épisode, ce
 /// contrôle ne garde donc que d'une erreur de construction du pack.
 fn check_files(pack: &Pack, graph: &Graph<'_>) -> Result<(), ArchiveError> {
+    let limits = &graph.limits;
     let mut seen = HashSet::new();
     let mut total = 0u64;
     for ep in &graph.episodes {
         if !seen.insert(ep.audio.as_path()) {
             return Err(ArchiveError::DuplicateEpisode(one_line(&ep.title)));
         }
-        total += check_audio(&ep.audio)?;
-        if total > MAX_TOTAL_AUDIO_BYTES {
-            return Err(ArchiveError::TooLarge(total));
+        total += check_audio(&ep.audio, limits.max_audio_bytes)?;
+        if total > limits.max_total_audio_bytes {
+            return Err(limits.too_large(total));
         }
         if let Some(img) = &ep.image {
             read_png(img)?;
@@ -642,9 +1210,9 @@ fn check_files(pack: &Pack, graph: &Graph<'_>) -> Result<(), ArchiveError> {
                 reason: "fichier utilisé deux fois".into(),
             });
         }
-        total += check_audio(path)?;
-        if total > MAX_TOTAL_AUDIO_BYTES {
-            return Err(ArchiveError::TooLarge(total));
+        total += check_audio(path, limits.max_audio_bytes)?;
+        if total > limits.max_total_audio_bytes {
+            return Err(limits.too_large(total));
         }
     }
     if let Some(cover) = &pack.cover {
@@ -688,15 +1256,26 @@ fn temp_path(dest: &Path) -> io::Result<PathBuf> {
     )))
 }
 
-/// Écrit l'archive Telmi du pack à `dest`, de façon atomique. `cancelled` est consulté entre
-/// deux entrées et entre deux blocs d'audio.
+/// Écrit l'archive Telmi d'un pack de podcasts à `dest`, de façon atomique : recueil
+/// `fin = suivante`, bornes des podcasts ([`ArchiveOptions::default`]). `cancelled` est
+/// consulté entre deux entrées et entre deux blocs d'audio.
 pub fn write_archive(
     pack: &Pack,
     dest: &Path,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<ArchiveSummary, ArchiveError> {
+    write_archive_with(pack, &ArchiveOptions::default(), dest, cancelled)
+}
+
+/// [`write_archive`] avec le mode du menu racine et les bornes choisis par l'appelant.
+pub fn write_archive_with(
+    pack: &Pack,
+    options: &ArchiveOptions,
+    dest: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ArchiveSummary, ArchiveError> {
     check_metadata(&pack.metadata)?;
-    let graph = Graph::build(&pack.menu)?;
+    let graph = Graph::build(&pack.menu, options.mode, options.limits)?;
     check_files(pack, &graph)?;
     if cancelled() {
         return Err(ArchiveError::Cancelled);
@@ -783,17 +1362,24 @@ fn write_zip(
         zip.start_file(format!("images/{}", episode_file(n, "png")), options)?;
         zip.write_all(&png)?;
         zip.start_file(format!("audios/{}", episode_file(n, "mp3")), options)?;
-        copy_audio(&ep.audio, &mut zip, &mut buf, &mut total, &check)?;
+        copy_audio(
+            &ep.audio,
+            &mut zip,
+            &mut buf,
+            &mut total,
+            &graph.limits,
+            &check,
+        )?;
     }
     for (name, path) in &graph.title_audios {
         check()?;
         zip.start_file(format!("audios/{name}"), options)?;
-        copy_audio(path, &mut zip, &mut buf, &mut total, &check)?;
+        copy_audio(path, &mut zip, &mut buf, &mut total, &graph.limits, &check)?;
     }
     if let Some(path) = &pack.title_audio {
         check()?;
         zip.start_file(TITLE_AUDIO_NAME, options)?;
-        copy_audio(path, &mut zip, &mut buf, &mut total, &check)?;
+        copy_audio(path, &mut zip, &mut buf, &mut total, &graph.limits, &check)?;
     }
     check()?;
     let mut out = zip.finish()?;
@@ -810,6 +1396,7 @@ fn copy_audio<W: Write>(
     out: &mut W,
     buf: &mut [u8],
     total: &mut u64,
+    limits: &Limits,
     check: &dyn Fn() -> Result<(), ArchiveError>,
 ) -> Result<(), ArchiveError> {
     let mut src = File::open(path).map_err(|e| ArchiveError::InvalidAudio {
@@ -826,15 +1413,15 @@ fn copy_audio<W: Write>(
             Err(e) => return Err(e.into()),
         };
         copied += n as u64;
-        if copied > MAX_AUDIO_BYTES {
+        if copied > limits.max_audio_bytes {
             return Err(ArchiveError::InvalidAudio {
                 path: shown(path),
-                reason: format!("plus de {MAX_AUDIO_BYTES} octets"),
+                reason: format!("plus de {} octets", limits.max_audio_bytes),
             });
         }
         *total += n as u64;
-        if *total > MAX_TOTAL_AUDIO_BYTES {
-            return Err(ArchiveError::TooLarge(*total));
+        if *total > limits.max_total_audio_bytes {
+            return Err(limits.too_large(*total));
         }
         out.write_all(&buf[..n])?;
     }
