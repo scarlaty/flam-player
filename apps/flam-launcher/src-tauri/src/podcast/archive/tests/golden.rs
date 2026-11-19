@@ -28,6 +28,7 @@ fn snapshot(out: &Path) -> String {
 
 fn check(name: &str, p: &Pack, fx: &Fixture) {
     write_archive(p, &fx.out(), &never).unwrap();
+    super::chapters::assert_graph(&json_of(&read_zip(&fx.out()), "nodes.json"));
     let got = snapshot(&fx.out());
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/podcast/archive/tests/golden")
