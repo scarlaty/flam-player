@@ -371,6 +371,8 @@ impl From<Done> for Outcome {
 pub struct EditorOpened {
     /// Le dossier était déjà ouvert : sa fenêtre est revenue au premier plan.
     pub already_open: bool,
+    /// Fenêtre de l'éditeur du dossier (« Choisir le dossier » ne ferme pas la sienne).
+    pub label: String,
 }
 
 /// Résultat de [`authoring_editor_create`].
@@ -811,7 +813,10 @@ pub async fn authoring_editor_open(
     match editors.register(editor) {
         Registered::Existing(label) => {
             focus(&app, &label);
-            Ok(EditorOpened { already_open: true })
+            Ok(EditorOpened {
+                already_open: true,
+                label,
+            })
         }
         Registered::Closing => Err(EditorError {
             kind: "editor_closing".into(),
@@ -841,6 +846,7 @@ pub async fn authoring_editor_open(
             }
             Ok(EditorOpened {
                 already_open: false,
+                label,
             })
         }
     }

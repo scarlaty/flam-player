@@ -13,7 +13,8 @@ fn timing() -> Timing {
     Timing {
         debounce: QUIET,
         max_wait: Duration::from_secs(3),
-        grace: Duration::from_millis(300),
+        // Large : un runner chargé peut livrer les événements de l'éditeur avec retard.
+        grace: Duration::from_millis(1000),
         poll: Duration::from_millis(100),
     }
 }
@@ -49,7 +50,7 @@ fn wait_for(cond: impl Fn() -> bool) -> bool {
 
 /// Laisse passer tout signal en attente (anti-rebond, grâce, présence).
 fn settle() {
-    std::thread::sleep(Duration::from_millis(900));
+    std::thread::sleep(Duration::from_millis(1500));
 }
 
 fn write(root: &Path, rel: &str, bytes: &[u8]) {
@@ -234,6 +235,8 @@ fn filtre_des_chemins() {
     assert!(is_relevant(&ev("/h"), base), "la racine elle-même");
     assert!(!is_relevant(&ev("/h/.flam/tmp/1/x"), base));
     assert!(!is_relevant(&ev("/h/A/.x.mp3.1-2.tmp"), base));
+    assert!(!is_relevant(&ev("/h/A/Desktop.ini"), base));
+    assert!(!is_relevant(&ev("/h/Thumbs.db"), base));
     let mixed = ev("/h/.flam/x").add_path("/h/A/y.mp3".into());
     assert!(is_relevant(&mixed, base));
     let access = Event::new(EventKind::Access(AccessKind::Any)).add_path("/h/a".into());

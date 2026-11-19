@@ -21,15 +21,21 @@
 //!   la surveillance d'un dossier supprimé sans rien dire). Signal [`Signal::Missing`] une seule
 //!   fois ; l'observateur est libéré. Si le dossier revient (clé rebranchée), la surveillance
 //!   reprend et [`Signal::Changed`] est émis.
-//! - Arrêt : abandonner l'[`EditorWatch`] (fenêtre fermée, `EditorState::remove`) arrête le
-//!   thread et libère l'observateur ; aucun signal n'est émis après la fin de `drop`.
+//! - Arrêt : abandonner l'[`EditorWatch`] (fenêtre fermée, `EditorState::remove`, appelé sur le
+//!   thread principal) demande l'arrêt **sans l'attendre** : le thread peut être bloqué un
+//!   moment dans une lecture du disque (partage réseau injoignable). Il se termine dès qu'il
+//!   reprend la main et libère l'observateur ; un drapeau d'arrêt empêche tout nouveau signal
+//!   (au pire un signal déjà en cours d'émission, vers une fenêtre fermée, donc perdu).
+//! - Limite connue (Windows) : la surveillance tient une poignée sur le dossier ; tant que
+//!   l'éditeur est ouvert, éjecter la clé USB proprement ou renommer un dossier **parent** peut
+//!   être refusé (« en cours d'utilisation »). Fermer l'éditeur libère le dossier.
 //!
 //! Côté application, les signaux deviennent les événements [`EVENT_CHANGED`] et
 //! [`EVENT_MISSING`], envoyés à la seule fenêtre concernée ; ils ne portent aucune donnée : la
 //! page relit la vue (`authoring_editor_view`).
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -142,13 +148,21 @@ impl Drop for QuietGuard {
 /// Le chemin `path` (sous `base`) compte-t-il pour la vue ? Un composant relatif commençant par
 /// un point (`.flam/`, temporaires) l'écarte ; un chemin hors de `base` (ou `base` lui-même)
 /// compte.
+/// Fichiers que l'Explorateur écrit de lui-même et que la lecture du dossier ignore (`tree.rs`).
+const SILENT_FILES: [&str; 2] = ["desktop.ini", "thumbs.db"];
+
 fn path_counts(path: &Path, base: &Path) -> bool {
-    match path.strip_prefix(base) {
-        Ok(rel) => !rel
-            .components()
-            .any(|c| c.as_os_str().to_string_lossy().starts_with('.')),
-        Err(_) => true,
-    }
+    let Ok(rel) = path.strip_prefix(base) else {
+        return true;
+    };
+    let hidden = rel
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+    let silent = rel.file_name().is_some_and(|n| {
+        let n = n.to_string_lossy().to_lowercase();
+        SILENT_FILES.contains(&n.as_str())
+    });
+    !hidden && !silent
 }
 
 /// Un événement du système change-t-il ce que montre l'éditeur ?
@@ -221,6 +235,8 @@ fn start_notify(
 #[derive(Debug)]
 pub struct EditorWatch {
     quiet: Arc<Quiet>,
+    /// Arrêt demandé : plus aucun signal.
+    stopped: Arc<AtomicBool>,
     stop: mpsc::Sender<Msg>,
     thread: Option<JoinHandle<()>>,
 }
@@ -238,6 +254,8 @@ impl EditorWatch {
         let watcher = start_notify(base, tx.clone(), quiet.clone())?;
         let base: PathBuf = base.to_path_buf();
         let (notify_tx, notify_quiet) = (tx.clone(), quiet.clone());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
         let thread = std::thread::Builder::new()
             .name("editor-watch".into())
             .spawn(move || {
@@ -247,12 +265,17 @@ impl EditorWatch {
                     Some(watcher),
                     &rx,
                     || start_notify(&base, notify_tx.clone(), notify_quiet.clone()),
-                    on_signal,
+                    move |signal| {
+                        if !flag.load(Ordering::SeqCst) {
+                            on_signal(signal);
+                        }
+                    },
                 )
             })
             .map_err(notify::Error::io)?;
         Ok(Self {
             quiet,
+            stopped,
             stop: tx,
             thread: Some(thread),
         })
@@ -272,11 +295,11 @@ impl EditorWatch {
 
 impl Drop for EditorWatch {
     fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
         let _ = self.stop.send(Msg::Stop);
-        if let Some(thread) = self.thread.take() {
-            // Le thread ne prend aucun verrou de l'application : l'attente est brève.
-            let _ = thread.join();
-        }
+        // Pas de `join` : appelé sur le thread principal (fenêtre fermée), il pourrait attendre
+        // une lecture du disque bloquée. Le thread se termine seul (voir l'en-tête).
+        drop(self.thread.take());
     }
 }
 

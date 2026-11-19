@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { pickFolder } from "../../../api/dialog";
-import { closeEditorWindow, openEditor } from "../../../api/editor";
+import { closeEditorWindow, currentWindowLabel, openEditor } from "../../../api/editor";
 import { toAppError } from "../../../api/error";
 import { Banner, Button } from "../../../components";
 import { t } from "../../../i18n";
@@ -24,8 +24,9 @@ export function FolderMissingBanner({ onError }: FolderMissingBannerProps) {
       const path = await pickFolder(text.pickTitle);
       if (path === null) return;
       setOpening(true);
-      await openEditor(path);
-      await closeEditorWindow();
+      const opened = await openEditor(path);
+      // Le même dossier revenu entre-temps : c'est cette fenêtre, elle reste ouverte.
+      if (opened.label !== currentWindowLabel()) await closeEditorWindow();
     } catch (caught) {
       onError(openErrorText(toAppError(caught)));
     } finally {

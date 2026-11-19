@@ -12,7 +12,8 @@ it("choisir un dossier ouvre l'éditeur sur ce dossier", async () => {
   mockIPC((cmd, args) => {
     calls.push({ cmd, args });
     if (cmd === "plugin:dialog|open") return "C:\\Histoires\\Loup";
-    if (cmd === "authoring_editor_open") return { already_open: false };
+    if (cmd === "authoring_editor_open")
+      return { already_open: false, label: "editor-1" };
     return null;
   });
   render(<OpenEditorButton />);
@@ -27,7 +28,9 @@ it("choisir un dossier ouvre l'éditeur sur ce dossier", async () => {
 });
 
 it("« Modifier » : dossier déjà ouvert, sa fenêtre revient avec un message", async () => {
-  mockIPC((cmd) => (cmd === "authoring_editor_open" ? { already_open: true } : null));
+  mockIPC((cmd) =>
+    cmd === "authoring_editor_open" ? { already_open: true, label: "editor-1" } : null,
+  );
   render(
     <ToastProvider>
       <OpenEditorButton folder="C:\\Histoires\\Loup" size="sm" />

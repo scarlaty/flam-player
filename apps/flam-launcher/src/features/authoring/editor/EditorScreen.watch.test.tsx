@@ -97,18 +97,22 @@ const chien = story("Animaux/02 Le chien.mp3", "Le chien");
 
 let current: EditorView;
 let calls: string[] = [];
+/** Fenêtre rendue par `authoring_editor_open`. */
+let openedIn = "editor-2";
 
 beforeEach(() => {
   clearThumbnailCache();
   current = makeView([chat, chien]);
   calls = [];
+  openedIn = "editor-2";
   mockWindows("editor-1");
   mockIPC(
     (cmd) => {
       calls.push(cmd);
       if (cmd === "authoring_editor_view") return current;
       if (cmd === "plugin:dialog|open") return "D:\\Histoires\\Loup";
-      if (cmd === "authoring_editor_open") return { already_open: false };
+      if (cmd === "authoring_editor_open")
+        return { already_open: false, label: openedIn };
       return null;
     },
     { shouldMockEvents: true },
@@ -162,3 +166,15 @@ slowIt(
     expect(calls).toContain("authoring_editor_open");
   },
 );
+
+slowIt("le même dossier revenu entre-temps : la fenêtre reste ouverte", async () => {
+  await openOn("Le chat");
+  await act(() => emit(FOLDER_MISSING_EVENT));
+  openedIn = "editor-1";
+  fireEvent.click(await screen.findByRole("button", { name: text.watch.choose }));
+  await waitFor(() => expect(calls).toContain("authoring_editor_open"));
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(calls).not.toContain("plugin:window|close");
+});

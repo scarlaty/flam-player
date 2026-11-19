@@ -152,7 +152,9 @@ export function isEditorWindow(): boolean {
 }
 
 /** `authoring_editor_open` : ouvre `path` dans une fenêtre d'éditeur (ou ramène la sienne). */
-export function openEditor(path: string): Promise<{ already_open: boolean }> {
+export function openEditor(
+  path: string,
+): Promise<{ already_open: boolean; label: string }> {
   return invokeCommand("authoring_editor_open", { path });
 }
 
@@ -319,6 +321,15 @@ export function onFolderChanged(handler: () => void): Promise<() => void> {
 /** Le dossier de cet éditeur a disparu (supprimé, renommé, clé USB retirée). */
 export function onFolderMissing(handler: () => void): Promise<() => void> {
   return onWindowEvent(FOLDER_MISSING_EVENT, handler);
+}
+
+/** Libellé de cette fenêtre (`null` hors de Tauri). */
+export function currentWindowLabel(): string | null {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return null;
+  }
 }
 
 /** Ferme la fenêtre de l'éditeur (son éditeur est oublié par le backend). */
