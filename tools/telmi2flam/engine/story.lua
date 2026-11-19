@@ -70,6 +70,20 @@ local function resetPass()
     passCount = 0
     passSeen = {}
 end
+
+-- Livres a chapitres (opt-in : champ `role` d'une scene, pose par le launcher ;
+-- une histoire sans `role` garde EXACTEMENT le comportement historique) :
+--   role = "chapter" : chapitre. Quitte par Home, sa position audio (seekposition,
+--     ecrite chaque seconde par audio-player) est GARDEE et il devient le
+--     "chapitre quitte" (state.chapter_left, persiste comme home_origin) :
+--     "Reprendre l'histoire" (menu Start, apres sortie ou veille dans le menu des
+--     chapitres) le reprend a cette position, et y revenir par le menu des
+--     chapitres aussi. Tout autre chapitre repart du debut.
+--   role = "title"   : titre lu (option affichee seule, annonce d'un chapitre) :
+--     position seule, pas un chapitre de la jauge (totalChapters l'exclut aussi).
+local function roleOf(st)
+    return st and st.role
+end
 local function getHomeOrigin() return state.home_origin end
 local function setHomeOrigin(o) state.home_origin = o end
 
@@ -331,6 +345,7 @@ function endStory(reason)
     state.currentBranchName = nil
     state.visited_funs = {}
     state.inv = nil
+    state.chapter_left = nil
     setKind(nil, nil)
     progress = 0
     -- back_callback = requestAudioStop + cleanCurrentModule + Start
@@ -366,16 +381,27 @@ function enterStage(id, isResume)
     local ctrl = ctrlOf(st)
     -- Noeud de passage (isPassage) : enchaine sans lecteur audio (plus bas).
     local passage = isPassage(st)
+    local role = roleOf(st)
     if st.audio then
-        -- scene avec audio = un VRAI chapitre (contenu ecoute) => alimente .prog
-        saveProgress(id, st.image, st.audio)
+        if role == "title" then
+            -- titre lu (role "title") : position seule, pas un chapitre (jauge)
+            Global.progression.setProgression({ currentFunction = id, branch = BRANCH })
+            setKind("s", nil)
+        else
+            -- scene avec audio = un VRAI chapitre (contenu ecoute) => alimente .prog
+            saveProgress(id, st.image, st.audio)
+        end
         -- Entree par le graphe (pas une reprise) : l'audio repart du debut. La
         -- position sauvee (seekposition, lue par audio-player au 1er 'play') ne
         -- sert qu'a la reprise ; une sortie par Home (transition home) la laisse
         -- en place, sinon une re-entree reprendrait l'audio en cours de route.
-        if not isResume and state.visited_funs and state.visited_funs[id] then
+        -- Exception (role "chapter") : le chapitre quitte par Home reprend a sa
+        -- position quand on y revient.
+        local keep = role == "chapter" and state.chapter_left == id
+        if not isResume and not keep and state.visited_funs and state.visited_funs[id] then
             state.visited_funs[id].seekposition = nil
         end
+        if role == "chapter" then state.chapter_left = nil end
     else
         -- noeud de passage (ex. backStage) : pur routage, PAS un chapitre.
         -- Position seule (isStoryStarted reste vrai => plancher .prog>=1 assure
@@ -410,9 +436,12 @@ function enterStage(id, isResume)
     if home then
         Global.setBackBehavior(function()
             resetPass()
-            -- scene quittee par Home : pas de reprise au milieu de cet audio
-            -- (comme OK, processOk dans audio-player)
-            if state.visited_funs and state.visited_funs[id] then
+            if role == "chapter" then
+                -- chapitre quitte par Home : position gardee, reprise possible
+                state.chapter_left = id
+            elseif state.visited_funs and state.visited_funs[id] then
+                -- scene quittee par Home : pas de reprise au milieu de cet audio
+                -- (comme OK, processOk dans audio-player)
                 state.visited_funs[id].seekposition = nil
             end
             markHome({ id = id, kind = "s" })
@@ -603,6 +632,7 @@ function play(name)
     resetPass()
     if name == "__start" then
         setHomeOrigin(nil)
+        state.chapter_left = nil
         initInventory()           -- nouveau depart : inventaire neuf
         followTransition(N.start)
         return
@@ -631,6 +661,18 @@ end
 function story.resume()
     local id, kind = state.current_fun, state.current_kind
     resetPass()
+    -- Livre (role "chapter") : chapitre quitte par Home puis sortie ou veille dans
+    -- le menu des chapitres : on le reprend, a sa position, au lieu du menu.
+    local left = state.chapter_left
+    if left ~= nil then
+        if roleOf(N.stages[left]) == "chapter" then
+            ensureInventory()
+            validateHomeOrigin("s", left)
+            enterStage(left, true)
+            return
+        end
+        state.chapter_left = nil   -- sauvegarde d'une autre version du pack
+    end
     if id ~= nil then ensureInventory() end
     -- Reprise sur le menu retour (veille, menu M) : origine sauvee gardee.
     validateHomeOrigin(id ~= nil and (kind or (N.stages[id] and "s" or "a")) or nil, id)

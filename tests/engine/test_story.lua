@@ -452,6 +452,122 @@ boot(nmBig, true); menuPick()
 check("REV inventaire agrandi : objet garde + nouveau a init", state.inv[1].value == 1 and state.inv[2].value == 2,
       tostring(state.inv[2] and state.inv[2].value))
 
+-- ---------------------------------------------------------------------------
+-- CHAP : livres a chapitres (role "chapter" / "title", opt-in, launcher) :
+-- chapitre quitte par Home repris a sa position ; sans role, rien ne change.
+-- ---------------------------------------------------------------------------
+-- Livre du launcher : e1 -> e2 -> annonce n3 -> e3 -> menu m0 ; home d'un
+-- chapitre -> son option ; options sans home (retour = menu Start).
+local CTRLP = { ok = true, home = true, autoplay = true }
+local CTRLO = { ok = true, home = false, autoplay = false }
+local function bookNodes(withRole)
+    local ch = withRole and "chapter" or nil
+    local ti = withRole and "title" or nil
+    return { start = { action = "begin" }, totalChapters = 3,
+        stages = {
+            start = { ok = { action = "p1" }, ctrl = { ok = false, home = false, autoplay = true } },
+            e1 = { image = "e1.lif", audio = "e1.mp3", ok = { action = "p2" }, home = { action = "m0", index = 0 },
+                   ctrl = CTRLP, role = ch },
+            e2 = { image = "e2.lif", audio = "e2.mp3", ok = { action = "p3" }, home = { action = "m0", index = 1 },
+                   ctrl = CTRLP, role = ch },
+            n3 = { image = "e3.lif", audio = "t3.mp3", ok = { action = "q3" }, home = { action = "m0", index = 2 },
+                   ctrl = CTRLP, role = ti },
+            e3 = { image = "e3.lif", audio = "e3.mp3", ok = { action = "m0" }, home = { action = "m0", index = 2 },
+                   ctrl = CTRLP, role = ch },
+            o1 = { image = "e1.lif", audio = "t1.mp3", ok = { action = "p1" }, ctrl = CTRLO, text = "C1" },
+            o2 = { image = "e2.lif", audio = "t2.mp3", ok = { action = "p2" }, ctrl = CTRLO, text = "C2" },
+            o3 = { image = "e3.lif", audio = "t3.mp3", ok = { action = "q3" }, ctrl = CTRLO, text = "C3" },
+        },
+        actions = { begin = { { stage = "start" } }, p1 = { { stage = "e1" } }, p2 = { { stage = "e2" } },
+                    p3 = { { stage = "n3" } }, q3 = { { stage = "e3" } },
+                    m0 = { { stage = "o1" }, { stage = "o2" }, { stage = "o3" } } } }
+end
+local function seek(id) return state.visited_funs[id] and state.visited_funs[id].seekposition end
+-- Demarre le livre et quitte le chapitre 2 par Home a la position 42 (posee
+-- chaque seconde par audio-player sur device).
+local function leaveChapter2(nodes)
+    boot(nodes); menuPick(); audioEnd()
+    state.visited_funs.e2.seekposition = 42
+    back_callback()
+end
+local bookR, bookN = bookNodes(true), bookNodes(false)
+
+leaveChapter2(bookR)
+check("CHAP Home -> menu des chapitres focalise sur C2", lastModule.name == "carousel" and lastModule.args.index == 2,
+      lastModule.name)
+check("CHAP position du chapitre quitte gardee", seek("e2") == 42, seek("e2"))
+check("CHAP chapitre quitte retenu", state.chapter_left == "e2", state.chapter_left)
+back_callback()   -- retour depuis le menu : menu Start (sortie de l'histoire)
+check("CHAP retour du menu -> menu Start, Reprendre", lastModule.name == "list-choice"
+      and menuLabel() == "Reprendre l'histoire", menuLabel())
+check("CHAP pas de goto_library", #log == 0, table.concat(log, ","))
+boot(bookR, true); menuPick()   -- relance, Reprendre l'histoire
+check("CHAP Reprendre -> chapitre quitte", lastModule.name == "audio-player"
+      and lastModule.args.audio_path == "e2.mp3", lastModule.args.audio_path)
+check("CHAP Reprendre -> a sa position", seek("e2") == 42 and state.current_fun == "e2", seek("e2"))
+check("CHAP Reprendre -> chapitre quitte consomme", state.chapter_left == nil, state.chapter_left)
+audioEnd()   -- la suite continue normalement (annonce de C3)
+check("CHAP la suite continue", lastModule.args.audio_path == "t3.mp3", lastModule.args.audio_path)
+
+-- veille dans le menu des chapitres : meme reprise
+leaveChapter2(bookR)
+boot(bookR, true); menuPick()
+check("CHAP veille dans le menu -> chapitre quitte a sa position", lastModule.args.audio_path == "e2.mp3"
+      and seek("e2") == 42, seek("e2"))
+
+-- valider dans le menu le chapitre qu'on vient de quitter : reprise a la position
+leaveChapter2(bookR)
+lastModule.args.choices[2].cb()
+check("CHAP menu -> chapitre quitte a sa position", lastModule.args.audio_path == "e2.mp3" and seek("e2") == 42,
+      seek("e2"))
+check("CHAP menu -> chapitre quitte consomme", state.chapter_left == nil)
+
+-- un autre chapitre repart du debut ; le chapitre quitte aussi ensuite
+leaveChapter2(bookR)
+state.visited_funs.e1.seekposition = 10
+lastModule.args.choices[1].cb()
+check("CHAP menu -> autre chapitre depuis le debut", lastModule.args.audio_path == "e1.mp3" and seek("e1") == nil,
+      seek("e1"))
+check("CHAP autre chapitre : plus de chapitre quitte", state.chapter_left == nil)
+audioEnd()
+check("CHAP chapitre quitte rejoint par la suite : depuis le debut", lastModule.args.audio_path == "e2.mp3"
+      and seek("e2") == nil, seek("e2"))
+
+-- Demarrer efface le chapitre quitte
+leaveChapter2(bookR)
+Global.current_branch["__start"]()
+check("CHAP Demarrer : plus de chapitre quitte", state.chapter_left == nil
+      and lastModule.args.audio_path == "e1.mp3", state.chapter_left)
+
+-- jauge : l'annonce (role "title") n'est pas un chapitre
+boot(bookR); menuPick(); audioEnd(); audioEnd()
+check("CHAP annonce jouee", lastModule.args.audio_path == "t3.mp3" and state.current_fun == "n3")
+check("CHAP annonce hors jauge", #store.chaps == 2, #store.chaps)
+audioEnd()
+check("CHAP 3 chapitres = jauge pleine", #store.chaps == 3 and Global.progression.getProgressionValue() == 100,
+      #store.chaps)
+-- chapitre quitte qui n'existe plus (pack mis a jour) : reprise normale
+leaveChapter2(bookR)
+local bookR2 = bookNodes(true)
+bookR2.stages.e2.role = nil
+back_callback()
+boot(bookR2, true); menuPick()
+check("CHAP chapitre quitte devenu inconnu : reprise du noeud sauve", lastModule.name == "carousel"
+      and state.chapter_left == nil, lastModule.name)
+
+-- Non-regression : meme graphe SANS role = comportement historique
+leaveChapter2(bookN)
+check("CHAP sans role : position effacee par Home", seek("e2") == nil, seek("e2"))
+check("CHAP sans role : pas de chapitre quitte", state.chapter_left == nil)
+lastModule.args.choices[2].cb()
+check("CHAP sans role : chapitre repris du debut", lastModule.args.audio_path == "e2.mp3" and seek("e2") == nil)
+leaveChapter2(bookN)
+back_callback()
+boot(bookN, true); menuPick()
+check("CHAP sans role : Reprendre -> menu des chapitres", lastModule.name == "carousel", lastModule.name)
+boot(bookN); menuPick(); audioEnd(); audioEnd()
+check("CHAP sans role : annonce comptee comme chapitre", #store.chaps == 3, #store.chaps)
+
 -- flam-test appelle setup() s'il existe apres le chargement : main.lua l'a
 -- defini, on le retire pour ne pas relancer l'histoire hors test.
 setup = nil
