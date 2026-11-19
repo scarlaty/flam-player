@@ -1630,6 +1630,17 @@ export const fr = {
       n === 1
         ? "1 fichier n'a pas été copié (format non accepté)."
         : `${n} fichiers n'ont pas été copiés (format non accepté).`,
+    /** Surveillance du dossier (lot 9, § 4.5). */
+    watch: {
+      changed: "Le dossier a changé dans l'Explorateur : l'affichage est à jour.",
+      back: "Le dossier est de nouveau accessible : l'affichage est à jour.",
+      missing: "Dossier introuvable : l'éditeur passe en lecture seule.",
+      missingTitle: "Dossier introuvable",
+      missingHelp:
+        "Le dossier a été supprimé, renommé ou déplacé, ou la clé USB a été retirée. Rien ne peut être modifié. Rebranchez la clé, ou choisissez le dossier à son nouvel emplacement.",
+      choose: "Choisir le dossier",
+      pickTitle: "Nouvel emplacement du dossier de l'histoire",
+    },
     error: {
       changed:
         "Le dossier a changé entre-temps (modifié ailleurs) : rien n'a été fait. L'affichage est à jour, réessayez.",

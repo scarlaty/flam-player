@@ -3,7 +3,6 @@ import {
   authoringCode,
   createStoryFromFolder,
   readStoryFolder,
-  relocateStoryFolder,
   type ConflictChoice,
   type FolderReport,
 } from "../../api/authoring";
@@ -14,6 +13,7 @@ import { ToastContext } from "../../components/Toast/ToastContext";
 import { t } from "../../i18n";
 import { StoriesContext } from "../stories/StoriesContext";
 import { errorText, problemText } from "./problemText";
+import { RelocateFolderDialog } from "./RelocateFolderDialog";
 import "./CreateStoryFromFolder.css";
 
 /** Lignes montrées au plus par liste (le reste est résumé en « Et N autres choses »). */
@@ -65,7 +65,6 @@ export function CreateStoryFromFolder({
   const [error, setError] = useState<string | null>(null);
   // Dossier de l'histoire introuvable : « Choisir le dossier » (§ 8).
   const [missing, setMissing] = useState(false);
-  const [relocateError, setRelocateError] = useState<string | null>(null);
 
   async function open(known: string | null = folder ?? null) {
     setError(null);
@@ -80,7 +79,6 @@ export function CreateStoryFromFolder({
     } catch (caught) {
       const failure = toAppError(caught);
       if (uuid !== undefined && authoringCode(failure) === "folder_missing") {
-        setRelocateError(null);
         setMissing(true);
         return;
       }
@@ -90,27 +88,6 @@ export function CreateStoryFromFolder({
     } finally {
       setReading(false);
     }
-  }
-
-  async function relocate() {
-    if (uuid === undefined) return;
-    setRelocateError(null);
-    let kept: string;
-    try {
-      const picked = await pickFolder(t.authoringFolder.chooseTitle);
-      if (picked === null) return;
-      setBusy(true);
-      kept = await relocateStoryFolder(uuid, picked);
-    } catch (caught) {
-      setRelocateError(errorText(toAppError(caught)));
-      return;
-    } finally {
-      setBusy(false);
-    }
-    setMissing(false);
-    toast?.show({ message: t.authoringFolder.relocated, tone: "success" });
-    await stories?.refreshInstalled();
-    await open(kept);
   }
 
   async function create() {
@@ -155,36 +132,17 @@ export function CreateStoryFromFolder({
           <p>{error}</p>
         </Banner>
       )}
-      <Dialog
-        open={missing}
-        onClose={() => {
-          if (!busy) setMissing(false);
-        }}
-        title={t.authoringFolder.missingTitle}
-        description={t.authoringFolder.missing}
-        footer={
-          <>
-            <Button variant="ghost" disabled={busy} onClick={() => setMissing(false)}>
-              {text.cancel}
-            </Button>
-            <Button
-              variant="primary"
-              icon="folder"
-              disabled={busy}
-              aria-busy={busy || undefined}
-              onClick={() => void relocate()}
-            >
-              {t.authoringFolder.choose}
-            </Button>
-          </>
-        }
-      >
-        {relocateError && (
-          <Banner tone="danger" role="alert">
-            <p>{relocateError}</p>
-          </Banner>
-        )}
-      </Dialog>
+      {uuid !== undefined && (
+        <RelocateFolderDialog
+          uuid={uuid}
+          open={missing}
+          onClose={() => setMissing(false)}
+          onRelocated={async (kept) => {
+            setMissing(false);
+            await open(kept);
+          }}
+        />
+      )}
       <Dialog
         open={report !== null}
         onClose={() => {

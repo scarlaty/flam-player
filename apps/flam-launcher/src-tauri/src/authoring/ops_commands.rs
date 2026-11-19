@@ -18,6 +18,9 @@
 //! - La fenêtre fermée, son éditeur est oublié ([`EditorState::remove`], appelé par
 //!   `lib.rs` sur `WindowEvent::Destroyed`) : le journal ne survit pas à la fenêtre, les fichiers
 //!   et la corbeille `.flam/` restent.
+//! - Le dossier est surveillé tant que la fenêtre est ouverte ([`super::editor_watch`],
+//!   lot 9) : les opérations tiennent un silence ([`EditorState::quiet`]) pour que leurs
+//!   propres changements ne soient pas signalés ; la surveillance s'arrête avec la fenêtre.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,6 +31,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use super::build::scan_limits;
 use super::commands::{self, FolderCreated, FolderReport};
+use super::editor_watch::{self, EditorWatch, QuietGuard};
 use super::identity::{path_key, ConflictChoice};
 use super::ops::{
     parse_id, Done, Editor, FolderPatch, OpError, Skipped, Stamp, StoryPatch, Target,
@@ -175,6 +179,8 @@ fn lock(session: &Shared) -> MutexGuard<'_, Session> {
 struct Open {
     key: String,
     session: Shared,
+    /// Surveillance du dossier (lot 9), posée après la création de la fenêtre.
+    watch: Option<EditorWatch>,
 }
 
 #[derive(Debug, Default)]
@@ -230,7 +236,14 @@ impl EditorState {
         inner.next += 1;
         let label = format!("{EDITOR_LABEL_PREFIX}{}", inner.next);
         let session = Arc::new(Mutex::new(Session::new(editor)));
-        inner.sessions.insert(label.clone(), Open { key, session });
+        inner.sessions.insert(
+            label.clone(),
+            Open {
+                key,
+                session,
+                watch: None,
+            },
+        );
         Registered::New(label)
     }
 
@@ -246,14 +259,42 @@ impl EditorState {
     /// Oublie l'éditeur de la fenêtre `label` (fenêtre fermée). Une opération encore en cours
     /// garde sa session vivante : le dossier ne se rouvre qu'à sa fin ([`Registered::Closing`]).
     pub fn remove(&self, label: &str) {
-        let mut inner = self.inner();
-        if let Some(open) = inner.sessions.remove(label) {
+        let watch = {
+            let mut inner = self.inner();
+            let Some(open) = inner.sessions.remove(label) else {
+                return;
+            };
             let weak = Arc::downgrade(&open.session);
             drop(open.session);
             if weak.strong_count() > 0 {
                 inner.closing.push((open.key, weak));
             }
-        }
+            open.watch
+        };
+        // Surveillance arrêtée hors du verrou du registre (attente de son thread).
+        drop(watch);
+    }
+
+    /// Pose la surveillance du dossier de la fenêtre `label` (sans effet si elle est fermée).
+    pub fn set_watch(&self, label: &str, watch: EditorWatch) {
+        let replaced = {
+            let mut inner = self.inner();
+            match inner.sessions.get_mut(label) {
+                Some(open) => open.watch.replace(watch),
+                None => Some(watch),
+            }
+        };
+        drop(replaced);
+    }
+
+    /// Silence de la surveillance pendant une opération de la fenêtre `label` : les
+    /// changements que fait l'éditeur ne sont pas signalés comme faits ailleurs.
+    pub fn quiet(&self, label: &str) -> Option<QuietGuard> {
+        self.inner()
+            .sessions
+            .get(label)
+            .and_then(|open| open.watch.as_ref())
+            .map(EditorWatch::quiet)
     }
 
     /// Libellés des fenêtres ouvertes.
@@ -348,6 +389,8 @@ impl From<Done> for Outcome {
 pub struct EditorOpened {
     /// Le dossier était déjà ouvert : sa fenêtre est revenue au premier plan.
     pub already_open: bool,
+    /// Fenêtre de l'éditeur du dossier (« Choisir le dossier » ne ferme pas la sienne).
+    pub label: String,
 }
 
 /// Résultat de [`authoring_editor_create`].
@@ -633,6 +676,7 @@ fn apply(editor: &mut Editor, op: Op) -> EditorResult<Outcome> {
 /// Exécute `op` sur l'éditeur de la fenêtre `label` (une opération à la fois par éditeur).
 pub fn run_op(state: &EditorState, label: &str, op: Op) -> EditorResult<Outcome> {
     let session = state.get(label)?;
+    let _quiet = state.quiet(label);
     let mut session = lock(&session);
     let result = apply(&mut session.editor, op);
     if result.is_ok() {
@@ -784,6 +828,7 @@ pub async fn authoring_editor_open(
         Editor::open(&root, forbidden, extra, scan_limits())
     })
     .await??;
+    let base = editor.base().to_path_buf();
     let folder_name = editor
         .base()
         .file_name()
@@ -792,7 +837,10 @@ pub async fn authoring_editor_open(
     match editors.register(editor) {
         Registered::Existing(label) => {
             focus(&app, &label);
-            Ok(EditorOpened { already_open: true })
+            Ok(EditorOpened {
+                already_open: true,
+                label,
+            })
         }
         Registered::Closing => Err(EditorError {
             kind: "editor_closing".into(),
@@ -810,8 +858,21 @@ pub async fn authoring_editor_open(
                     code: None,
                 });
             }
+            // La surveillance est un confort : sans elle, l'éditeur marche (vue relue après
+            // chaque opération, état vérifié avant d'agir).
+            let started = blocking({
+                let (app, label) = (app.clone(), label.clone());
+                move || editor_watch::start_for_window(&app, &label, &base)
+            })
+            .await;
+            match started {
+                Ok(Ok(watch)) => editors.set_watch(&label, watch),
+                Ok(Err(e)) => tracing::warn!("surveillance du dossier impossible : {e}"),
+                Err(e) => tracing::warn!("surveillance du dossier impossible : {e}"),
+            }
             Ok(EditorOpened {
                 already_open: false,
+                label,
             })
         }
     }
@@ -1094,7 +1155,10 @@ pub async fn authoring_editor_create(
 ) -> EditorResult<EditorCreated> {
     let session = editors.get(window.label())?;
     let base = base_of(&session);
+    // La création écrit l'uuid et la version dans `_histoire.json` : pas un changement d'ailleurs.
+    let quiet = editors.quiet(window.label());
     let created = commands::create_at(&config, &install, &base.to_string_lossy(), choice).await?;
+    drop(quiet);
     let _ = window
         .app_handle()
         .emit_to("main", TASK_EVENT, &created.task);
