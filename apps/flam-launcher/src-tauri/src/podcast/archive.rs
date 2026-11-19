@@ -27,8 +27,9 @@
 //! - libellés (`notes.json`) : titres translittérés pour les polices du player
 //!   (`telmi2flam::text`), 40 caractères au plus (A6) ;
 //! - images : celle de l'épisode, sinon l'image unie de repli (D13) ; image d'une catégorie =
-//!   image de son premier épisode (N5 a) ; couverture choisie par l'appelant (N6 b), sinon
-//!   repli ;
+//!   image de son premier épisode (N5 a) ; image propre d'un [`MenuEntry::Submenu`]
+//!   (`picture`, `images/mNNN.png`) prioritaire ; couverture choisie par l'appelant (N6 b),
+//!   sinon repli ;
 //! - titres lus (synthèse vocale, § 12, #462) : l'audio d'une scène d'option est le titre
 //!   prononcé de l'épisode (`audios/tNNN.mp3`, NNN = rang de l'épisode) ou de la catégorie
 //!   (`audios/cNNN.mp3`, NNN = rang de la catégorie), joué quand l'option prend le focus ;
@@ -183,6 +184,9 @@ pub enum MenuEntry {
         entries: Vec<MenuEntry>,
         audio: Option<PathBuf>,
         image: Option<PathBuf>,
+        /// Image **propre** du sous-menu (PNG 640 × 480, `_image.*` d'un dossier), écrite dans
+        /// l'archive sous `images/mNNN.png` (NNN = rang du sous-menu) ; prioritaire sur `image`.
+        picture: Option<PathBuf>,
         mode: MenuMode,
     },
 }
@@ -474,8 +478,17 @@ fn collect_titles<'a>(menu: &'a [MenuEntry], out: &mut Vec<&'a str>) {
     }
 }
 
+/// En-tête de la liste des épisodes en échec d'un pack de podcasts ([`with_failures`]).
+pub const FAILURES_HEAD: &str =
+    "Épisodes non inclus (échec du téléchargement ou de la conversion) :";
+
 /// Ajoute à la description la liste des épisodes en échec (P7). Sans échec : inchangée.
 pub fn with_failures(description: &str, failed: &[String]) -> String {
+    with_failures_under(description, failed, FAILURES_HEAD)
+}
+
+/// [`with_failures`] avec l'en-tête `head` (autre source que les podcasts).
+pub fn with_failures_under(description: &str, failed: &[String], head: &str) -> String {
     if failed.is_empty() {
         return description.to_string();
     }
@@ -484,7 +497,6 @@ pub fn with_failures(description: &str, failed: &[String]) -> String {
         .map(|t| format!("- {}", one_line(t)))
         .collect::<Vec<_>>()
         .join("\n");
-    let head = "Épisodes non inclus (échec du téléchargement ou de la conversion) :";
     if description.trim().is_empty() {
         format!("{head}\n{list}")
     } else {
@@ -568,6 +580,11 @@ fn category_title_file(n: usize) -> String {
     format!("c{n:03}.mp3")
 }
 
+/// Image propre du sous-menu `n` (à partir de 1), dans `images/`.
+fn menu_image_file(n: usize) -> String {
+    format!("m{n:03}.png")
+}
+
 /// Titre lu du pack, à la racine de l'archive (lu par `telmi2flam`).
 const TITLE_AUDIO_NAME: &str = "title.mp3";
 
@@ -583,6 +600,8 @@ struct Graph<'a> {
     /// Titres lus des options (§ 12) : nom d'entrée dans `audios/` et MP3 source, dans l'ordre
     /// du parcours.
     title_audios: Vec<(String, &'a Path)>,
+    /// Images propres des sous-menus : nom d'entrée dans `images/` et PNG source.
+    menu_images: Vec<(String, &'a Path)>,
     /// Épisodes de tout le pack (calculé avant le parcours), pour le message de dépassement.
     total_episodes: usize,
     menus: usize,
@@ -622,6 +641,8 @@ struct Head<'a> {
     entries: &'a [MenuEntry],
     audio: Option<&'a Path>,
     image: Option<&'a PathBuf>,
+    /// Image propre (`MenuEntry::Submenu::picture`).
+    picture: Option<&'a Path>,
 }
 
 /// Ce que devient un sous-menu.
@@ -771,7 +792,14 @@ impl<'a> Graph<'a> {
                 (image, trans(&sub, 0))
             }
         };
-        let image = self.chosen_image(head.image, first, image);
+        let image = match head.picture {
+            Some(png) => {
+                let file = menu_image_file(k);
+                self.menu_images.push((file.clone(), png));
+                file
+            }
+            None => self.chosen_image(head.image, first, image),
+        };
         Ok((image, ok, label(head.name, &fallback), spoken))
     }
 
@@ -827,6 +855,7 @@ impl<'a> Graph<'a> {
                         entries,
                         audio: audio.as_deref(),
                         image: image.as_ref(),
+                        picture: None,
                     },
                     (action, i),
                     depth,
@@ -837,6 +866,7 @@ impl<'a> Graph<'a> {
                     entries,
                     audio,
                     image,
+                    picture,
                     mode,
                 } => {
                     let kind = match *mode {
@@ -849,6 +879,7 @@ impl<'a> Graph<'a> {
                             entries,
                             audio: audio.as_deref(),
                             image: image.as_ref(),
+                            picture: picture.as_deref(),
                         },
                         (action, i),
                         depth,
@@ -1042,6 +1073,7 @@ impl<'a> Graph<'a> {
                         entries,
                         audio: audio.as_deref(),
                         image: image.as_ref(),
+                        picture: None,
                     },
                     (action, i),
                     depth,
@@ -1055,6 +1087,7 @@ impl<'a> Graph<'a> {
                     entries,
                     audio,
                     image,
+                    picture,
                     mode,
                 } => {
                     let MenuMode::Chapters(settings) = mode else {
@@ -1066,6 +1099,7 @@ impl<'a> Graph<'a> {
                             entries,
                             audio: audio.as_deref(),
                             image: image.as_ref(),
+                            picture: picture.as_deref(),
                         },
                         (action, i),
                         depth,
@@ -1239,6 +1273,9 @@ fn check_files(pack: &Pack, graph: &Graph<'_>) -> Result<(), ArchiveError> {
             return Err(limits.too_large(total));
         }
     }
+    for (_, png) in &graph.menu_images {
+        read_png(png)?;
+    }
     if let Some(cover) = &pack.cover {
         read_png(cover)?;
     }
@@ -1394,6 +1431,11 @@ fn write_zip(
             &graph.limits,
             &check,
         )?;
+    }
+    for (name, path) in &graph.menu_images {
+        check()?;
+        zip.start_file(format!("images/{name}"), options)?;
+        zip.write_all(&read_png(path)?)?;
     }
     for (name, path) in &graph.title_audios {
         check()?;

@@ -219,6 +219,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app::app_info,
+            authoring::commands::authoring_create,
+            authoring::commands::authoring_read,
             catalog::catalog_refresh,
             catalog::catalog_entries,
             catalog::catalog_thumbnail,
@@ -304,6 +306,7 @@ mod tests {
         let lib = include_str!("lib.rs");
         let modules = [
             ("app", include_str!("app.rs")),
+            ("authoring::commands", include_str!("authoring/commands.rs")),
             ("catalog", include_str!("catalog.rs")),
             ("compat", include_str!("compat.rs")),
             ("device::carrier", include_str!("device/carrier.rs")),

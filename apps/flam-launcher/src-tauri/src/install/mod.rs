@@ -35,6 +35,7 @@
 
 pub mod convert;
 pub mod download;
+pub mod folder;
 pub mod pack;
 pub mod pack_build;
 pub mod pack_speech;
@@ -65,6 +66,7 @@ use crate::{AppError, AppResult};
 
 use self::convert::{Conversion, Engine, Step};
 use self::download::{cancelled, Download, Validator};
+use self::folder::FolderJob;
 use self::podcast::{PackBackend, PackJob, PackStatus};
 
 /// Sous-dossier du cache des archives téléchargées (listé dans `cache::APP_CACHE_SUBDIRS`).
@@ -418,6 +420,9 @@ struct QueuedTask {
     /// Pack de podcasts : composition et uuid (N10 a). Absent pour une histoire d'une source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pack: Option<PackJob>,
+    /// Histoire faite d'un dossier : uuid, version et dossier (lot 5). Absent sinon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<FolderJob>,
     /// Remplacement confirmé d'une installation de l'autre format (Q10, #554).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     replace_format: bool,
@@ -483,6 +488,8 @@ struct Slot {
     cancel: watch::Sender<bool>,
     validator: Validator,
     pack: Option<PackJob>,
+    /// Histoire faite d'un dossier (lot 5).
+    folder: Option<FolderJob>,
     /// Remplacement confirmé d'une installation de l'autre format (Q10).
     replace_format: bool,
     /// `run` a pris la tâche en charge (#569) : posé sous le verrou `tasks`, il garantit une
@@ -650,6 +657,17 @@ impl InstallService {
                     continue;
                 }
                 self.restored_pack_entry(&q.id, job, &q.entry).await
+            } else if let Some(job) = &q.folder {
+                // Arrêt brutal après la publication : l'histoire est déjà à cette version.
+                if self.folder_installed(&job.uuid, job.version).await {
+                    tracing::info!(
+                        "tâche {} : histoire {} déjà publiée, non relancée",
+                        q.id,
+                        job.uuid
+                    );
+                    continue;
+                }
+                self.restored_folder_entry(job, &q.entry)
             } else {
                 lookup(q.entry.source_id.clone(), q.entry.entry_id.clone()).await
             }
@@ -710,6 +728,7 @@ impl InstallService {
                     cancel: watch::channel(false).0,
                     validator,
                     pack: q.pack,
+                    folder: q.folder,
                     // La confirmation ne vaut que pour le même sens de changement de format :
                     // une archive devenue d'une autre nature depuis la confirmation la perd.
                     replace_format: q.replace_format
@@ -743,6 +762,7 @@ impl InstallService {
             uuid::Uuid::new_v4().to_string(),
             entry,
             None,
+            None,
             now_secs(),
             replace_format,
         )
@@ -755,6 +775,7 @@ impl InstallService {
         id: String,
         entry: StoryEntry,
         pack: Option<PackJob>,
+        folder: Option<FolderJob>,
         created_at: u64,
         replace_format: bool,
     ) -> AppResult<InstallTask> {
@@ -767,6 +788,13 @@ impl InstallService {
             {
                 if pack.is_some() {
                     return Err(AppError::Validation("uuid de pack déjà utilisé".into()));
+                }
+                if folder.is_some() {
+                    return Err(AppError::Validation(
+                        "cette histoire est déjà en cours de création : attendez la fin ou \
+                         annulez-la, puis réessayez"
+                            .into(),
+                    ));
                 }
                 // Installation de la même histoire dans l'autre format en cours (Q10) : la
                 // renvoyer ferait croire que celle demandée est lancée.
@@ -796,6 +824,7 @@ impl InstallService {
                 cancel: watch::channel(false).0,
                 validator: Validator::default(),
                 pack,
+                folder,
                 replace_format,
                 started: false,
             });
@@ -898,6 +927,7 @@ impl InstallService {
                 created_at: s.task.created_at,
                 validator: s.validator.clone(),
                 pack: s.pack.clone(),
+                folder: s.folder.clone(),
                 replace_format: s.replace_format,
             })
             .collect();
@@ -1000,26 +1030,28 @@ impl InstallService {
     /// seule une tâche `queued` pas encore prise en charge démarre, et elle est marquée prise en
     /// charge dans la même section critique ; tout autre appel est sans effet.
     async fn run(self, id: String) {
-        let Some((entry, mut cancel, validator, pack, replace_format)) = lock(&self.0.tasks)
-            .iter_mut()
-            .find(|s| s.task.id == id)
-            .and_then(|s| {
-                if s.started || s.task.state != TaskState::Queued {
-                    tracing::debug!(
-                        "tâche {id} déjà prise en charge ({:?}) : exécution en double ignorée",
-                        s.task.state
-                    );
-                    return None;
-                }
-                s.started = true;
-                Some((
-                    s.task.entry.clone(),
-                    s.cancel.subscribe(),
-                    s.validator.clone(),
-                    s.pack.clone(),
-                    s.replace_format,
-                ))
-            })
+        let Some((entry, mut cancel, validator, pack, folder, replace_format)) =
+            lock(&self.0.tasks)
+                .iter_mut()
+                .find(|s| s.task.id == id)
+                .and_then(|s| {
+                    if s.started || s.task.state != TaskState::Queued {
+                        tracing::debug!(
+                            "tâche {id} déjà prise en charge ({:?}) : exécution en double ignorée",
+                            s.task.state
+                        );
+                        return None;
+                    }
+                    s.started = true;
+                    Some((
+                        s.task.entry.clone(),
+                        s.cancel.subscribe(),
+                        s.validator.clone(),
+                        s.pack.clone(),
+                        s.folder.clone(),
+                        s.replace_format,
+                    ))
+                })
         else {
             return;
         };
@@ -1030,6 +1062,7 @@ impl InstallService {
                 &mut cancel,
                 validator,
                 pack.as_ref(),
+                folder.as_ref(),
                 replace_format,
             )
             .await;
@@ -1110,6 +1143,7 @@ impl InstallService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn pipeline(
         &self,
         id: &str,
@@ -1117,6 +1151,7 @@ impl InstallService {
         cancel: &mut watch::Receiver<bool>,
         validator: Validator,
         pack: Option<&PackJob>,
+        folder: Option<&FolderJob>,
         replace_format: bool,
     ) -> AppResult<(LibraryEntry, u32)> {
         if !is_task_id(id) {
@@ -1148,16 +1183,20 @@ impl InstallService {
             .await??
         };
         let staged = child_of(&staging, &format!("{id}{}", format.suffix()))?;
-        let (entry, result) = match pack {
-            None => (
+        let (entry, result) = match (pack, folder) {
+            (Some(job), _) => match self.produce_pack(id, job, &tc, &staged, cancel).await {
+                Ok((fresh, produced)) => (fresh, Ok((None, produced))),
+                Err(err) => (entry.clone(), Err(err)),
+            },
+            (None, Some(job)) => match self.produce_folder(id, job, &tc, &staged, cancel).await {
+                Ok((fresh, produced)) => (fresh, Ok((None, produced))),
+                Err(err) => (entry.clone(), Err(err)),
+            },
+            (None, None) => (
                 entry.clone(),
                 self.produce(id, entry, &tc, &staged, cancel, validator)
                     .await,
             ),
-            Some(job) => match self.produce_pack(id, job, &tc, &staged, cancel).await {
-                Ok((fresh, produced)) => (fresh, Ok((None, produced))),
-                Err(err) => (entry.clone(), Err(err)),
-            },
         };
         let entry = &entry;
         let (
@@ -1524,7 +1563,8 @@ impl InstallService {
                 };
                 // Résultat réel de la conversion, pour le statut de compatibilité (#20) ; sans
                 // objet pour un pack (histoire unique, sans source).
-                let outcome = (entry.source_id != podcast::PACK_SOURCE_ID)
+                let outcome = (entry.source_id != podcast::PACK_SOURCE_ID
+                    && entry.source_id != crate::authoring::build::SOURCE_ID)
                     .then(|| compat::outcome_of(entry, &converter, &converted, now_secs()))
                     .flatten();
                 if let Some(outcome) = outcome {

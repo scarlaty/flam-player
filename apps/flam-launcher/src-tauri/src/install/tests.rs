@@ -942,6 +942,7 @@ async fn reprise_apres_redemarrage() {
             entry: remote(&url, "abc"),
             created_at: 1,
             pack: None,
+            folder: None,
             validator: Validator {
                 etag: Some("\"v1\"".into()),
                 last_modified: None,
@@ -1322,6 +1323,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
         entry: evil.clone(),
         created_at: 1,
         pack: None,
+        folder: None,
         validator: Validator::default(),
     })
     .chain([
@@ -1331,6 +1333,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
             entry: gone,
             created_at: 1,
             pack: None,
+            folder: None,
             validator: Validator::default(),
         },
         QueuedTask {
@@ -1339,6 +1342,7 @@ async fn reprise_ignore_les_identifiants_malveillants_et_re_resout_les_entrees()
             entry: evil.clone(),
             created_at: 1,
             pack: None,
+            folder: None,
             validator: Validator {
                 etag: Some("\"e\"".into()),
                 last_modified: None,
@@ -1890,6 +1894,7 @@ fn queued(id: &str, entry: &StoryEntry) -> QueuedTask {
         created_at: 1,
         validator: Validator::default(),
         pack: None,
+        folder: None,
         replace_format: false,
     }
 }
@@ -2101,6 +2106,7 @@ async fn file_avec_studio_ecrite_en_v1_et_file_v2_lue() {
             cancel: watch::channel(false).0,
             validator: Validator::default(),
             pack: None,
+            folder: None,
             replace_format: false,
             started: false,
         }
@@ -2249,6 +2255,7 @@ async fn run_appele_deux_fois_n_execute_qu_une_fois() {
         cancel: watch::channel(false).0,
         validator: Validator::default(),
         pack: None,
+        folder: None,
         replace_format: false,
         started: false,
     });

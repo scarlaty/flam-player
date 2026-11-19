@@ -755,5 +755,43 @@ pub fn write_story(root: &Path, settings: &StorySettings) -> AppResult<()> {
     write_object(&root.join(STORY_FILE), story_object(settings)?)
 }
 
+/// Pose seulement `uuid` et `version` dans `<root>/_histoire.json` (création ou actualisation,
+/// § 8), sans repasser par les champs typés : le reste du fichier (description sur plusieurs
+/// lignes, entrées que la lecture tolérante écarterait, casse, clés inconnues) est gardé tel
+/// quel. Fichier absent : créé avec `format`, `uuid`, `version`. Refus (rien n'est écrit) : fichier
+/// abîmé ou non lu (lien, trop gros, JSON invalide, pas un objet), `format` plus récent ou
+/// invalide.
+pub fn write_story_identity(root: &Path, uuid: &str, version: u32) -> AppResult<()> {
+    let path = root.join(STORY_FILE);
+    let mut budget = MAX_SETTINGS_BYTES;
+    let (raw, loaded) = read_object(&path, &mut budget);
+    let mut map = match raw {
+        Some(map) => map,
+        None if !loaded.exists => {
+            let mut map = Map::new();
+            map.insert("format".into(), Value::from(FORMAT));
+            map
+        }
+        None => {
+            return Err(AppError::Validation(format!(
+                "{STORY_FILE} illisible : non réécrit ({CODE_UNREADABLE})"
+            )))
+        }
+    };
+    match map.get("format") {
+        None | Some(Value::Null) => {}
+        Some(value) if value.as_u64().is_some_and(|n| (1..=FORMAT).contains(&n)) => {}
+        Some(value) => {
+            return Err(AppError::Validation(format!(
+                "réglages au format {value}, inconnu de cette version ({FORMAT}) : non modifiés \
+                 ({CODE_NEWER_FORMAT})"
+            )))
+        }
+    }
+    map.insert("uuid".into(), Value::from(uuid));
+    map.insert("version".into(), Value::from(version));
+    write_object(&path, map)
+}
+
 #[cfg(test)]
 mod tests;

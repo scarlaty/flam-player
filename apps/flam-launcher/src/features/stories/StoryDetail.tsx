@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { AUTHORING_SOURCE_ID } from "../../api/authoring";
 import type { Source } from "../../api/sources";
 import type { ListedEntry } from "../library/sourceData";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../../components";
 import { placeholderTone } from "../../components/StoryCard/StoryCard";
 import { t } from "../../i18n";
+import { CreateStoryFromFolder } from "../authoring/CreateStoryFromFolder";
 import { useCompat } from "../compat/CompatContext";
 import { useDevice } from "../device/DeviceContext";
 import { SendToDeviceButton } from "../device/SendToDeviceButton";
@@ -158,6 +160,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   stale={stories.sourceChanged(installed.uuid)}
                   locked={removing}
                 />
+                {source.type === "library" &&
+                  entry.source_id === AUTHORING_SOURCE_ID &&
+                  entry.download_url !== "" && (
+                    <CreateStoryFromFolder folder={entry.download_url} size="sm" />
+                  )}
                 {stories.updateAvailable(entry) && (
                   <>
                     <Button

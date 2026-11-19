@@ -9,6 +9,7 @@ fn sub(name: &str, entries: Vec<MenuEntry>, mode: MenuMode) -> MenuEntry {
         entries,
         audio: None,
         image: None,
+        picture: None,
         mode,
     }
 }

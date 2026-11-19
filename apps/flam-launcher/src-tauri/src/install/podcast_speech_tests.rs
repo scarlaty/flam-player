@@ -433,6 +433,7 @@ impl Ctx {
             cancel: watch::channel(false).0,
             validator: Default::default(),
             pack: None,
+            folder: None,
             replace_format: false,
             started: true,
         });

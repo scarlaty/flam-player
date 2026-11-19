@@ -51,8 +51,8 @@ use tauri::State;
 use tokio::sync::watch;
 
 use super::pack_build::{
-    converter_unavailable, ItemAudio, LocalItem, MenuNode, PackBuild, PackSpec, Prepared,
-    ARCHIVE_NAME, SPEECH_PERCENT,
+    converter_unavailable, BuildSource, ItemAudio, LocalItem, MenuNode, PackBuild, PackSpec,
+    Prepared, ARCHIVE_NAME, SPEECH_PERCENT,
 };
 use super::pack_speech::{self, SpokenTitles};
 use super::{child_of, converter_engine, is_task_id, lock, InstallService, TaskState, Toolchain};
@@ -591,7 +591,7 @@ impl InstallService {
             composition,
             draft_revision,
         };
-        self.enqueue(id, entry, Some(job), super::now_secs(), false)
+        self.enqueue(id, entry, Some(job), None, super::now_secs(), false)
     }
 
     /// Titres lus demandés (#462) : voix normalisée, voix mémorisée du poste reprise si la
@@ -786,6 +786,7 @@ impl InstallService {
             workdir: workdir.path(),
             backend,
             cancel,
+            source: BuildSource::Podcast,
         };
 
         // Titres lus (#462) : avant tout téléchargement, pour qu'une voix inutilisable arrête
@@ -797,6 +798,7 @@ impl InstallService {
                     &items,
                     &metadata.title,
                     job.composition.titles_voice.as_deref(),
+                    &std::collections::HashSet::new(),
                 )
                 .await?
         } else {
@@ -941,7 +943,9 @@ impl InstallService {
             item.audio = ItemAudio::Source(f.audio.clone());
             item.image = f.image.clone();
         }
-        let converted = stage.convert_audio(&items, cache, to_cache, now).await?;
+        let converted = stage
+            .convert_audio(&items, &archive::Limits::PODCAST, cache, to_cache, now)
+            .await?;
 
         // 3. Pochettes (85 à 90 %) : une image illisible ne retire pas l'épisode (D13).
         stage.begin_images();
@@ -990,6 +994,7 @@ impl InstallService {
             metadata,
             items,
             menu: tree,
+            options: archive::ArchiveOptions::default(),
         };
         let archive_path = stage
             .write_archive(&spec, converted, images, &spoken, warnings)
@@ -1016,6 +1021,8 @@ pub(super) fn menu_tree(menu: &[PackNode], ranks: &HashMap<&EpisodeRef, usize>) 
                 name: name.clone(),
                 entries: menu_tree(entries, ranks),
                 image: image.as_ref().map(rank),
+                mode: None,
+                picture: None,
             },
         })
         .collect()

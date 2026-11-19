@@ -1328,6 +1328,63 @@ export const fr = {
     contradictionHint:
       "Simple avertissement : l'envoi, le retrait et l'ordre restent possibles. Ce contrôle peut se tromper (histoire d'un autre outil dont le titre est en Latin-1 ou très court). Si une histoire envoyée ne se lit pas sur la Flam, notez la version et l'état affichés ici dans votre retour de test.",
   },
+  /** Créer une histoire à partir d'un dossier (lot 5, docs/creation-dossier.md). */
+  authoring: {
+    open: "Créer une histoire depuis un dossier",
+    refresh: "Actualiser",
+    pickTitle: "Dossier de l'histoire",
+    reading: "Lecture du dossier…",
+    dialogDescription: "Contenu du dossier et points à vérifier avant la création.",
+    count: (n: number, chapters: boolean) => {
+      const word = chapters ? "chapitre" : "histoire";
+      return n <= 1 ? `${n} ${word}` : `${n} ${word}s`;
+    },
+    fixFirst: "À corriger dans le dossier avant de créer l'histoire :",
+    goodToKnow: "Avertissements :",
+    more: (n: number) => (n <= 1 ? "Et 1 autre point." : `Et ${n} autres points.`),
+    create: "Créer l'histoire",
+    update: "Actualiser l'histoire",
+    creating: "Création…",
+    cancel: "Annuler",
+    close: "Fermer",
+    started: "Création lancée : l'histoire arrivera dans Mes histoires.",
+    copied: {
+      legend: "Ce dossier semble copié d'un autre dossier d'histoire déjà installé.",
+      newStory: "Nouvelle histoire",
+      replace: (title: string) => `Remplacer « ${title} »`,
+    },
+    foreign:
+      "L'identifiant de ce dossier appartient à une histoire d'une autre source : une nouvelle histoire sera créée.",
+    failed: "La création n'a pas pu être lancée. Vérifiez le dossier, puis réessayez.",
+    folderRefused:
+      "Ce dossier ne peut pas être utilisé (disque entier, dossier système, du launcher ou de la Flam). Choisissez un dossier personnel, par exemple dans Documents.",
+    folderMissing: "Dossier introuvable : il a peut-être été déplacé ou renommé.",
+    busy: "Cette histoire est déjà en cours de création : attendez la fin ou annulez-la.",
+    problem: {
+      no_story: "Aucun fichier audio dans ce dossier.",
+      too_many_stories: "Trop d'histoires ou de chapitres : 300 au maximum.",
+      too_many_options: (name: string) =>
+        name
+          ? `Trop d'éléments dans « ${name} » : 50 au maximum.`
+          : "Trop d'éléments à la racine du dossier : 50 au maximum.",
+      too_deep: (name: string) =>
+        `« ${name} » est trop profond : 5 niveaux de dossiers au maximum.`,
+      too_many_entries: "Ce dossier contient trop de fichiers.",
+      audio_too_large: "Audio trop volumineux : 3 Gio au maximum.",
+      unreadable_folder: (name: string) => `Dossier « ${name} » illisible.`,
+      collection_in_book: (name: string) =>
+        `« ${name} » est un recueil placé dans un livre à chapitres : non pris en charge.`,
+      orphan_image: (name: string) =>
+        `Image « ${name} » sans fichier audio du même nom : ignorée.`,
+      empty_menu: (name: string) => `Dossier « ${name} » sans audio : ignoré.`,
+      title_too_long: (name: string) =>
+        `Titre « ${name} » coupé à 40 caractères sur la Flam.`,
+      ignored: (name: string) => `« ${name} » ignoré.`,
+      settings:
+        "Réglage illisible dans _histoire.json ou _dossier.json : valeur par défaut utilisée.",
+      other: "Élément du dossier à vérifier.",
+    },
+  },
 };
 
 /** Forme commune à toutes les langues. */
