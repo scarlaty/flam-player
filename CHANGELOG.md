@@ -7,6 +7,14 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+### Corrigé
+
+- Retirer de la Flam une grosse histoire (par exemple une histoire Telmi convertie) n'échoue plus
+  quand un autre programme, comme l'antivirus ou l'Explorateur, garde un instant l'un de ses
+  fichiers ouvert : le launcher patiente une dizaine de secondes au lieu d'une. Si le dossier
+  reste occupé, le message indique que rien n'a été effacé et qu'il suffit de retirer de nouveau
+  l'histoire, affichée « Non listée ».
+
 ## [0.1.1] - 2026-11-17
 
 Version corrective. Changements depuis `launcher-v0.1.0`. Une histoire Telmi déjà installée doit

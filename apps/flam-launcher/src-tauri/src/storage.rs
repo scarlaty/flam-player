@@ -163,7 +163,7 @@ pub struct Recovery {
 
 /// Erreur de verrou transitoire sous Windows : accès refusé (5), violation de partage (32)
 /// ou de verrouillage (33), typiquement un antivirus ou l'indexeur qui tient le fichier.
-fn is_transient(err: &io::Error) -> bool {
+pub(crate) fn is_transient(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::PermissionDenied || matches!(err.raw_os_error(), Some(5 | 32 | 33))
 }
 
@@ -171,20 +171,33 @@ fn is_transient(err: &io::Error) -> bool {
 /// `RETRY_DELAYS_MS` (via `sleep`, injectable pour les tests). Toute autre erreur est rendue
 /// immédiatement ; un verrou persistant donne une erreur claire de même nature.
 pub(crate) fn retry_transient<T>(
+    op: impl FnMut() -> io::Result<T>,
+    sleep: impl FnMut(Duration),
+) -> io::Result<T> {
+    retry_transient_with(&RETRY_DELAYS_MS, op, sleep)
+}
+
+/// [`retry_transient`] avec les attentes `delays_ms` (une tentative de plus que d'attentes),
+/// pour une opération qui mérite une fenêtre plus longue (renommage d'un gros dossier sur la
+/// Flam, que tout fichier ouvert de son arborescence bloque).
+pub(crate) fn retry_transient_with<T>(
+    delays_ms: &[u64],
     mut op: impl FnMut() -> io::Result<T>,
     mut sleep: impl FnMut(Duration),
 ) -> io::Result<T> {
-    let mut delays = RETRY_DELAYS_MS.iter();
+    let mut delays = delays_ms.iter();
     loop {
         match op() {
             Err(err) if is_transient(&err) => match delays.next() {
                 Some(ms) => sleep(Duration::from_millis(*ms)),
                 None => {
+                    let total_ms: u64 = delays_ms.iter().sum();
                     return Err(io::Error::new(
                         err.kind(),
                         format!(
-                            "fichier verrouillé après {} tentatives sur environ 1 s : {err}",
-                            RETRY_DELAYS_MS.len() + 1
+                            "fichier verrouillé après {} tentatives sur environ {} s : {err}",
+                            delays_ms.len() + 1,
+                            total_ms.div_ceil(1000).max(1)
                         ),
                     ));
                 }
@@ -819,6 +832,32 @@ mod tests {
         assert!(err.to_string().contains("verrouillé"), "{err}");
         assert_eq!(calls, RETRY_DELAYS_MS.len() + 1);
         assert_eq!(total, Duration::from_millis(1_000));
+        assert!(
+            err.to_string().contains("8 tentatives sur environ 1 s"),
+            "{err}"
+        );
+        assert!(is_transient(&err), "{err:?}");
+    }
+
+    #[test]
+    fn fenetre_choisie_par_l_appelant() {
+        let mut calls = 0;
+        let mut slept = Vec::new();
+        let result: io::Result<()> = retry_transient_with(
+            &[100, 2_000, 2_400],
+            || {
+                calls += 1;
+                Err(io::Error::from_raw_os_error(32))
+            },
+            |d| slept.push(d),
+        );
+        let err = result.unwrap_err();
+        assert_eq!(calls, 4);
+        assert_eq!(slept, [100, 2_000, 2_400].map(Duration::from_millis));
+        assert!(
+            err.to_string().contains("4 tentatives sur environ 5 s"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -13,7 +13,8 @@
 //! - Le retrait n'atteint jamais une autre Flam que celle de la garde (#577) : `.mdf` est relu
 //!   (même mécanisme et mêmes nouveaux essais que l'envoi, [`super::guard::WritePermit::still_on`]) **juste
 //!   avant chaque écriture** : création de la corbeille, écriture de chaque index, relecture des
-//!   index, chaque renommage vers la corbeille, chaque suppression de la corbeille. `.mdf`
+//!   index, chaque renommage vers la corbeille (et chacun de ses nouveaux essais), chaque
+//!   suppression de la corbeille. `.mdf`
 //!   différent, absent ou encore illisible : le retrait s'arrête là, rien n'est plus écrit (voir
 //!   le tableau).
 //!
@@ -34,7 +35,7 @@
 //! | la validation                  | rien de modifié                                | aucune                                       |
 //! | une étape de l'index           | voir `index` : ancien ou nouvel index          | `index::recover`                             |
 //! | l'index de `list` (UUID aussi dans `list.hidden`) | UUID encore dans `list.hidden`, dossier intact | nouveau retrait                  |
-//! | l'index réécrit (ou renommage refusé malgré les nouveaux essais) | dossier entier dans `str/`, absent de l'index | orphelin signalé, retrait sur confirmation |
+//! | l'index réécrit (ou renommage refusé malgré les nouveaux essais, environ 10 s, `FolderBusy`) | dossier entier dans `str/`, absent de l'index | orphelin signalé, retrait sur confirmation |
 //! | le renommage en corbeille      | dossier dans `.flam-trash/`                     | [`purge_trash`] au début du prochain retrait, ou envoi sans place |
 //! | une suppression partielle      | restes dans `.flam-trash/`                      | [`purge_trash`]                              |
 //! | (refus) `.mdf` changé avant la corbeille ou le premier index | rien de modifié, hors le vidage de la corbeille d'un retrait précédent et la reprise d'une écriture d'index interrompue, faits juste après la garde | aucune |
@@ -67,7 +68,7 @@ use super::index::{
 use super::lock::{Busy, DeviceLock, Operation, DEVICE_LOCK};
 use super::transfer::{read_mdf, TransferError};
 use crate::catalog::blocking;
-use crate::storage::retry_transient;
+use crate::storage::{is_transient, retry_transient, retry_transient_with};
 use crate::{AppError, AppResult};
 
 /// Dossier des histoires masquées, relatif à la racine.
@@ -75,6 +76,15 @@ pub const HIDDEN_STORIES_DIR: &str = "str.hidden";
 /// Corbeille du launcher sur l'appareil, relative à la racine. Hors de `str/` : le firmware
 /// énumère `str/` et ne doit pas y voir un dossier en cours de suppression.
 pub const TRASH_DIR: &str = ".flam-trash";
+/// Attentes (ms) entre deux essais du renommage d'un dossier d'histoire vers la corbeille :
+/// croissantes, environ 10 s en tout. Plus longues que celles des autres écritures
+/// ([`retry_transient`], environ 1 s) : sur FAT, Windows refuse de renommer un dossier tant
+/// qu'un fichier de son arborescence est ouvert, et un antivirus ou l'Explorateur peut tenir
+/// pendant plusieurs secondes l'un des centaines de fichiers d'une histoire convertie. Le
+/// retrait tourne hors du fil de l'interface (pool bloquant) : l'attente ne gèle rien.
+const FOLDER_MOVE_DELAYS_MS: [u64; 16] = [
+    10, 20, 40, 80, 160, 320, 370, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+];
 
 /// Résultat d'un retrait.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -136,6 +146,11 @@ pub enum RemoveError {
     Index(#[from] IndexError),
     #[error("histoire retirée de l'index, mais son dossier n'a pas pu être supprimé ({0}) : il apparaîtra comme dossier orphelin")]
     FolderLeft(#[source] io::Error),
+    /// Renommage vers la corbeille refusé pendant toute la fenêtre de [`FOLDER_MOVE_DELAYS_MS`]
+    /// (fichier du dossier ouvert par un autre programme) : histoire hors de l'index, dossier
+    /// entier, rien n'est perdu.
+    #[error("retrait inachevé, rien n'a été effacé : la Flam ne propose plus l'histoire, mais un autre programme occupe encore son dossier. Fermez les fenêtres de l'Explorateur ouvertes sur la Flam, attendez quelques secondes, puis retirez de nouveau l'histoire, affichée « Non listée » (détail : {0})")]
+    FolderBusy(#[source] io::Error),
     #[error("corbeille de la Flam inutilisable ({0}) : aucune suppression")]
     TrashUnavailable(String),
     #[error("{0}")]
@@ -161,6 +176,7 @@ impl From<RemoveError> for AppError {
             RemoveError::StillIndexed(_)
             | RemoveError::Index(_)
             | RemoveError::FolderLeft(_)
+            | RemoveError::FolderBusy(_)
             | RemoveError::TrashUnavailable(_)
             | RemoveError::Io(_) => AppError::Io(io::Error::other(err.to_string())),
         }
@@ -176,7 +192,8 @@ enum Step {
 }
 
 /// Déplacements et suppressions de dossiers de la corbeille, injectables pour les tests de
-/// panne (#577). Chaque opération passe par [`retried`].
+/// panne (#577). Chaque opération est réessayée sur un verrou passager : par [`retried`], et
+/// sur la fenêtre plus longue de [`FOLDER_MOVE_DELAYS_MS`] pour le renommage vers la corbeille.
 trait TrashFs {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
@@ -521,25 +538,58 @@ fn remove_with(
         }
         fs::create_dir_all(&trash).map_err(RemoveError::FolderLeft)?;
         let target = trash.join(format!("{id}-{}", uuid::Uuid::new_v4().simple()));
-        // Un verrou passager ne doit pas laisser l'histoire en orphelin (#577). Source absente à un
+        // Un verrou passager ne doit pas laisser l'histoire en orphelin (#577). Fenêtre longue
+        // ([`FOLDER_MOVE_DELAYS_MS`]) : sur FAT, un seul fichier ouvert dans l'arborescence
+        // (antivirus, Explorateur) bloque le renommage du dossier. `.mdf` est relu avant chaque
+        // nouvel essai : pendant l'attente, la Flam a pu être échangée. Source absente à un
         // nouvel essai alors que la cible est en place : le renommage signalé en échec avait eu
         // lieu, c'est un succès.
         let mut tries = 0;
-        retried(ops, || {
-            tries += 1;
-            match ops.rename(folder, &target) {
-                Err(err)
-                    if err.kind() == io::ErrorKind::NotFound
-                        && tries > 1
-                        && !folder.exists()
-                        && is_real_dir(&target).unwrap_or(false) =>
-                {
-                    Ok(())
+        let mut changed = false;
+        let mut locked = false;
+        let moved_now = retry_transient_with(
+            &FOLDER_MOVE_DELAYS_MS,
+            || {
+                tries += 1;
+                if tries > 1 && !still_on() {
+                    changed = true;
+                    // Erreur non passagère : fin immédiate des essais.
+                    return Err(io::Error::other("Flam changée"));
                 }
-                other => other,
+                if tries > 1 {
+                    // Corbeille retirée pendant l'attente (Explorateur) : recréée, sur la Flam
+                    // d'origine tout juste relue. Un échec ici se retrouve au renommage.
+                    let _ = fs::create_dir_all(&trash);
+                }
+                let result = match ops.rename(folder, &target) {
+                    Err(err)
+                        if err.kind() == io::ErrorKind::NotFound
+                            && tries > 1
+                            && !folder.exists()
+                            && is_real_dir(&target).unwrap_or(false) =>
+                    {
+                        Ok(())
+                    }
+                    other => other,
+                };
+                // Constaté sur l'erreur d'origine : l'erreur finale, reformulée, garde sa nature
+                // mais perd son code système (violations de partage 32 et 33).
+                locked = matches!(&result, Err(err) if is_transient(err));
+                result
+            },
+            |delay| ops.sleep(delay),
+        );
+        if changed {
+            return Err(changed_during());
+        }
+        moved_now.map_err(|err| {
+            if locked {
+                tracing::warn!("dossier d'histoire resté verrouillé : {err}");
+                RemoveError::FolderBusy(err)
+            } else {
+                RemoveError::FolderLeft(err)
             }
-        })
-        .map_err(RemoveError::FolderLeft)?;
+        })?;
         moved.push(target);
         hook(Step::MovedToTrash)?;
     }
