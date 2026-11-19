@@ -1,7 +1,7 @@
 //! Titres lus à voix haute dans un pack de podcasts (#462, PR 2, note `docs/podcasts.md` § 12).
 //!
-//! Étape de la préparation (`install::podcast`), quand la composition le demande
-//! (`titles_audio`) : chaque titre d'épisode, chaque nom de catégorie et le titre du pack sont
+//! Étape de la préparation (`install::podcast`, par [`pack_build`](super::pack_build)), quand la
+//! composition le demande (`titles_audio`) : chaque titre d'épisode, chaque nom de catégorie et le titre du pack sont
 //! synthétisés par la voix Windows choisie ([`crate::podcast::speech`]) puis convertis en MP3
 //! dans le dossier de travail ; l'archive (`podcast::archive`) les place dans l'audio des scènes
 //! d'option et dans `title.mp3`.
@@ -19,9 +19,9 @@
 //!   échoue ou si **plus de la moitié** échouent. Un titre sans rien à lire (vide, sans lettre)
 //!   reste muet sans avertissement et ne compte pas. Deux délais (ou indisponibilités) de
 //!   synthèse consécutifs arrêtent aussi la création (service de voix figé ; délai fourni par
-//!   [`PackBackend::synth_timeout`], injectable en test).
+//!   [`BuildBackend::synth_timeout`], injectable en test).
 //! - **ffmpeg** : localisé et empreinte vérifiée une seule fois pour l'étape, au premier titre
-//!   synthétisé ([`PackBackend::title_encoder`], #487) ; un échec arrête la création
+//!   synthétisé ([`BuildBackend::title_encoder`], #487) ; un échec arrête la création
 //!   (`tts_failed`, message propre au composant manquant ou altéré).
 //! - **Avancement** : rappel après chaque titre à lire (fait/total transmis à l'appelant, qui l'affiche de 0 à 10 % de la préparation).
 //! - **Catégorie sans nom affichable** (emoji seuls) : le texte lu est le libellé de repli de
@@ -40,10 +40,10 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use super::podcast::PackBackend;
+use super::pack_build::{BuildBackend, MenuNode};
 use crate::ffmpeg::Verified;
 use crate::podcast::archive;
-use crate::podcast::pack::{EpisodeRef, PackComposition, PackNode};
+use crate::podcast::pack::{EpisodeRef, PackComposition};
 use crate::podcast::speech::{self, SpeechError, Synthesizer, Voice};
 use crate::{AppError, AppResult};
 
@@ -86,18 +86,34 @@ pub fn titles(
     pack_title: &str,
     episode_title: &dyn Fn(&EpisodeRef) -> Option<String>,
 ) -> Vec<TitleText> {
+    let refs = composition.episodes();
+    let ranks: HashMap<&EpisodeRef, usize> =
+        refs.iter().enumerate().map(|(n, e)| (*e, n)).collect();
+    let menu = super::podcast::menu_tree(&composition.menu, &ranks);
+    menu_titles(&menu, pack_title, &|n| {
+        refs.get(n).and_then(|e| episode_title(e))
+    })
+}
+
+/// Titres d'un arbre de menus, dans l'ordre de lecture (voir [`titles`]). `item_title` rend le
+/// titre d'origine de l'élément d'un rang (`None` : élément inconnu, sauté).
+pub fn menu_titles(
+    menu: &[MenuNode],
+    pack_title: &str,
+    item_title: &dyn Fn(usize) -> Option<String>,
+) -> Vec<TitleText> {
     fn walk(
-        menu: &[PackNode],
+        menu: &[MenuNode],
         path: &mut Vec<usize>,
         categories: &mut usize,
-        episode_title: &dyn Fn(&EpisodeRef) -> Option<String>,
+        item_title: &dyn Fn(usize) -> Option<String>,
         out: &mut Vec<TitleText>,
     ) {
         for (i, node) in menu.iter().enumerate() {
             path.push(i);
             match node {
-                PackNode::Episode(e) => {
-                    if let Some(text) = episode_title(e) {
+                MenuNode::Item(n) => {
+                    if let Some(text) = item_title(*n) {
                         out.push(TitleText {
                             key: TitleKey::Node(path.clone()),
                             text,
@@ -105,7 +121,7 @@ pub fn titles(
                         });
                     }
                 }
-                PackNode::Category { name, entries, .. } => {
+                MenuNode::Category { name, entries, .. } => {
                     // Rang dans l'ordre de l'archive (une catégorie avant ses options).
                     *categories += 1;
                     let k = *categories;
@@ -120,7 +136,7 @@ pub fn titles(
                         text,
                         numbered,
                     });
-                    walk(entries, path, categories, episode_title, out);
+                    walk(entries, path, categories, item_title, out);
                 }
             }
             path.pop();
@@ -131,13 +147,7 @@ pub fn titles(
         text: pack_title.to_string(),
         numbered: None,
     }];
-    walk(
-        &composition.menu,
-        &mut Vec::new(),
-        &mut 0,
-        episode_title,
-        &mut out,
-    );
+    walk(menu, &mut Vec::new(), &mut 0, item_title, &mut out);
     out
 }
 
@@ -215,8 +225,8 @@ async fn synthesize(
 /// Synthétise et convertit `titles` dans `dir` avec `voice`. Voir les règles d'échec et
 /// d'annulation dans la documentation du module. `on_progress(fait, total)` est appelé après
 /// chaque titre à lire (réussi ou muet).
-pub async fn speak(
-    backend: &Arc<dyn PackBackend>,
+pub async fn speak<B: BuildBackend + ?Sized>(
+    backend: &B,
     synth: &Arc<dyn Synthesizer>,
     voice: &Voice,
     titles: &[TitleText],
@@ -331,6 +341,7 @@ pub async fn speak(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::podcast::pack::PackNode;
     use crate::podcast::speech::testing::{voice, Simulated};
 
     fn e(n: usize) -> PackNode {
