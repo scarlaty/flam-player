@@ -20,7 +20,7 @@
 //! - ffmpeg est lancé par [`Verified::run`] (empreinte vérifiée, pas de shell, environnement
 //!   réduit, délai) avec des **arguments fixes** ([`cover_args`]) : `-protocol_whitelist file`
 //!   avant l'entrée, un seul flux vidéo copié tel quel (`-c:v copy`, aucun décodage ni filtre),
-//!   métadonnées, audio, sous-titres et données écartés, sortie plafonnée par `-fs`. Le chemin
+//!   métadonnées, audio, sous-titres et données écartés, sortie bornée par `-fs` (entre deux paquets seulement, la relecture est aussi plafonnée). Le chemin
 //!   du fichier source est absolu (il ne peut donc pas être pris pour une option) et le fichier
 //!   de sortie est créé **dans le dossier de travail** fourni, sous un nom aléatoire, puis
 //!   supprimé : rien n'est écrit à côté de la source.
@@ -140,13 +140,12 @@ pub async fn complete_image(
     check(cancel)?;
 
     let (title, kind) = (req.title.to_string(), req.kind);
-    let card = tokio::task::spawn_blocking(move || title_card::render(&title, kind))
-        .await
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let card = tokio::task::spawn_blocking(move || title_card::render(&title, kind)).await;
     match card {
-        Ok(Some(art)) => return done(art, ImageOrigin::TitleCard),
-        Ok(None) => {}
-        Err(e) => tracing::debug!("image du titre non générée : {e}"),
+        Ok(Ok(Some(art))) => return done(art, ImageOrigin::TitleCard),
+        Ok(Ok(None)) => {}
+        Err(e) => tracing::debug!("image du titre interrompue : {e}"),
+        Ok(Err(e)) => tracing::debug!("image du titre non générée : {e}"),
     }
 
     let art = Artwork::fallback(req.kind, req.fallback_color)
@@ -171,10 +170,11 @@ async fn decode(convert: Convert, bytes: Vec<u8>, kind: ArtworkKind) -> Option<A
 
 /// Contenu de `path`, `None` s'il dépasse [`MAX_INPUT_BYTES`] ou est vide.
 async fn read_capped(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
-    let file = tokio::fs::File::open(path).await?;
-    if !file.metadata().await?.is_file() {
+    // Type vérifié avant l'ouverture : ouvrir un tube nommé bloquerait.
+    if !tokio::fs::metadata(path).await?.is_file() {
         return Ok(None);
     }
+    let file = tokio::fs::File::open(path).await?;
     let mut bytes = Vec::new();
     file.take(MAX_INPUT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -250,9 +250,9 @@ pub async fn extract_cover(
             audio.display()
         )));
     }
-    if !tokio::fs::metadata(work_dir).await?.is_dir() {
+    if !work_dir.is_absolute() || !tokio::fs::metadata(work_dir).await?.is_dir() {
         return Err(AppError::Validation(format!(
-            "dossier de travail absent : {}",
+            "dossier de travail absent ou non absolu : {}",
             work_dir.display()
         )));
     }
@@ -262,7 +262,15 @@ pub async fn extract_cover(
         .await;
     let bytes = match &result {
         Ok(output) if output.success() => read_capped(&out).await.ok().flatten(),
-        _ => None,
+        Ok(output) => {
+            tracing::debug!(
+                "ffmpeg sans pochette (code {:?}) : {}",
+                output.code,
+                output.stderr
+            );
+            None
+        }
+        Err(_) => None,
     };
     // Sortie partielle comprise (délai, annulation, échec) ; absente si ffmpeg n'a rien écrit.
     let _ = tokio::fs::remove_file(&out).await;

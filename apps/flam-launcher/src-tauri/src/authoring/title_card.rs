@@ -137,7 +137,10 @@ impl Font {
             base_line: src.lines().find_map(|l| field(l, ".base_line"))?,
         };
         // Cohérence : aucun glyphe ne déborde de la table des bitmaps.
-        let sound = font.line_height > 0
+        let sound = src.contains(".bpp = 4,")
+            && src.contains(".bitmap_format = 0,")
+            && !src.contains("unicode_list = {")
+            && font.line_height > 0
             && !font.ranges.is_empty()
             && font.glyphs.iter().all(|g| {
                 let pixels = usize::try_from(g.box_w * g.box_h).unwrap_or(usize::MAX);
