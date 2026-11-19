@@ -224,14 +224,22 @@ Comportement actuel des packs de podcasts (podcasts.md § 6) :
   chapitre a un titre lu.
 - **Menu des chapitres** : le bouton retour pendant un chapitre l'ouvre, focalisé sur le
   chapitre en cours ; une option par chapitre, un niveau par partie. Valider démarre ce
-  chapitre, puis la lecture continue avec les suivants. **Décidé** (Q2) : retour depuis ce
-  menu → le chapitre quitté reprend, à l'endroit quitté.
+  chapitre, puis la lecture continue avec les suivants. Retour depuis une partie → niveau du
+  dessus. **Décidé** (Q2 révisée, 2026-11-19) : retour depuis le premier niveau du menu des
+  chapitres → **sortie de l'histoire** pour un livre racine (comportement Flam habituel), retour
+  au recueil pour un livre placé dans un recueil. Valider dans ce menu le chapitre qu'on vient de
+  quitter le reprend à la position quittée (si l'évolution du moteur le permet, ci-dessous).
 - **Fin du livre** (`fin`) : `menu` (défaut : menu des chapitres, sur le premier) ou `fin`
   (fin d'histoire, retour à la bibliothèque de la Flam).
 - **Reprise** : le moteur sauve la scène et la position dans l'audio de chaque scène avec audio
   (`tools/telmi2flam/engine/story.lua`, `saveProgress`) et alimente la jauge du menu
-  « Reprendre » avec les chapitres écoutés. « Reprendre l'histoire » doit donc repartir dans le
-  chapitre en cours, au bon endroit. À vérifier sur la Flam (§ 13).
+  « Reprendre » avec les chapitres écoutés. Mais il **efface** cette position quand on quitte
+  une scène par le retour, et à toute entrée par le graphe (`story.lua`, constaté au lot 3) : sans
+  changement, « Reprendre l'histoire » repart du début du chapitre quitté. **Décidé**
+  (2026-11-19) : évolution du moteur, activée seulement par le graphe des livres (histoires
+  existantes inchangées), pour que « Reprendre l'histoire » reprenne le chapitre quitté **à la
+  position quittée**. Elle touche `story.lua` (gel de parité, #661) et les convertisseurs ; à
+  confirmer sur la Flam (§ 13).
 - **Images** : celle du chapitre, sinon celle de sa partie, sinon la couverture.
 
 ### 5.4 Traduction en graphe Telmi
@@ -323,7 +331,7 @@ la main ou des livres audio : `MAX_MENU_DEPTH = 3`, `MAX_EPISODES = 50`,
 
 **Proposé** : limites propres à cette source, passées en paramètre de `Graph::build`, fixées
 après mesure sur la Flam (§ 13). Valeurs visées : 5 niveaux, 300 histoires ou chapitres,
-50 options par menu, 4 Gio d'audio. Une limite dépassée est un problème bloquant du rapport,
+50 options par menu, 3 Gio d'audio (archive zip32 : nettement sous 4 Gio). Une limite dépassée est un problème bloquant du rapport,
 visible dans l'éditeur avant toute conversion.
 
 ## 10. Sécurité et intégrité des fichiers
@@ -380,7 +388,7 @@ L'éditeur **modifie les fichiers de l'utilisateur** : c'est la partie la plus s
 | # | Question | Recommandation |
 |---|---|---|
 | Q1 | Mode réglable par sous-dossier, ou seulement pour toute l'histoire ? | **Décidé** : par sous-dossier, avec héritage (§ 5.1) |
-| Q2 | Retour depuis le menu des chapitres : reprendre le chapitre quitté, ou rester dans le menu ? | **Décidé** : reprendre le chapitre quitté, à l'endroit quitté |
+| Q2 | Retour depuis le menu des chapitres : reprendre le chapitre quitté, ou rester dans le menu ? | **Décidé**, révisé le 2026-11-19 : retour du premier niveau = sortie de l'histoire ; « Reprendre l'histoire » (et le chapitre quitté choisi dans le menu) reprend à la position quittée, par une évolution du moteur (§ 5.3) |
 | Q3 | Réordonner renomme-t-il les fichiers (préfixes) ? | **Décidé** : non, `_dossier.json`, action « Renuméroter » à part |
 | Q4 | Corbeille : `.flam/corbeille/` ou Corbeille Windows ? | **Décidé** : `.flam/corbeille/` (annulable), vidage vers la Corbeille Windows |
 | Q5 | Écrire les compléments automatiques dans le dossier ? | **Décidé** : non par défaut, bouton « Garder » |
