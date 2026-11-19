@@ -264,6 +264,9 @@ fn livre_simple_debut_chapitre_fin_menu() {
         );
         // Retour depuis le menu des chapitres : sortie de l'histoire (menu Start).
         assert_exit(&nodes, opt);
+        // Rôles lus par le moteur : chapitre repris à sa position, option hors jauge.
+        assert_eq!(nodes.stage(ch)["role"], "chapter");
+        assert_eq!(nodes.stage(opt)["role"], "title");
     }
     assert_no_inventory(&nodes);
     // Entrée + 3 options + 3 chapitres, rien d'autre.
@@ -447,6 +450,12 @@ fn livre_dans_un_recueil_debut_chapitre() {
         assert_eq!(nodes.target(&o, "home"), (bm.clone(), 1));
     }
     assert_no_inventory(&nodes);
+    // Rôles : sur les scènes du livre seulement, jamais sur celles du recueil.
+    assert_eq!(nodes.stage(&c1)["role"], "chapter");
+    assert_eq!(nodes.stage(&bo[0])["role"], "title");
+    for st in [&r[0], &r[1], &r[2], &nodes.played_by(&r[0])] {
+        assert!(nodes.stage(st).get("role").is_none(), "{st}");
+    }
     // Image de l'option du livre : son premier chapitre.
     assert_eq!(nodes.stage(&r[1])["image"], "e002.png");
 }
@@ -485,8 +494,8 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     // Démarrage : annonce du chapitre 1, puis le chapitre.
     let (p1, _) = nodes.start();
     let n1 = nodes.single(&p1);
-    assert_eq!(nodes.played_by(&o[0]), n1);
     let st = nodes.stage(&n1);
+    assert_eq!(st["role"], "title", "annonce hors jauge");
     assert_eq!(st["audio"], "t001.mp3");
     assert_eq!(st["image"], "e001.png");
     assert_eq!(
@@ -496,6 +505,9 @@ fn annoncer_joue_le_titre_lu_avant_le_chapitre() {
     assert_eq!(nodes.target(&n1, "home"), (ROOT_MENU.to_string(), 0));
     let e1 = nodes.next(&n1);
     assert_eq!(nodes.stage(&e1)["audio"], "e001.mp3");
+    // L'option mène au chapitre sans l'annonce (son titre lu vient d'être entendu).
+    assert_eq!(nodes.played_by(&o[0]), e1);
+    assert_eq!(nodes.played_by(&o[2]), "e3");
     // Chapitre 2 : pas de titre lu, joué directement ; chapitre 3 : annoncé.
     let e2 = nodes.next(&e1);
     assert_eq!(nodes.stage(&e2)["audio"], "e002.mp3");
@@ -820,6 +832,10 @@ fn livres_convertis_par_la_crate_telmi2flam_sans_avertissement() {
     );
     let lua = nodes_lua(&package);
     assert!(!lua.contains("inventory = {"), "{lua}");
+    // `role` transmis au moteur ; l'annonce et les options hors de la jauge : 5 chapitres.
+    assert!(lua.contains("role = \"chapter\""), "{lua}");
+    assert!(lua.contains("role = \"title\""), "{lua}");
+    assert!(lua.contains("totalChapters = 5,"), "{lua}");
     if let Some(dir) = std::env::var_os("FLAM_DUMP_NODES_LUA") {
         fs::write(Path::new(&dir).join("livre_racine.lua"), &lua).unwrap();
     }
