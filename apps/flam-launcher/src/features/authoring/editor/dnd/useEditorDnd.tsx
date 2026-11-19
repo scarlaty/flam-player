@@ -168,7 +168,8 @@ export function useEditorDnd(options: EditorDndOptions): EditorDnd {
               copied = update.ids.length;
               return update;
             },
-            () => (copied > 0 ? text.copied(menuTitle) : text.refuse.formats),
+            // Rien de copié : la bannière (role="alert") le dit, pas d'annonce en double.
+            () => (copied > 0 ? text.copied(menuTitle) : ""),
           ).then((ok) => {
             // Rien de copiable (formats refusés) : le dire clairement, rien n'a changé.
             if (ok && copied === 0) setError(text.refuse.formats);

@@ -127,11 +127,18 @@ function swallowNextClick(afterRelease: boolean) {
     window.setTimeout(stop, 0);
     return;
   }
-  // Annulé bouton enfoncé (Échap, perte du focus) : le clic viendra au relâchement.
+  // Annulé bouton enfoncé (Échap, perte du focus) : le clic viendra au relâchement. Relâché
+  // ailleurs (Alt+Tab), le prochain appui est un nouveau geste : son clic n'est pas avalé.
   const onUp = () => window.setTimeout(stop, 0);
+  const onDown = () => {
+    window.removeEventListener("pointerup", onUp, { capture: true });
+    stop();
+  };
   window.addEventListener("pointerup", onUp, { capture: true, once: true });
+  window.addEventListener("pointerdown", onDown, { capture: true, once: true });
   window.setTimeout(() => {
     window.removeEventListener("pointerup", onUp, { capture: true });
+    window.removeEventListener("pointerdown", onDown, { capture: true });
     stop();
   }, 10_000);
 }
