@@ -216,7 +216,7 @@ pub fn cover_args(input: &Path, output: &Path) -> Vec<OsString> {
             "-fs",
             &MAX_INPUT_BYTES.to_string(),
             "-f",
-            "rawvideo",
+            "image2pipe",
             "-y",
         ]
         .map(OsString::from),
