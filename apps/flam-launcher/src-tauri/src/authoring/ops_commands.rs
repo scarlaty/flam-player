@@ -59,12 +59,16 @@ const MAX_THUMBS: usize = 600;
 // Erreurs
 // ---------------------------------------------------------------------------
 
-/// Erreur d'une commande de l'éditeur, sérialisée comme `AppError` : `{ kind, message }`.
+/// Erreur d'une commande de l'éditeur, sérialisée comme `AppError` : `{ kind, message }`, plus
+/// `code` quand il y en a un (`AppError::Authoring`, ou dossier refusé ou introuvable :
+/// `folder_missing`, `folder_refused`, `authoring::commands::code`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorError {
     /// Code stable (`changed`, `not_undoable`, `invalid_id`, `editor_closed`, `io`…).
     pub kind: String,
     pub message: String,
+    /// Code de création depuis un dossier, en plus de `kind`.
+    pub code: Option<&'static str>,
 }
 
 impl EditorError {
@@ -72,24 +76,35 @@ impl EditorError {
         Self {
             kind: CLOSED.into(),
             message: "cet éditeur est fermé : rouvrez le dossier".into(),
+            code: None,
         }
     }
 }
 
 impl From<OpError> for EditorError {
     fn from(e: OpError) -> Self {
+        let code = match &e {
+            OpError::Root(scan) => Some(scan.code()).filter(|c| *c != "io"),
+            _ => None,
+        };
         Self {
             kind: e.code().into(),
             message: e.to_string(),
+            code,
         }
     }
 }
 
 impl From<AppError> for EditorError {
     fn from(e: AppError) -> Self {
+        let code = match &e {
+            AppError::Authoring { code, .. } => Some(*code),
+            _ => None,
+        };
         Self {
             kind: e.kind().into(),
             message: e.to_string(),
+            code,
         }
     }
 }
@@ -99,6 +114,7 @@ impl Serialize for EditorError {
         AppErrorShape {
             kind: &self.kind,
             message: &self.message,
+            code: self.code,
         }
         .serialize(serializer)
     }
@@ -108,6 +124,8 @@ impl Serialize for EditorError {
 struct AppErrorShape<'a> {
     kind: &'a str,
     message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'a str>,
 }
 
 pub type EditorResult<T> = Result<T, EditorError>;
@@ -678,6 +696,7 @@ fn make_thumb(bytes: &[u8], dim: u32, cover: bool) -> EditorResult<String> {
     let failed = |e: &dyn std::fmt::Display| EditorError {
         kind: "thumbnail".into(),
         message: format!("vignette impossible : {e}"),
+        code: None,
     };
     let art = convert_isolated(bytes, kind, None).map_err(|e| failed(&e))?;
     let img = thumbnail::decode_png(&art.png).map_err(|e| failed(&e))?;
@@ -780,6 +799,7 @@ pub async fn authoring_editor_open(
             message: "l'éditeur de ce dossier vient d'être fermé et termine une opération : \
                       réessayez dans un instant"
                 .into(),
+            code: None,
         }),
         Registered::New(label) => {
             if let Err(e) = open_window(&app, &label, &folder_name) {
@@ -787,6 +807,7 @@ pub async fn authoring_editor_open(
                 return Err(EditorError {
                     kind: "window".into(),
                     message: format!("fenêtre de l'éditeur impossible à ouvrir : {e}"),
+                    code: None,
                 });
             }
             Ok(EditorOpened {

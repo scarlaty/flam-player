@@ -107,6 +107,19 @@ pub trait BuildBackend: Send + Sync {
     ) -> BoxFuture<'a, AppResult<u64>> {
         Box::pin(live_title_mp3(encoder, wav, dest, cancel))
     }
+    /// ffmpeg vérifié qui extrait la pochette d'un fichier audio (compléments d'image d'une
+    /// histoire faite d'un dossier, `authoring::images`) : par défaut, celui des titres lus.
+    fn cover_extractor<'a>(
+        &'a self,
+        cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<Verified>> {
+        self.title_encoder(cancel)
+    }
+    /// Décodage des images des compléments (pochette extraite), bloquant : par défaut dans un
+    /// processus enfant (#263), comme [`Self::convert_artwork`].
+    fn image_decoder(&self) -> crate::authoring::images::Convert {
+        crate::authoring::images::convert_in_child
+    }
 }
 
 /// ffmpeg embarqué localisé, empreinte vérifiée (défaut de `title_encoder`).

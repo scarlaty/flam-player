@@ -1,4 +1,4 @@
-import { invokeCommand } from "./error";
+import { invokeCommand, type AppError } from "./error";
 import type { InstallTask } from "./install";
 
 /** `source_id` d'une histoire faite d'un dossier (miroir de `authoring::build::SOURCE_ID`). */
@@ -85,4 +85,45 @@ export function createStoryFromFolder(
   choice: ConflictChoice | null = null,
 ): Promise<FolderCreated> {
   return invokeCommand<FolderCreated>("authoring_create", { path, choice });
+}
+
+/**
+ * Code d'une erreur `kind = "authoring"` (miroir de `authoring::commands::code`) : le texte
+ * montré en dépend, jamais le message.
+ */
+export type AuthoringErrorCode =
+  | "folder_missing"
+  | "folder_refused"
+  | "blocked"
+  | "busy"
+  | "conflict_copied"
+  | "conflict_foreign"
+  | "version_overflow"
+  | "retry_unavailable"
+  | "folder_changed"
+  | "uuid_mismatch"
+  | "read_only_folder"
+  | "not_from_folder";
+
+/** Code de création porté par `error` (`kind = "authoring"`), sinon `null`. */
+export function authoringCode(error: AppError): AuthoringErrorCode | null {
+  return error.kind === "authoring" && typeof error.code === "string"
+    ? (error.code as AuthoringErrorCode)
+    : null;
+}
+
+/**
+ * `authoring_retry` : relance la création en échec (ou annulée) `taskId` depuis le même dossier,
+ * sous le même identifiant et avec la même réponse au conflit.
+ */
+export function retryFolderTask(taskId: string): Promise<FolderCreated> {
+  return invokeCommand<FolderCreated>("authoring_retry", { taskId });
+}
+
+/**
+ * `authoring_relocate` : « Choisir le dossier » de l'histoire `uuid` dont le dossier est
+ * introuvable. Le dossier `path` doit porter le même identifiant ; rend le chemin retenu.
+ */
+export function relocateStoryFolder(uuid: string, path: string): Promise<string> {
+  return invokeCommand<string>("authoring_relocate", { uuid, path });
 }

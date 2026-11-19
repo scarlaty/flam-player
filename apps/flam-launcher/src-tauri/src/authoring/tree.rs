@@ -278,11 +278,29 @@ pub enum ScanError {
     Io(#[from] std::io::Error),
 }
 
+impl ScanError {
+    /// Code stable de l'erreur `authoring` (`AppError::Authoring`) : dossier introuvable
+    /// (`folder_missing` : absent, ou remplacé par un fichier) ou refusé (`folder_refused` :
+    /// chemin non absolu, lien, racine interdite) ; `io` pour une erreur de lecture.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ScanError::NotFound(_) | ScanError::NotADirectory(_) => "folder_missing",
+            ScanError::NotAbsolute(_) | ScanError::Link(_) | ScanError::Forbidden { .. } => {
+                "folder_refused"
+            }
+            ScanError::Io(_) => "io",
+        }
+    }
+}
+
 impl From<ScanError> for crate::AppError {
     fn from(e: ScanError) -> Self {
         match e {
             ScanError::Io(io) => crate::AppError::Io(io),
-            other => crate::AppError::Validation(other.to_string()),
+            other => crate::AppError::Authoring {
+                code: other.code(),
+                message: other.to_string(),
+            },
         }
     }
 }

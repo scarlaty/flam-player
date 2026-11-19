@@ -166,7 +166,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                   entry.download_url !== "" && (
                     <>
                       <OpenEditorButton folder={entry.download_url} size="sm" />
-                      <CreateStoryFromFolder folder={entry.download_url} size="sm" />
+                      <CreateStoryFromFolder
+                        folder={entry.download_url}
+                        uuid={installed.uuid}
+                        size="sm"
+                      />
                     </>
                   )}
                 {stories.updateAvailable(entry) && (

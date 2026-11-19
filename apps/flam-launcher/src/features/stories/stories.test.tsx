@@ -217,6 +217,20 @@ beforeEach(() => {
         }
         case "install_cancel":
           return null;
+        case "authoring_retry": {
+          const previous = started.find((other) => other.id === payload.taskId);
+          const created = task(previous?.entry as StoryEntry, "queued", {
+            id: `t${started.length + 1}`,
+          });
+          started.push(created);
+          return {
+            task: created,
+            uuid: created.entry.uuid,
+            version: 2,
+            created: false,
+            saved_in: "folder",
+          };
+        }
         case "player_status":
           return status;
         case "player_launch":
@@ -1154,6 +1168,51 @@ it("Réessayer : message clair quand l'entrée n'est plus proposée par la sourc
     within(panel()).getByRole("button", { name: "Réessayer : Les trois ours" }),
   );
   await waitFor(() => expect(callsOf("install_start")).toHaveLength(3));
+});
+
+it("Réessayer une histoire faite d'un dossier relance sa création, pas install_start", async () => {
+  const folderStory = ours({
+    source_id: "authoring-folder",
+    entry_id: "folder:ours",
+    download_url: "C:\\Histoires\\Ours",
+  });
+  started = [
+    task(folderStory, "failed", {
+      id: "t1",
+      error: { kind: "io", message: "Disque plein.", code: null },
+    }),
+  ];
+  await renderApp();
+  fireEvent.click(
+    await within(panel()).findByRole("button", { name: "Réessayer : Les trois ours" }),
+  );
+  await waitFor(() => expect(callsOf("authoring_retry")).toHaveLength(1));
+  expect(callsOf("authoring_retry")[0]?.args).toEqual({ taskId: "t1" });
+  expect(callsOf("install_start")).toHaveLength(0);
+  // La tâche en échec est remplacée par la nouvelle.
+  await waitFor(() => expect(within(panel()).queryByText("Échec")).toBeNull());
+
+  // Refus reconnu par son code : texte dédié, pas le message technique.
+  started = [
+    task(folderStory, "failed", {
+      id: "t9",
+      error: { kind: "io", message: "Disque plein.", code: null },
+    }),
+  ];
+  failures.authoring_retry = {
+    kind: "authoring",
+    code: "folder_changed",
+    message: "détail technique",
+  } as { kind: string; message: string };
+  cleanup();
+  await renderApp();
+  fireEvent.click(
+    await within(panel()).findByRole("button", { name: "Réessayer : Les trois ours" }),
+  );
+  expect(
+    await screen.findByText(/Le dossier a changé depuis l'échec/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("détail technique")).toBeNull();
 });
 
 it("rend le focus à la carte après Fermer, et après Échap dans une confirmation", async () => {

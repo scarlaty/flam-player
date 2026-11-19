@@ -225,6 +225,8 @@ pub fn run() {
             app::app_info,
             authoring::commands::authoring_create,
             authoring::commands::authoring_read,
+            authoring::commands::authoring_relocate,
+            authoring::commands::authoring_retry,
             authoring::ops_commands::authoring_editor_create,
             authoring::ops_commands::authoring_editor_delete,
             authoring::ops_commands::authoring_editor_empty_trash,

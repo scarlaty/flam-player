@@ -8,6 +8,8 @@ import { t } from "../i18n";
 export interface AppError {
   kind: string;
   message: string;
+  /** Code stable en plus de `kind` (`kind = "authoring"` : `folder_missing`, `busy`…). */
+  code?: string;
 }
 
 export function isAppError(value: unknown): value is AppError {
