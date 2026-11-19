@@ -224,23 +224,29 @@ Comportement actuel des packs de podcasts (podcasts.md § 6) :
   chapitre a un titre lu.
 - **Menu des chapitres** : le bouton retour pendant un chapitre l'ouvre, focalisé sur le
   chapitre en cours ; une option par chapitre, un niveau par partie. Valider démarre ce
-  chapitre, puis la lecture continue avec les suivants. Retour depuis une partie → niveau du
-  dessus. **Décidé** (Q2 révisée, 2026-11-19) : retour depuis le premier niveau du menu des
-  chapitres → **sortie de l'histoire** pour un livre racine (comportement Flam habituel), retour
-  au recueil pour un livre placé dans un recueil. Valider dans ce menu le chapitre qu'on vient de
-  quitter le reprend à la position quittée (si l'évolution du moteur le permet, ci-dessous).
+  chapitre (sans son annonce : le titre lu de l'option vient d'être entendu), puis la
+  lecture continue avec les suivants. Retour depuis une partie → niveau du dessus.
+- **Décidé** (Q2, révisé le 2026-11-19) : retour depuis le premier niveau du menu des
+  chapitres → **sortie de l'histoire** (menu Start de la Flam), comme depuis le menu d'un
+  recueil ; un livre placé dans un recueil remonte au recueil. Le chapitre quitté par le
+  retour **garde sa position** : « Reprendre l'histoire » (après sortie ou mise en veille
+  dans le menu) le reprend à l'endroit quitté, et valider son option aussi ; les autres
+  chapitres partent du début. Moteur : champ `role` des scènes (`"chapter"`, `"title"`),
+  `tools/telmi2flam/README.md`.
 - **Fin du livre** (`fin`) : `menu` (défaut : menu des chapitres, sur le premier) ou `fin`
   (fin d'histoire, retour à la bibliothèque de la Flam).
 - **Reprise** : le moteur sauve la scène et la position dans l'audio de chaque scène avec audio
   (`tools/telmi2flam/engine/story.lua`, `saveProgress`) et alimente la jauge du menu
-  « Reprendre » avec les chapitres écoutés. Mais il **efface** cette position quand on quitte
-  une scène par le retour, et à toute entrée par le graphe (`story.lua`, constaté au lot 3) : sans
-  changement, « Reprendre l'histoire » repart du début du chapitre quitté. **Décidé**
-  (2026-11-19) : évolution du moteur, activée seulement par le graphe des livres (histoires
-  existantes inchangées), pour que « Reprendre l'histoire » reprenne le chapitre quitté **à la
-  position quittée**. Elle touche `story.lua` (gel de parité, #661) et les convertisseurs ; à
-  confirmer sur la Flam (§ 13).
-- **Images** : celle du chapitre, sinon celle de sa partie, sinon la couverture.
+  « Reprendre » avec les chapitres écoutés. Sans indication du graphe, il **efface** cette
+  position quand on quitte une scène par le retour et à toute entrée par le graphe : c'est le
+  comportement des histoires existantes, inchangé. **Décidé** (2026-11-19) : les scènes d'un
+  livre portent un `role` (`"chapter"` : position gardée au retour, chapitre quitté retenu ;
+  `"title"` : annonce ou titre lu, hors jauge) que `telmi2flam` transmet ; `story.lua` (gel de
+  parité, #661) en tient compte. À confirmer sur la Flam (§ 13).
+- **Images** : celle du chapitre, sinon celle de sa partie, sinon la couverture. Elle
+  s'affiche avec le titre lu du chapitre (option du menu ou annonce) ; pendant la lecture du
+  chapitre, l'écran est noir (retour d'essai sur la Flam, 2026-11-19). L'écran « Reprendre »
+  garde l'image du chapitre.
 
 ### 5.4 Traduction en graphe Telmi
 
@@ -385,16 +391,16 @@ L'éditeur **modifie les fichiers de l'utilisateur** : c'est la partie la plus s
 
 ## 12. Décisions
 
-| #   | Question                                                                                     | Recommandation                                                                                                                                                                                                               |
-| --- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1  | Mode réglable par sous-dossier, ou seulement pour toute l'histoire ?                         | **Décidé** : par sous-dossier, avec héritage (§ 5.1)                                                                                                                                                                         |
-| Q2  | Retour depuis le menu des chapitres : reprendre le chapitre quitté, ou rester dans le menu ? | **Décidé**, révisé le 2026-11-19 : retour du premier niveau = sortie de l'histoire ; « Reprendre l'histoire » (et le chapitre quitté choisi dans le menu) reprend à la position quittée, par une évolution du moteur (§ 5.3) |
-| Q3  | Réordonner renomme-t-il les fichiers (préfixes) ?                                            | **Décidé** : non, `_dossier.json`, action « Renuméroter » à part                                                                                                                                                             |
-| Q4  | Corbeille : `.flam/corbeille/` ou Corbeille Windows ?                                        | **Décidé** : `.flam/corbeille/` (annulable), vidage vers la Corbeille Windows                                                                                                                                                |
-| Q5  | Écrire les compléments automatiques dans le dossier ?                                        | **Décidé** : non par défaut, bouton « Garder »                                                                                                                                                                               |
-| Q6  | Fenêtre séparée pour l'éditeur (§ 4.3)                                                       | **Décidé** : oui                                                                                                                                                                                                             |
-| Q7  | Enregistrer un titre lu au micro                                                             | **Décidé** : plus tard                                                                                                                                                                                                       |
-| Q8  | Extraction d'une histoire installée en dossier ; histoires interactives                      | **Décidé** : plus tard, à part                                                                                                                                                                                               |
+| #   | Question                                                                                     | Recommandation                                                                                                                                         |
+| --- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Q1  | Mode réglable par sous-dossier, ou seulement pour toute l'histoire ?                         | **Décidé** : par sous-dossier, avec héritage (§ 5.1)                                                                                                   |
+| Q2  | Retour depuis le menu des chapitres : reprendre le chapitre quitté, ou rester dans le menu ? | **Décidé** (révisé) : retour = sortie de l'histoire ; « Reprendre l'histoire » et l'option du chapitre quitté le reprennent à l'endroit quitté (§ 5.3) |
+| Q3  | Réordonner renomme-t-il les fichiers (préfixes) ?                                            | **Décidé** : non, `_dossier.json`, action « Renuméroter » à part                                                                                       |
+| Q4  | Corbeille : `.flam/corbeille/` ou Corbeille Windows ?                                        | **Décidé** : `.flam/corbeille/` (annulable), vidage vers la Corbeille Windows                                                                          |
+| Q5  | Écrire les compléments automatiques dans le dossier ?                                        | **Décidé** : non par défaut, bouton « Garder »                                                                                                         |
+| Q6  | Fenêtre séparée pour l'éditeur (§ 4.3)                                                       | **Décidé** : oui                                                                                                                                       |
+| Q7  | Enregistrer un titre lu au micro                                                             | **Décidé** : plus tard                                                                                                                                 |
+| Q8  | Extraction d'une histoire installée en dossier ; histoires interactives                      | **Décidé** : plus tard, à part                                                                                                                         |
 
 ## 13. Essais sur la Flam
 
