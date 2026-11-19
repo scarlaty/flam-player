@@ -15,11 +15,14 @@
 //!   partout ; `<nom>.<image>` et `<nom>.titre.<audio>` à côté de `<nom>.<audio>`. Un
 //!   `<nom>.titre.<audio>` sans `<nom>.<audio>` voisin est une histoire ordinaire.
 //! - Ignorés sans rien dire : noms commençant par `.` (dont la corbeille `.flam/` et les
-//!   temporaires de `storage::write_atomic`), fichiers cachés ou système (attributs Windows),
-//!   `desktop.ini`, `Thumbs.db`, `.DS_Store`. Tout autre fichier non reconnu est signalé.
+//!   temporaires de `storage::write_atomic`), fichiers cachés ou système (attributs Windows ;
+//!   sauf `_histoire.json` et `_dossier.json`, lus même cachés), `desktop.ini`, `Thumbs.db`,
+//!   `.DS_Store`. Tout autre fichier non reconnu est signalé.
 //! - Ordre : `ordre` des réglages, puis les autres entrées en tri naturel ([`natural_cmp`]).
 //! - Titre : `titres` des réglages, sinon le nom sans extension ni préfixe de tri
 //!   ([`strip_sort_prefix`]), nettoyé (`clean_line`).
+//! - Noms comparés par leur clé `settings::name_key` (NFC puis minuscules) : `ordre`,
+//!   `titres`, appariement image / titre lu avec le fichier audio.
 //! - Mode : celui des réglages du dossier, sinon celui du parent ; à la racine, sinon le mode
 //!   proposé ([`Scan::suggested_mode`], § 5.1). `fin` et `annoncer` héritent de même.
 //!
@@ -32,44 +35,69 @@
 //!   restent lisibles : seuls leurs noms et tailles sont lus ici. Les réglages, eux, sont
 //!   ouverts sans suivre de lien et refusent tout point de réanalyse (`authoring::settings`).
 //! - **Parcours borné** ([`Limits`]) : au plus `max_entries` entrées lues en tout (au-delà le
-//!   parcours s'arrête, [`Scan::truncated`]) et jamais plus de `max_menu_depth` niveaux. Les
-//!   limites métier (profondeur, histoires, options par menu, taille de l'audio) dépassées
-//!   sont des problèmes **bloquants** du rapport, pas des erreurs.
-//! - **Racines interdites** ([`check_root`]) : chemin relatif ou non normalisé, racine d'un
-//!   disque ou d'un partage, profil utilisateur, dossier Windows ou l'un de leurs parents →
-//!   [`ScanError`]. Les autres racines interdites (dossier du launcher, lecteur de la Flam)
-//!   sont passées par l'appelant à [`check_root`] (lot des commandes).
+//!   parcours s'arrête, [`Scan::truncated`]) et jamais plus de `max_menu_depth` niveaux ; un
+//!   dossier trop profond n'est pas lu, seulement regardé (au plus [`PEEK_ENTRIES`] entrées)
+//!   pour savoir s'il contient de l'audio. Réglages lus dans un budget cumulé de
+//!   [`SETTINGS_BUDGET`] octets. Les limites métier (profondeur avec audio, histoires, options
+//!   par menu, taille de l'audio) dépassées sont des problèmes **bloquants** du rapport, pas des
+//!   erreurs.
+//! - **Racines interdites** (`authoring::root::check_root`, chemins résolus) : forme non prise
+//!   en charge, racine d'un disque ou d'un partage, profil utilisateur ou l'un de ses parents,
+//!   dossier Windows, Program Files, et les dossiers `extra_forbidden` de l'appelant (dossier
+//!   du launcher, lecteur de la Flam), avec leurs parents et sous-dossiers → [`ScanError`].
 //! - **Identifiants** : l'id d'un élément est son chemin relatif à la racine, composants
-//!   séparés par `/` (racine : `""`). Le front ne transmet que ces ids ; les opérations
-//!   (lot 6) les retrouvent dans un nouveau [`Scan`], jamais en construisant un chemin libre.
-//!   Un nom qui n'est pas de l'Unicode valide n'a pas d'id : ignoré et signalé.
+//!   séparés par `/` (racine : `""`), noms réels sur le disque. Le front ne transmet que ces
+//!   ids ; les opérations (lot 6) les retrouvent dans un nouveau [`Scan`], jamais en
+//!   construisant un chemin libre. N'ont pas d'id (ignorés et signalés `invalid_name`) : un nom
+//!   qui n'est pas de l'Unicode valide, un nom finissant par un point ou une espace (Win32 le
+//!   confondrait avec un autre fichier : `a.mp3.` désigne `a.mp3`).
 //! - **Textes nettoyés** : titres sur une ligne, sans caractère de format, bornés.
+//! - [`Scan::story`] ne garde pas `extra` (clés inconnues, valeurs brutes) : une opération qui
+//!   réécrit les réglages relit le fichier (`settings::load_*`) au moment d'agir.
+//!
+//! # Invariants à tenir par les opérations (lot 6)
+//!
+//! La lecture et l'action sont séparées dans le temps : entre ce [`Scan`] et une opération, un
+//! autre programme peut remplacer un dossier par un lien ou une jonction, ou un fichier par un
+//! autre. Une opération ne se fie donc **jamais** à ce qu'a vu le scan : au moment d'agir, elle
+//! revérifie la racine ([`check_root`] à nouveau) puis **chaque composant** du chemin, depuis
+//! la racine, sans suivre de lien (`symlink_metadata`, poignées ouvertes avec
+//! `FILE_FLAG_OPEN_REPARSE_POINT` comme `install::pack::open_no_follow`), et l'état attendu
+//! (taille, date) avant toute écriture (§ 4.5).
 //!
 //! # Codes de problèmes (stables)
 //!
-//! Bloquants : `no_story`, `too_deep`, `too_many_entries`, `too_many_stories`,
-//! `too_many_options`, `audio_too_large`, `unreadable_folder`.
+//! Bloquants : `no_story`, `too_deep` (dossier trop profond contenant de l'audio),
+//! `too_many_entries`, `too_many_stories`, `too_many_options`, `audio_too_large`,
+//! `unreadable_folder`.
 //!
-//! Avertissements : `link_ignored`, `invalid_name`, `unsupported_file`,
-//! `misplaced_special_file`, `duplicate_special_file`, `orphan_image`, `orphan_title_audio`,
-//! `duplicate_story_name`, `empty_menu`, `title_too_long`, `fin_ignored`, et ceux des
-//! réglages (`settings_unreadable`, `settings_invalid_value`, `settings_newer_format`).
+//! Avertissements : `too_deep` (dossier trop profond sans audio), `link_ignored`,
+//! `invalid_name`, `unsupported_file`, `misplaced_special_file`, `duplicate_special_file`,
+//! `orphan_image`, `duplicate_story_name`, `empty_menu`, `title_too_long`, `fin_ignored`, et
+//! ceux des réglages (`settings_unreadable`, `settings_invalid_value`,
+//! `settings_newer_format`).
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use telmi2flam::text::{text as font_text, LABEL_MAX};
 use unicode_normalization::char::canonical_combining_class;
 use unicode_normalization::UnicodeNormalization;
 
+pub use super::root::{check_root, ForbiddenRoots};
 use super::settings::{
-    self, FolderSettings, Inherited, Loaded, Mode, SettingsWarning, StorySettings, FOLDER_FILE,
-    STORY_FILE,
+    self, name_key, FolderSettings, Inherited, Loaded, Mode, SettingsWarning, StorySettings,
+    FOLDER_FILE, STORY_FILE,
 };
 use crate::install::studio::clean_line;
 use crate::story::MAX_TITLE_CHARS;
+
+/// Budget cumulé de lecture des fichiers de réglages pendant un parcours (octets).
+pub const SETTINGS_BUDGET: u64 = 16 * 1024 * 1024;
+/// Entrées regardées au plus dans un dossier trop profond pour y chercher de l'audio.
+pub const PEEK_ENTRIES: usize = 1_000;
 
 /// Extensions audio acceptées (§ 3.3).
 pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "m4a", "aac", "ogg", "opus", "wav", "flac"];
@@ -255,48 +283,6 @@ impl From<ScanError> for crate::AppError {
 }
 
 // ---------------------------------------------------------------------------
-// Racine
-// ---------------------------------------------------------------------------
-
-fn lower_parts(path: &Path) -> Vec<String> {
-    path.components()
-        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-        .collect()
-}
-
-/// Contrôle de forme de la racine, sans accès au disque : absolue, normalisée, ni racine de
-/// disque ou de partage, ni égale à l'un des dossiers `forbidden`, ni l'un de leurs parents.
-pub fn check_root(root: &Path, forbidden: &[PathBuf]) -> Result<(), ScanError> {
-    let shown = || root.to_string_lossy().into_owned();
-    if !root.is_absolute() {
-        return Err(ScanError::NotAbsolute(shown()));
-    }
-    if root
-        .components()
-        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
-    {
-        return Err(ScanError::NotAbsolute(shown()));
-    }
-    if root.parent().is_none() {
-        return Err(ScanError::Forbidden {
-            path: shown(),
-            reason: "racine d'un disque ou d'un partage",
-        });
-    }
-    let parts = lower_parts(root);
-    for dir in forbidden {
-        let other = lower_parts(dir);
-        if other.len() >= parts.len() && other[..parts.len()] == parts[..] {
-            return Err(ScanError::Forbidden {
-                path: shown(),
-                reason: "dossier système ou profil utilisateur (ou dossier qui le contient)",
-            });
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Tri et titres
 // ---------------------------------------------------------------------------
 
@@ -415,6 +401,8 @@ struct RawDir {
     name: String,
     title: String,
     settings: FolderSettings,
+    /// Id du fichier de réglages lu (nom réel sur le disque).
+    settings_id: Option<String>,
     image: Option<String>,
     title_audio: Option<String>,
     items: Vec<RawItem>,
@@ -462,6 +450,15 @@ struct Walker<'a> {
     stories: usize,
     audio_bytes: u64,
     truncated: bool,
+    /// Octets de réglages encore lisibles.
+    settings_budget: u64,
+    /// `_histoire.json` (lu pendant la lecture de la racine).
+    story: Loaded<StorySettings>,
+}
+
+/// Nom de fichier de réglages (lu même caché).
+fn is_settings_name(lower: &str) -> bool {
+    lower == STORY_FILE || lower == FOLDER_FILE
 }
 
 /// Entrée de dossier retenue après les filtres.
@@ -540,11 +537,22 @@ impl Walker<'_> {
             if name.starts_with('.') || SILENT_FILES.contains(&lower.as_str()) {
                 continue;
             }
+            if name.ends_with(['.', ' ']) {
+                self.warn(
+                    "invalid_name",
+                    &child_id(id, &name),
+                    format!(
+                        "« {name} » ignoré : un nom finissant par un point ou une espace n'est \
+                         pas accessible de façon sûre sous Windows"
+                    ),
+                );
+                continue;
+            }
             // `file_type` et `DirEntry::metadata` ne suivent pas les liens.
             let (Ok(file_type), Ok(meta)) = (entry.file_type(), entry.metadata()) else {
                 continue;
             };
-            if is_hidden(&meta) {
+            if is_hidden(&meta) && !is_settings_name(&lower) {
                 continue;
             }
             let entry_id = child_id(id, &name);
@@ -569,15 +577,8 @@ impl Walker<'_> {
     }
 
     /// Lit le dossier `path` (id `id`, niveau `depth`, racine = 1).
-    fn read_dir(
-        &mut self,
-        path: &Path,
-        id: &str,
-        name: &str,
-        depth: usize,
-        root_settings: Option<&FolderSettings>,
-    ) -> RawDir {
-        let is_root = root_settings.is_some();
+    fn read_dir(&mut self, path: &Path, id: &str, name: &str, depth: usize) -> RawDir {
+        let is_root = depth == 1;
         let entries = self.list(path, id);
 
         let mut stories: Vec<(String, u64)> = Vec::new();
@@ -585,7 +586,7 @@ impl Walker<'_> {
         let mut images: Vec<String> = Vec::new();
         let mut special_image: Vec<String> = Vec::new();
         let mut special_title: Vec<String> = Vec::new();
-        let mut has_folder_file = false;
+        let mut settings_file: Option<String> = None;
         let mut subdirs: Vec<String> = Vec::new();
 
         for entry in entries {
@@ -596,9 +597,9 @@ impl Walker<'_> {
                 }
                 Entry::File(file, bytes) => (file, bytes),
             };
-            let lower = file.to_lowercase();
-            let ext = ext_of(&lower);
-            let stem = stem_of(&lower);
+            let key = name_key(&file);
+            let ext = ext_of(&key);
+            let stem = stem_of(&key);
             let is_audio = AUDIO_EXTENSIONS.contains(&ext.as_str());
             let is_image = IMAGE_EXTENSIONS.contains(&ext.as_str());
             let entry_id = child_id(id, &file);
@@ -609,15 +610,17 @@ impl Walker<'_> {
                     format!("« {file} » ignoré : {hint}"),
                 );
             };
-            if lower == STORY_FILE {
-                if !is_root {
+            if key == STORY_FILE {
+                if is_root {
+                    settings_file = Some(file);
+                } else {
                     misplaced(self, "seulement à la racine de l'histoire");
                 }
-            } else if lower == FOLDER_FILE {
+            } else if key == FOLDER_FILE {
                 if is_root {
                     misplaced(self, "à la racine, ces réglages vont dans _histoire.json");
                 } else {
-                    has_folder_file = true;
+                    settings_file = Some(file);
                 }
             } else if stem == "_couverture" && is_image {
                 if is_root {
@@ -653,12 +656,12 @@ impl Walker<'_> {
         // `<nom>.titre.<audio>` sans `<nom>.<audio>` voisin : une histoire ordinaire.
         let story_stems: HashSet<String> = stories
             .iter()
-            .map(|(file, _)| stem_of(&file.to_lowercase()).to_owned())
+            .map(|(file, _)| stem_of(&name_key(file)).to_owned())
             .collect();
         let mut titles_by_stem: HashMap<String, Vec<String>> = HashMap::new();
         for (file, bytes) in titled {
-            let lower = file.to_lowercase();
-            let base = stem_of(&lower)
+            let key = name_key(&file);
+            let base = stem_of(&key)
                 .strip_suffix(".titre")
                 .unwrap_or_default()
                 .to_owned();
@@ -670,36 +673,45 @@ impl Walker<'_> {
         }
         let mut images_by_stem: HashMap<String, Vec<String>> = HashMap::new();
         for file in images {
-            let stem = stem_of(&file.to_lowercase()).to_owned();
+            let stem = stem_of(&name_key(&file)).to_owned();
             images_by_stem.entry(stem).or_default().push(file);
         }
 
         let image = self.pick(id, special_image, true);
         let title_audio = self.pick(id, special_title, true);
 
-        // Réglages du dossier.
-        let settings = match root_settings {
-            Some(settings) => settings.clone(),
-            None if has_folder_file => {
-                let loaded = settings::load_folder(path);
-                self.settings_problems(&child_id(id, FOLDER_FILE), &loaded.warnings);
+        // Réglages du dossier (fichier lu sous son nom réel).
+        let settings_id = settings_file.as_deref().map(|file| child_id(id, file));
+        let settings = match (&settings_file, &settings_id) {
+            (Some(file), Some(file_id)) if is_root => {
+                let loaded = settings::load_story_file(&path.join(file), &mut self.settings_budget);
+                self.settings_problems(file_id, &loaded.warnings);
+                self.story = loaded;
+                self.story.settings.folder.clone()
+            }
+            (Some(file), Some(file_id)) => {
+                let loaded =
+                    settings::load_folder_file(&path.join(file), &mut self.settings_budget);
+                self.settings_problems(file_id, &loaded.warnings);
                 loaded.settings
             }
-            None => FolderSettings::default(),
+            _ => FolderSettings::default_new(),
         };
+        let titles = settings.title_table();
 
         // Histoires et appariements.
         let mut items = Vec::new();
         let mut stem_seen: HashMap<String, usize> = HashMap::new();
         for (file, _) in &stories {
             *stem_seen
-                .entry(stem_of(&file.to_lowercase()).to_owned())
+                .entry(stem_of(&name_key(file)).to_owned())
                 .or_default() += 1;
         }
         let mut used_images = HashSet::new();
         let mut used_titles = HashSet::new();
         for (file, bytes) in stories {
-            let stem = stem_of(&file.to_lowercase()).to_owned();
+            let key = name_key(&file);
+            let stem = stem_of(&key).to_owned();
             let story_id = child_id(id, &file);
             if stem_seen.get(&stem).copied().unwrap_or(0) > 1 {
                 self.warn(
@@ -719,9 +731,9 @@ impl Walker<'_> {
                 let first_use = used_titles.insert(stem.clone());
                 self.pick(id, names, first_use)
             });
-            let title = settings
-                .title_of(&file)
-                .map(str::to_owned)
+            let title = titles
+                .get(&key)
+                .map(|title| (*title).to_owned())
                 .unwrap_or_else(|| title_from_name(&file, true));
             self.stories += 1;
             self.audio_bytes = self.audio_bytes.saturating_add(bytes);
@@ -758,20 +770,26 @@ impl Walker<'_> {
                 break;
             }
             if depth + 1 > self.limits.max_menu_depth {
-                self.problem(
-                    "too_deep",
-                    Severity::Blocking,
-                    &dir_id,
-                    format!(
-                        "« {dir} » dépasse {} niveaux de menus : non lu",
-                        self.limits.max_menu_depth
-                    ),
-                );
+                let max = self.limits.max_menu_depth;
+                if may_contain_audio(&path.join(&dir)) {
+                    self.problem(
+                        "too_deep",
+                        Severity::Blocking,
+                        &dir_id,
+                        format!("« {dir} » dépasse {max} niveaux de menus : non lu"),
+                    );
+                } else {
+                    self.warn(
+                        "too_deep",
+                        &dir_id,
+                        format!("« {dir} » dépasse {max} niveaux de menus, sans audio : ignoré"),
+                    );
+                }
                 continue;
             }
-            let mut sub = self.read_dir(&path.join(&dir), &dir_id, &dir, depth + 1, None);
-            if let Some(title) = settings.title_of(&dir) {
-                sub.title = title.to_owned();
+            let mut sub = self.read_dir(&path.join(&dir), &dir_id, &dir, depth + 1);
+            if let Some(title) = titles.get(&name_key(&dir)) {
+                sub.title = (*title).to_owned();
             }
             items.push(RawItem::Dir(sub));
         }
@@ -796,6 +814,7 @@ impl Walker<'_> {
             name: name.to_owned(),
             title: title_from_name(name, false),
             settings,
+            settings_id,
             image,
             title_audio,
             items,
@@ -834,16 +853,49 @@ fn is_hidden(meta: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Ordre du § 3.2 : entrées de `ordre` (sans casse) d'abord, puis le reste en tri naturel.
+/// Coup d'œil borné ([`PEEK_ENTRIES`]) sur un dossier non lu : vrai s'il contient, à toute
+/// profondeur et sans suivre de lien, un fichier audio — ou si la borne est atteinte avant
+/// d'avoir tout vu (prudence).
+fn may_contain_audio(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(current) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            seen += 1;
+            if seen > PEEK_ENTRIES {
+                return true;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let name = name_key(&entry.file_name().to_string_lossy());
+            if file_type.is_symlink() || name.starts_with('.') {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() && AUDIO_EXTENSIONS.contains(&ext_of(&name).as_str()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Ordre du § 3.2 : entrées de `ordre` (par [`name_key`]) d'abord, puis le reste en tri
+/// naturel.
 fn sort_items(items: &mut [RawItem], ordre: &[String]) {
     let rank: HashMap<String, usize> = ordre
         .iter()
         .enumerate()
-        .map(|(i, name)| (name.to_lowercase(), i))
+        .map(|(i, name)| (name_key(name), i))
         .collect();
     items.sort_by(|a, b| {
-        let ra = rank.get(&a.name().to_lowercase());
-        let rb = rank.get(&b.name().to_lowercase());
+        let ra = rank.get(&name_key(a.name()));
+        let rb = rank.get(&name_key(b.name()));
         match (ra, rb) {
             (Some(x), Some(y)) => x.cmp(y),
             (Some(_), None) => Ordering::Less,
@@ -877,9 +929,17 @@ fn suggest_mode(root: &RawDir) -> Mode {
 }
 
 impl Walker<'_> {
-    /// Arbre final : modes hérités, titres trop longs, menus vides.
-    fn finish(&mut self, dir: RawDir, inherited: Inherited, is_root: bool) -> Node {
-        if !is_root && dir.story_count() == 0 {
+    /// Arbre final : modes hérités, titres trop longs, menus vides (signalés une seule fois,
+    /// au plus haut d'une chaîne de dossiers vides : `parent_empty`).
+    fn finish(
+        &mut self,
+        dir: RawDir,
+        inherited: Inherited,
+        is_root: bool,
+        parent_empty: bool,
+    ) -> Node {
+        let empty = !is_root && dir.story_count() == 0;
+        if empty && !parent_empty {
             self.warn(
                 "empty_menu",
                 &dir.id,
@@ -891,11 +951,11 @@ impl Walker<'_> {
         }
         if let Some(fin) = dir.settings.fin {
             if !fin.fits(inherited.mode) {
-                let path = if is_root {
-                    STORY_FILE.to_owned()
-                } else {
-                    child_id(&dir.id, FOLDER_FILE)
-                };
+                let fallback = if is_root { STORY_FILE } else { FOLDER_FILE };
+                let path = dir
+                    .settings_id
+                    .clone()
+                    .unwrap_or_else(|| child_id(&dir.id, fallback));
                 self.warn(
                     "fin_ignored",
                     &path,
@@ -914,7 +974,7 @@ impl Walker<'_> {
             match item {
                 RawItem::Dir(sub) => {
                     let child = inherited.child(&sub.settings);
-                    children.push(self.finish(sub, child, false));
+                    children.push(self.finish(sub, child, false, empty));
                 }
                 RawItem::Story(s) => {
                     self.check_title(&s.id, &s.title);
@@ -955,9 +1015,11 @@ impl Walker<'_> {
 }
 
 /// Lit le dossier d'histoire `root` (voir la doc du module). Refuse les racines interdites
-/// ([`check_root`] avec `settings::protected_dirs`), un lien et ce qui n'est pas un dossier.
-pub fn scan(root: &Path, limits: &Limits) -> Result<Scan, ScanError> {
-    check_root(root, &crate::settings::protected_dirs())?;
+/// ([`check_root`] avec [`ForbiddenRoots::system`] et `extra_forbidden`, refusés avec leurs
+/// parents et sous-dossiers : dossier du launcher, lecteur de la Flam), un lien et ce qui n'est
+/// pas un dossier.
+pub fn scan(root: &Path, limits: &Limits, extra_forbidden: &[PathBuf]) -> Result<Scan, ScanError> {
+    check_root(root, &ForbiddenRoots::system().with_trees(extra_forbidden))?;
     let shown = || root.to_string_lossy().into_owned();
     let meta = match std::fs::symlink_metadata(root) {
         Ok(meta) => meta,
@@ -975,7 +1037,6 @@ pub fn scan(root: &Path, limits: &Limits) -> Result<Scan, ScanError> {
     // Racine illisible : une erreur, pas un problème du rapport.
     drop(std::fs::read_dir(root)?);
 
-    let story = settings::load_story(root);
     let mut walker = Walker {
         limits,
         problems: Vec::new(),
@@ -983,13 +1044,21 @@ pub fn scan(root: &Path, limits: &Limits) -> Result<Scan, ScanError> {
         stories: 0,
         audio_bytes: 0,
         truncated: false,
+        settings_budget: SETTINGS_BUDGET,
+        story: Loaded {
+            settings: StorySettings {
+                folder: FolderSettings::default_new(),
+                ..StorySettings::default()
+            },
+            ..Loaded::default()
+        },
     };
-    walker.settings_problems(STORY_FILE, &story.warnings);
     let name = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut raw = walker.read_dir(root, "", &name, 1, Some(&story.settings.folder));
+    let mut raw = walker.read_dir(root, "", &name, 1);
+    let mut story = std::mem::take(&mut walker.story);
     if let Some(titre) = &story.settings.titre {
         raw.title = titre.clone();
     }
@@ -1004,7 +1073,7 @@ pub fn scan(root: &Path, limits: &Limits) -> Result<Scan, ScanError> {
         &story.settings.folder,
         suggested_mode.unwrap_or(Mode::Recueil),
     );
-    let root_node = walker.finish(raw, inherited, true);
+    let root_node = walker.finish(raw, inherited, true, false);
 
     if walker.stories == 0 {
         walker.problem(
@@ -1038,6 +1107,8 @@ pub fn scan(root: &Path, limits: &Limits) -> Result<Scan, ScanError> {
         );
     }
 
+    // Les opérations relisent le fichier : ni clés inconnues ni valeurs brutes dans le résultat.
+    story.settings.folder.extra.clear();
     Ok(Scan {
         root: root_node,
         story,

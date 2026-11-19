@@ -17,7 +17,7 @@ fn write(root: &Path, rel: &str, text: &str) {
 }
 
 fn scan_ok(root: &Path) -> Scan {
-    scan(root, &Limits::default()).unwrap()
+    scan(root, &Limits::default(), &[]).unwrap()
 }
 
 /// Ids des options du menu `id`.
@@ -469,6 +469,35 @@ fn profondeur_bornee() {
 }
 
 #[test]
+fn dossier_trop_profond_sans_audio_seulement_signale() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "1/2/3/4/a.mp3", 1);
+    touch(dir.path(), "1/2/3/4/Scans/6/couverture.png", 1);
+    let scan = scan_ok(dir.path());
+    assert_eq!(codes(&scan), [("too_deep", "1/2/3/4/Scans".to_owned())]);
+    assert_eq!(scan.problems[0].severity, Severity::Warning);
+    assert!(!scan.is_blocked());
+}
+
+#[test]
+fn chaine_de_dossiers_vides_signalee_une_fois() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "a.mp3", 1);
+    fs::create_dir_all(dir.path().join("Vide/Encore/Toujours")).unwrap();
+    fs::create_dir_all(dir.path().join("Autre vide")).unwrap();
+    let scan = scan_ok(dir.path());
+    let mut found = codes(&scan);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("empty_menu", "Autre vide".to_owned()),
+            ("empty_menu", "Vide".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn limites_metier_bloquantes() {
     let dir = tempfile::tempdir().unwrap();
     for i in 0..4 {
@@ -481,7 +510,7 @@ fn limites_metier_bloquantes() {
         max_audio_bytes: 499,
         ..Limits::default()
     };
-    let scan = scan(dir.path(), &limits).unwrap();
+    let scan = scan(dir.path(), &limits, &[]).unwrap();
     let mut found = codes(&scan);
     found.sort();
     assert_eq!(
@@ -512,7 +541,7 @@ fn parcours_borne_par_le_nombre_d_entrees() {
         max_entries: 8,
         ..Limits::default()
     };
-    let scan = scan(dir.path(), &limits).unwrap();
+    let scan = scan(dir.path(), &limits, &[]).unwrap();
     assert!(scan.truncated);
     assert_eq!(scan.entries_seen, 8);
     assert!(has(&scan, "too_many_entries", "B"), "{:?}", codes(&scan));
@@ -524,67 +553,37 @@ fn parcours_borne_par_le_nombre_d_entrees() {
 // --- Sécurité ---
 
 #[test]
-fn racines_refusees() {
-    let protected = vec![PathBuf::from(if cfg!(windows) {
-        r"C:\Users\Moi"
-    } else {
-        "/home/moi"
-    })];
-    let abs = |s: &str| {
-        PathBuf::from(if cfg!(windows) {
-            format!("C:{s}")
-        } else {
-            s.to_owned()
-        })
-    };
-    let refused = |path: &Path| check_root(path, &protected).unwrap_err();
-    assert!(matches!(
-        refused(Path::new("relatif")),
-        ScanError::NotAbsolute(_)
-    ));
-    assert!(matches!(
-        refused(&abs(r"\a\..\b").join("..").join("c")),
-        ScanError::NotAbsolute(_)
-    ));
-    let disk_root = if cfg!(windows) { r"C:\" } else { "/" };
-    assert!(matches!(
-        refused(Path::new(disk_root)),
-        ScanError::Forbidden { .. }
-    ));
-    if cfg!(windows) {
-        assert!(matches!(
-            refused(Path::new(r"\\serveur\partage")),
-            ScanError::Forbidden { .. }
-        ));
-        for path in [r"C:\Users\Moi", r"c:\users\moi\", r"C:\Users"] {
-            assert!(
-                matches!(refused(Path::new(path)), ScanError::Forbidden { .. }),
-                "{path}"
-            );
-        }
-        assert!(check_root(Path::new(r"C:\Users\Moi\Histoires"), &protected).is_ok());
-        assert!(check_root(Path::new(r"D:\Histoires"), &protected).is_ok());
-    } else {
-        for path in ["/home/moi", "/home"] {
-            assert!(matches!(
-                refused(Path::new(path)),
-                ScanError::Forbidden { .. }
-            ));
-        }
-        assert!(check_root(Path::new("/home/moi/Histoires"), &protected).is_ok());
+fn racines_interdites_par_l_appelant() {
+    // Les cas de forme et de résolution sont testés dans `authoring::root`.
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "Launcher/Histoire/a.mp3", 1);
+    let launcher = dir.path().join("Launcher");
+    for root in [
+        launcher.clone(),
+        launcher.join("Histoire"),
+        dir.path().to_path_buf(),
+    ] {
+        assert!(
+            matches!(
+                scan(&root, &Limits::default(), std::slice::from_ref(&launcher)),
+                Err(ScanError::Forbidden { .. })
+            ),
+            "{root:?}"
+        );
     }
+    assert!(scan(&launcher.join("Histoire"), &Limits::default(), &[]).is_ok());
 }
 
 #[test]
 fn racine_absente_ou_fichier() {
     let dir = tempfile::tempdir().unwrap();
     assert!(matches!(
-        scan(&dir.path().join("absent"), &Limits::default()),
+        scan(&dir.path().join("absent"), &Limits::default(), &[]),
         Err(ScanError::NotFound(_))
     ));
     touch(dir.path(), "a.mp3", 1);
     assert!(matches!(
-        scan(&dir.path().join("a.mp3"), &Limits::default()),
+        scan(&dir.path().join("a.mp3"), &Limits::default(), &[]),
         Err(ScanError::NotADirectory(_))
     ));
 }
@@ -610,8 +609,10 @@ fn liens_symboliques_ignores() {
         std::os::unix::fs::symlink(real.path().join("cible.mp3"), dir.path().join("lien.mp3")).and(
             std::os::unix::fs::symlink(real.path().join("sous"), dir.path().join("lien-dossier")),
         );
-    if linked.is_err() {
-        return; // création de liens non autorisée sur cette machine
+    if let Err(e) = linked {
+        // Le cas des dossiers est couvert sans privilège par `jonction_ignoree`.
+        eprintln!("liens_symboliques_ignores : lien symbolique impossible ({e}), test sauté");
+        return;
     }
     let scan = scan_ok(dir.path());
     assert_eq!(ids(&scan, ""), ["a.mp3"]);
@@ -619,7 +620,7 @@ fn liens_symboliques_ignores() {
     assert!(has(&scan, "link_ignored", "lien-dossier"));
     // Racine en lien : refusée.
     assert!(matches!(
-        super::scan(&dir.path().join("lien-dossier"), &Limits::default()),
+        super::scan(&dir.path().join("lien-dossier"), &Limits::default(), &[]),
         Err(ScanError::Link(_))
     ));
 }
@@ -644,7 +645,7 @@ fn jonction_ignoree() {
     assert_eq!(ids(&scan, ""), ["a.mp3"]);
     assert_eq!(codes(&scan), [("link_ignored", "jonction".to_owned())]);
     assert!(matches!(
-        super::scan(&link, &Limits::default()),
+        super::scan(&link, &Limits::default(), &[]),
         Err(ScanError::Link(_))
     ));
 }
@@ -684,4 +685,151 @@ fn serialisation_de_l_arbre() {
     })
     .unwrap();
     assert_eq!(problem["severity"], "blocking");
+}
+
+// --- Corrections de revue ---
+
+#[cfg(windows)]
+fn hide(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY : chaîne terminée par un zéro, vivante pendant l'appel.
+    let ok = unsafe {
+        windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(
+            wide.as_ptr(),
+            windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN,
+        )
+    };
+    assert_ne!(ok, 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn noms_finissant_par_un_point_ou_une_espace_sans_id() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "a.mp3", 1);
+    // Seule la forme verbatim crée ces noms (Win32 retire le point ou l'espace final).
+    let verbatim = |name: &str| PathBuf::from(format!(r"\\?\{}\{name}", dir.path().display()));
+    fs::write(verbatim("b.mp3."), b"x").unwrap();
+    fs::write(verbatim("c.mp3 "), b"x").unwrap();
+    fs::create_dir(verbatim("Menu.")).unwrap();
+    let scan = scan_ok(dir.path());
+    assert_eq!(ids(&scan, ""), ["a.mp3"]);
+    let mut found = codes(&scan);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("invalid_name", "Menu.".to_owned()),
+            ("invalid_name", "b.mp3.".to_owned()),
+            ("invalid_name", "c.mp3 ".to_owned()),
+        ]
+    );
+    // Nettoyage : `tempfile` passe par Win32 et ne saurait pas effacer ces noms.
+    fs::remove_file(verbatim("b.mp3.")).unwrap();
+    fs::remove_file(verbatim("c.mp3 ")).unwrap();
+    fs::remove_dir(verbatim("Menu.")).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn reglages_caches_lus_sous_leur_nom_reel() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "a.mp3", 1);
+    touch(dir.path(), "M/b.mp3", 1);
+    write(dir.path(), "_Histoire.JSON", r#"{ "titre": "Caché" }"#);
+    write(dir.path(), "M/_DOSSIER.JSON", r#"{ "fin": "fin" }"#);
+    hide(&dir.path().join("_Histoire.JSON"));
+    hide(&dir.path().join("M/_DOSSIER.JSON"));
+    let scan = scan_ok(dir.path());
+    assert_eq!(scan.root.title(), "Caché");
+    // `fin` du sous-dossier lue (puis ignorée en recueil), signalée sous le nom réel.
+    assert_eq!(
+        codes(&scan),
+        [("fin_ignored", "M/_DOSSIER.JSON".to_owned())]
+    );
+}
+
+#[test]
+fn reglages_en_lien_vus_par_le_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    write(other.path(), "_dossier.json", r#"{ "mode": "chapitres" }"#);
+    touch(dir.path(), "M/b.mp3", 1);
+    let link = dir.path().join("M").join("_dossier.json");
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(other.path().join("_dossier.json"), &link);
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(other.path().join("_dossier.json"), &link);
+    if let Err(e) = linked {
+        eprintln!(
+            "reglages_en_lien_vus_par_le_scan : lien symbolique impossible ({e}), test sauté"
+        );
+        return;
+    }
+    let scan = scan_ok(dir.path());
+    assert!(
+        has(&scan, "link_ignored", "M/_dossier.json"),
+        "{:?}",
+        codes(&scan)
+    );
+    assert_eq!(menu_fields(scan.root.find("M").unwrap()).0, Mode::Recueil);
+}
+
+#[test]
+fn noms_compares_en_nfc_sans_casse() {
+    let dir = tempfile::tempdir().unwrap();
+    // Fichier audio en NFD, image et titre lu en NFC, réglages en NFC majuscules.
+    touch(dir.path(), "e\u{301}te\u{301}.mp3", 1);
+    touch(dir.path(), "\u{e9}t\u{e9}.png", 1);
+    touch(dir.path(), "\u{c9}T\u{c9}.titre.mp3", 1);
+    touch(dir.path(), "zz.mp3", 1);
+    write(
+        dir.path(),
+        "_histoire.json",
+        r#"{ "ordre": ["ZZ.MP3", "ÉTÉ.MP3"], "titres": { "ÉTÉ.MP3": "L'été" } }"#,
+    );
+    let scan = scan_ok(dir.path());
+    assert_eq!(ids(&scan, ""), ["zz.mp3", "e\u{301}te\u{301}.mp3"]);
+    let ete = scan.root.find("e\u{301}te\u{301}.mp3").unwrap();
+    assert_eq!(ete.title(), "L'été");
+    assert_eq!(
+        story_fields(ete),
+        (Some("\u{e9}t\u{e9}.png"), Some("\u{c9}T\u{c9}.titre.mp3"))
+    );
+    assert!(scan.problems.is_empty(), "{:?}", codes(&scan));
+}
+
+#[test]
+fn le_scan_ne_garde_pas_les_cles_inconnues() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "a.mp3", 1);
+    write(
+        dir.path(),
+        "_histoire.json",
+        r#"{ "futur": 1, "mode": "roman" }"#,
+    );
+    let scan = scan_ok(dir.path());
+    assert!(scan.story.settings.folder.extra.is_empty());
+    assert!(has(&scan, "settings_invalid_value", "_histoire.json"));
+}
+
+#[test]
+fn budget_cumule_des_reglages() {
+    let dir = tempfile::tempdir().unwrap();
+    let big = format!("{{\"x\":\"{}\"}}", "a".repeat(1_000_000));
+    for i in 0..18 {
+        touch(dir.path(), &format!("M{i:02}/a.mp3"), 1);
+        write(dir.path(), &format!("M{i:02}/_dossier.json"), &big);
+    }
+    let scan = scan_ok(dir.path());
+    let unreadable: Vec<_> = scan
+        .problems
+        .iter()
+        .filter(|p| p.code == "settings_unreadable")
+        .map(|p| p.path.clone())
+        .collect();
+    // 16 Mio de budget : 16 fichiers de ~1 Mo lus, les suivants non.
+    assert_eq!(unreadable, ["M16/_dossier.json", "M17/_dossier.json"]);
+    assert!(!scan.is_blocked());
 }
