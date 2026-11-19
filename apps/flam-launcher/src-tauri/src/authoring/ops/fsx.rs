@@ -185,11 +185,20 @@ pub(crate) fn recycle_bin_refusal(base: &Path) -> Option<&'static str> {
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
         const DRIVE_FIXED: u32 = 3;
-        let root: Vec<u16> = text[..3].encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY : chaîne UTF-16 terminée par un zéro.
-        if unsafe { GetDriveTypeW(root.as_ptr()) } != DRIVE_FIXED {
+        // Volume réel du dossier (une clé USB peut être montée dans un dossier de C:), pas la
+        // lettre de lecteur du chemin.
+        let path = wide(base);
+        let mut volume = vec![0u16; 1024];
+        // SAFETY : chaîne d'entrée terminée par un zéro, tampon de sortie de la taille donnée.
+        let ok =
+            unsafe { GetVolumePathNameW(path.as_ptr(), volume.as_mut_ptr(), volume.len() as u32) };
+        if ok == 0 {
+            return Some("volume du dossier introuvable");
+        }
+        // SAFETY : `GetVolumePathNameW` a écrit une chaîne terminée par un zéro.
+        if unsafe { GetDriveTypeW(volume.as_ptr()) } != DRIVE_FIXED {
             return Some("lecteur amovible ou réseau : pas de Corbeille Windows");
         }
         None

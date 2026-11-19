@@ -425,6 +425,9 @@ impl Tx<'_> {
         if ed.lstat(path)?.is_some() {
             return Err(OpError::Changed(path.to_owned()));
         }
+        // État pris avant le renommage (qui le garde) : la création est notée dès qu'elle a
+        // eu lieu, donc toujours défaite en cas d'échec ultérieur.
+        let stamp = ed.current_stamp(staged)?;
         match super::fsx::rename_noreplace(&ed.abs(staged), &ed.abs(path)) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -432,7 +435,6 @@ impl Tx<'_> {
             }
             Err(e) => return Err(e.into()),
         }
-        let stamp = ed.current_stamp(path)?;
         self.record(Action::Created {
             path: path.to_owned(),
             stamp,
@@ -451,10 +453,14 @@ impl Tx<'_> {
             }
             Err(e) => return Err(e.into()),
         }
-        let stamp = ed.current_stamp(path)?;
         self.record(Action::Created {
             path: path.to_owned(),
-            stamp,
+            stamp: Stamp {
+                dir: true,
+                len: 0,
+                modified_ms: 0,
+                modified_ns: 0,
+            },
         });
         Ok(())
     }
@@ -484,6 +490,12 @@ impl Tx<'_> {
         };
         let path = join(dir, file);
         let pins = ed.pin_dir(dir)?;
+        // État pris avec la lecture : un fichier abîmé corrigé à la main entre-temps n'est
+        // pas mis à la corbeille (`Changed`).
+        let before_stamp = match ed.lstat(&path)? {
+            Some(_) => Some(ed.current_stamp(&path)?),
+            None => None,
+        };
         let before = read_bounded(&ed.abs(&path), MAX_SETTINGS_BYTES, &path)?;
         let abs_dir = ed.abs(dir);
         let (mut doc, damaged) = if dir.is_empty() {
@@ -517,7 +529,7 @@ impl Tx<'_> {
                 None => self.place(&staged, &path),
                 Some(_) if damaged => {
                     // Gardé dans la corbeille, jamais écrasé.
-                    let stamp = ed.current_stamp(&path)?;
+                    let stamp = before_stamp.ok_or_else(|| OpError::Changed(path.clone()))?;
                     let slot = ed.trash_slot()?;
                     self.trash_into(&slot, &path, stamp)?;
                     self.place(&staged, &path)

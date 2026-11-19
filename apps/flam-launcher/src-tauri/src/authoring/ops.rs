@@ -22,9 +22,16 @@
 //!   visé sont ouverts sans suivre de lien et sans partager la suppression (`fsx`) ; un
 //!   composant qui est devenu un lien, une jonction ou autre chose qu'un dossier → refus. Tant
 //!   que ces poignées sont ouvertes, aucun de ces dossiers ne peut être renommé ni remplacé.
+//!   Limite connue : les écritures de travail dans `.flam/` (copie vers `.flam/tmp/`, capture
+//!   d'un réglage dans la corbeille) ne sont contrôlées qu'à la création de ces dossiers ; une
+//!   jonction substituée à `.flam` à cet instant précis (course) ferait sortir une copie de
+//!   travail ou une capture, jamais un fichier de l'utilisateur (ses déplacements, eux, sont
+//!   épinglés). Une jonction plantée à l'avance est refusée.
 //! - **État attendu vérifié** avant chaque action ([`Stamp`] : type, taille, date de
 //!   modification ; présence seule pour un dossier) : sinon rien n'est fait et l'erreur
-//!   [`OpError::Changed`] est rendue (§ 4.5).
+//!   [`OpError::Changed`] est rendue (§ 4.5). Un dossier n'est donc pas « changé » si son
+//!   contenu change : défaire « Nouveau menu » ou une copie de dossier met à la corbeille ce
+//!   que l'utilisateur y a ajouté depuis (récupérable par « Rétablir » ou dans la corbeille).
 //! - **Jamais d'écrasement** : renommages sans remplacement (`MoveFileExW` sans
 //!   `MOVEFILE_REPLACE_EXISTING`), copies en `create_new` ; nom déjà pris → suffixe « (2) »,
 //!   « (3) »… Pour un fichier audio, le nom est libre si aucune entrée du dossier n'a la même
@@ -34,7 +41,9 @@
 //!   déplace vers `.flam/corbeille/<horodatage> <n>/` (même volume : renommage). Seuls sont
 //!   effacés les fichiers de travail de l'éditeur (`.flam/tmp/`) et la capture d'un réglage
 //!   identique octet pour octet au contenu gardé dans le journal. « Vider la corbeille »
-//!   ([`Editor::empty_trash`]) l'envoie dans la Corbeille Windows, refusé hors disque fixe.
+//!   ([`Editor::empty_trash`]) l'envoie dans la Corbeille Windows, refusé si le **volume** du
+//!   dossier n'est pas un disque fixe ; si Windows ne peut pas recycler (Corbeille désactivée),
+//!   il demande confirmation (`FOF_WANTNUKEWARNING`) au lieu d'effacer en silence.
 //! - **Réglages** : relus au moment d'agir (`settings::load_*`), modifiés par fusion (clés
 //!   inconnues gardées), réécrits par renommage : le fichier en place est d'abord **capturé**
 //!   dans la corbeille, comparé au contenu attendu (sinon remis en place, rien n'est fait), puis
@@ -574,9 +583,11 @@ fn check_identity(base: &Path, forbidden_roots: &ForbiddenRoots) -> OpResult<()>
         }
     }
     for dir in &forbidden_roots.trees {
-        let theirs = ancestor_ids(dir);
-        let inside = theirs.first().is_some_and(|id| own.contains(id));
-        if inside || theirs.contains(&base_id) {
+        // Dossier interdit absent : rien à comparer (ses parents ne sont pas interdits).
+        let Ok((_, info)) = fsx::open_entry(dir, false) else {
+            continue;
+        };
+        if own.contains(&info.id) || ancestor_ids(dir).contains(&base_id) {
             return Err(forbidden(
                 base,
                 "dossier système, du launcher ou de la Flam (ou dossier qui le contient)",
@@ -1135,7 +1146,12 @@ impl Editor {
     /// Erreur d'annulation : l'entrée est retirée si l'état a changé (elle ne pourra plus être
     /// défaite), gardée si l'échec est passager (fichier verrouillé…).
     fn not_undoable(&mut self, entry: Entry, error: OpError, undo: bool) -> OpError {
-        let keep = matches!(error, OpError::Io(_) | OpError::RootChanged);
+        // Retirée seulement si l'état a changé ; gardée sur toute autre erreur (verrou, racine
+        // refusée ou déplacée…), rien n'ayant changé sur le disque.
+        let keep = !matches!(
+            error,
+            OpError::Changed(_) | OpError::NotFound(_) | OpError::Link(_)
+        );
         let label = entry.label.clone();
         if keep {
             if undo {

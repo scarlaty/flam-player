@@ -263,6 +263,18 @@ fn racines_interdites_par_identite_via_partage_administratif() {
 }
 
 #[test]
+fn dossier_interdit_absent_ne_refuse_pas_ses_voisins() {
+    let base = tempfile::tempdir().unwrap();
+    let story = base.path().join("histoire");
+    write(&story, "a.mp3", b"a");
+    let roots = ForbiddenRoots {
+        profile: vec![],
+        trees: vec![base.path().join("launcher-absent")],
+    };
+    assert!(Editor::open(&story, roots, vec![], Limits::default()).is_ok());
+}
+
+#[test]
 fn epinglage_empeche_de_renommer_le_dossier() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "A/B/x.mp3", b"x");
