@@ -261,7 +261,7 @@ fn cover(src: &RgbImage, tw: u32, th: u32) -> RgbImage {
     imageops::resize(&*view, tw, th, FilterType::Lanczos3)
 }
 
-fn encode_png(img: &RgbImage) -> Result<Vec<u8>, ArtworkError> {
+pub(crate) fn encode_png(img: &RgbImage) -> Result<Vec<u8>, ArtworkError> {
     let mut out = Vec::new();
     let mut enc = png::Encoder::new(&mut out, img.width(), img.height());
     enc.set_color(png::ColorType::Rgb);
