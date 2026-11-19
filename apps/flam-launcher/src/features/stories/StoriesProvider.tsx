@@ -13,6 +13,8 @@ import {
   type InstallTask,
 } from "../../api/install";
 import { onFolderChanged } from "../../api/folder";
+import { AUTHORING_SOURCE_ID, retryFolderTask } from "../../api/authoring";
+import { errorText } from "../authoring/problemText";
 import {
   formatOfKind,
   hasUpdate,
@@ -665,6 +667,21 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
     (taskId: string) => {
       const task = tasksRef.current.find((other) => other.id === taskId);
       if (!task) return;
+      // Histoire faite d'un dossier : nouvelle création depuis le même dossier, même
+      // identifiant et même réponse au conflit (`authoring_retry`), jamais `install_start`.
+      if (task.entry.source_id === AUTHORING_SOURCE_ID) {
+        retryFolderTask(taskId).then(
+          (created) => {
+            trackTask(created.task);
+            setDismissed((all) => new Set(all).add(taskId));
+            toast.show({ message: t.authoring.started, tone: "success" });
+          },
+          (caught: unknown) => {
+            toast.show({ message: errorText(toAppError(caught)), tone: "danger" });
+          },
+        );
+        return;
+      }
       // L'ancienne tâche n'est retirée qu'une fois la nouvelle acceptée (pas si l'utilisateur
       // renonce à l'installation d'une histoire incompatible).
       install(task.entry, {
@@ -672,7 +689,7 @@ export function StoriesProvider({ children }: { children: ReactNode }) {
         replaces: taskId,
       });
     },
-    [install],
+    [install, trackTask, toast],
   );
 
   // Suppressions en cours, par histoire : un second appel pour la même histoire rend la même

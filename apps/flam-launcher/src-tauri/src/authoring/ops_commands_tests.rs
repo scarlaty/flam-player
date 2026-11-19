@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use super::*;
-use crate::authoring::tree::Limits;
+use crate::authoring::tree::{Limits, ScanError};
 
 fn write(root: &Path, rel: &str, bytes: &[u8]) {
     let path = root.join(rel);
@@ -251,6 +251,20 @@ fn l_erreur_a_la_forme_d_app_error() {
     );
     let app = EditorError::from(AppError::NotFound("x".into()));
     assert_eq!(app.kind, "not_found");
+    // Dossier disparu ou refusé, création refusée : le code de création suit.
+    let missing = EditorError::from(OpError::Root(ScanError::NotFound("x".into())));
+    assert_eq!(missing.kind, "root_refused");
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap()["code"],
+        "folder_missing"
+    );
+    let link = EditorError::from(OpError::Root(ScanError::Link("x".into())));
+    assert_eq!(link.code, Some("folder_refused"));
+    let busy = EditorError::from(AppError::Authoring {
+        code: "busy",
+        message: "x".into(),
+    });
+    assert_eq!((busy.kind.as_str(), busy.code), ("authoring", Some("busy")));
 }
 
 /// #300 : le dépôt de fichiers natif n'est actif que sur le modèle de la fenêtre de

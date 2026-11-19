@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::build::SOURCE_ID;
+use super::commands::code;
 use super::settings::{self, Loaded, StorySettings};
 use crate::library::LibraryEntry;
 use crate::storage;
@@ -289,18 +290,21 @@ pub fn decide(identity: &Identity, choice: Option<ConflictChoice>) -> AppResult<
     match (&identity.conflict, choice) {
         (_, Some(ConflictChoice::NewStory)) => return Ok(fresh()),
         (Some(Conflict::Foreign { title }), _) => {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::Authoring {
+                code: code::CONFLICT_FOREIGN,
+                message: format!(
                 "l'identifiant de ce dossier est déjà celui de « {title} », installée depuis une \
-                 autre source : choisissez « Nouvelle histoire »"
-            )))
+                     autre source : choisissez « Nouvelle histoire »"
+            ),
+            })
         }
-        (Some(Conflict::Copied { .. }), None) => {
-            return Err(AppError::Validation(
+        (Some(Conflict::Copied { .. }), None) => return Err(AppError::Authoring {
+            code: code::CONFLICT_COPIED,
+            message:
                 "ce dossier semble copié d'un autre dossier d'histoire : choisissez « Remplacer \
-                 l'autre » ou « Nouvelle histoire »"
+                          l'autre » ou « Nouvelle histoire »"
                     .into(),
-            ))
-        }
+        }),
         _ => {}
     }
     match &identity.uuid {
@@ -310,9 +314,10 @@ pub fn decide(identity: &Identity, choice: Option<ConflictChoice>) -> AppResult<
                 .version
                 .unwrap_or(0)
                 .max(identity.installed_version.unwrap_or(0));
-            let version = last
-                .checked_add(1)
-                .ok_or_else(|| AppError::Validation("version de l'histoire trop grande".into()))?;
+            let version = last.checked_add(1).ok_or_else(|| AppError::Authoring {
+                code: code::VERSION_OVERFLOW,
+                message: "version de l'histoire trop grande".into(),
+            })?;
             Ok(Decision {
                 uuid: uuid.clone(),
                 version,

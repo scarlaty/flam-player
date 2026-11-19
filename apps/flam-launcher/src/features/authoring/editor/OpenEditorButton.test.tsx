@@ -42,8 +42,16 @@ it("« Modifier » : dossier déjà ouvert, sa fenêtre revient avec un message"
 
 it("dossier refusé ou disparu : message sans jargon", () => {
   expect(
-    openErrorText({ kind: "root_refused", message: "dossier introuvable : « C:\\x »" }),
+    openErrorText({
+      kind: "root_refused",
+      code: "folder_missing",
+      message: "détail technique",
+    }),
   ).toBe("Dossier introuvable : il a peut-être été déplacé ou renommé.");
+  // Le message n'est jamais lu : sans code, un refus reste un refus.
+  expect(
+    openErrorText({ kind: "root_refused", message: "dossier introuvable : « C:\\x »" }),
+  ).toContain("Ce dossier ne peut pas être utilisé");
   expect(
     openErrorText({
       kind: "root_refused",
