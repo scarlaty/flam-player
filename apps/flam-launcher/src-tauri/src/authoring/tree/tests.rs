@@ -833,3 +833,59 @@ fn budget_cumule_des_reglages() {
     assert_eq!(unreadable, ["M16/_dossier.json", "M17/_dossier.json"]);
     assert!(!scan.is_blocked());
 }
+
+#[test]
+fn coup_d_oeil_des_dossiers_trop_profonds_borne_globalement() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "a.mp3", 1);
+    touch(dir.path(), "A/1.png", 1);
+    touch(dir.path(), "A/2.png", 1);
+    touch(dir.path(), "B/1.png", 1);
+    touch(dir.path(), "B/2.png", 1);
+    let limits = Limits {
+        max_menu_depth: 1,
+        max_peek_entries: 3,
+        ..Limits::default()
+    };
+    let scan = scan(dir.path(), &limits, &[]).unwrap();
+    let deep: Vec<_> = scan
+        .problems
+        .iter()
+        .filter(|p| p.code == "too_deep")
+        .map(|p| (p.path.as_str(), p.severity))
+        .collect();
+    // A vu en entier (2 entrées, sans audio) ; budget épuisé dans B : supposé avec audio.
+    assert_eq!(deep, [("A", Severity::Warning), ("B", Severity::Blocking)]);
+}
+
+#[test]
+fn base_resolue_exposee() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "Histoire/a.mp3", 1);
+    let scan = scan_ok(&dir.path().join("Histoire"));
+    let expected =
+        crate::authoring::root::simplify(fs::canonicalize(dir.path().join("Histoire")).unwrap());
+    assert_eq!(scan.base, expected);
+    assert!(!scan.base.to_string_lossy().starts_with(r"\\?\"));
+}
+
+#[cfg(windows)]
+#[test]
+fn base_resolue_a_travers_une_jonction_parente() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "reel/Histoire/a.mp3", 1);
+    let alias = dir.path().join("alias");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(alias.to_string_lossy().replace('/', "\\"))
+        .arg(dir.path().join("reel").to_string_lossy().replace('/', "\\"))
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "mklink /J a échoué");
+    let scan = scan_ok(&alias.join("Histoire"));
+    let expected = crate::authoring::root::simplify(
+        fs::canonicalize(dir.path().join("reel").join("Histoire")).unwrap(),
+    );
+    assert_eq!(scan.base, expected);
+    assert_eq!(ids(&scan, ""), ["a.mp3"]);
+}

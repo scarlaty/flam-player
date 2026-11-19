@@ -168,7 +168,10 @@ fn valeurs_invalides_lues_comme_defaut_avec_avertissement() {
 #[test]
 fn valeurs_invalides_survivent_a_la_reecriture() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), STORY_FILE, INVALID_STORY);
+    // `format` invalide interdirait toute écriture (`format_invalide_jamais_ecrase`).
+    let text = INVALID_STORY.replace(r#""format": "un", "#, "");
+    assert_ne!(text, INVALID_STORY);
+    write(dir.path(), STORY_FILE, &text);
     let mut story = load_story(dir.path()).settings;
     // L'appelant pose une valeur pour `version` et `mode` seulement.
     story.version = Some(2);
@@ -221,10 +224,8 @@ fn cle_de_nom_nfc_et_minuscules() {
     };
     assert_eq!(settings.title_of("E\u{301}TE\u{301}.MP3"), Some("T"));
     assert_eq!(
-        settings
-            .title_table()
-            .get(&name_key("e\u{301}te\u{301}.mp3")),
-        Some(&"T")
+        settings.title_table().get("e\u{301}te\u{301}.mp3"),
+        Some("T")
     );
 }
 
@@ -242,6 +243,52 @@ fn format_plus_recent_lu_au_mieux_jamais_reecrit() {
         fs::read_to_string(dir.path().join(FOLDER_FILE)).unwrap(),
         text
     );
+}
+
+#[test]
+fn format_invalide_jamais_ecrase() {
+    for text in [
+        r#"{ "format": "2" }"#,
+        r#"{ "format": 0 }"#,
+        r#"{ "format": -1 }"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), FOLDER_FILE, text);
+        let loaded = load_folder(dir.path());
+        assert_eq!(loaded.warnings[0].code, CODE_INVALID_VALUE, "{text}");
+        let err = write_folder(dir.path(), &loaded.settings).unwrap_err();
+        assert!(
+            err.to_string().contains(CODE_NEWER_FORMAT),
+            "{text} : {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(FOLDER_FILE)).unwrap(),
+            text
+        );
+    }
+}
+
+#[test]
+fn titres_la_cle_exacte_prime() {
+    let settings = FolderSettings {
+        titres: [
+            ("A.mp3".to_owned(), "Majuscule".to_owned()),
+            ("a.mp3".to_owned(), "Minuscule".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+        ..FolderSettings::default()
+    };
+    let table = settings.title_table();
+    for (name, expected) in [
+        ("a.mp3", "Minuscule"),
+        ("A.mp3", "Majuscule"),
+        // Ni l'une ni l'autre exactement : la première dans l'ordre stable (« A » < « a »).
+        ("A.MP3", "Majuscule"),
+    ] {
+        assert_eq!(table.get(name), Some(expected), "{name}");
+        assert_eq!(settings.title_of(name), Some(expected), "{name}");
+    }
 }
 
 #[test]
@@ -328,7 +375,8 @@ fn budget_cumule_de_lecture() {
     assert!(first.warnings.is_empty());
     assert_eq!(budget, 3);
     let second = load_folder_file(&path, &mut budget);
-    assert!(second.damaged);
+    // Non lu faute de budget : pas abîmé (rien à mettre à la corbeille).
+    assert!(second.skipped && !second.damaged);
     assert_eq!(second.warnings[0].code, CODE_UNREADABLE);
     assert_eq!(second.settings.mode, None);
 }

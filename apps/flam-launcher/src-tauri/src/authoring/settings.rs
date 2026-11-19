@@ -14,15 +14,19 @@
 //! - **Lecture bornée** : au plus [`MAX_SETTINGS_BYTES`] octets par fichier, et un budget
 //!   cumulé fourni par l'appelant (le parcours d'un dossier : `authoring::tree`) ; fichier
 //!   ouvert **sans suivre** de lien (`install::pack::open_no_follow`) : un réglage en lien
-//!   symbolique, en jonction ou autre point de réanalyse est refusé (avertissement).
+//!   symbolique, en jonction ou autre point de réanalyse est refusé (avertissement). Un fichier
+//!   non lu faute de budget n'est **pas** abîmé : [`Loaded::skipped`], pas
+//!   [`Loaded::damaged`] ; il se relit seul avant toute opération.
 //! - **Rien n'est perdu à la réécriture** : `extra` garde les clés inconnues **et** la valeur
 //!   brute d'un champ connu invalide (`"mode": "roman"`, `"ordre": "a"`…). L'écriture part de
 //!   `extra` et n'y pose que les champs typés renseignés (`Some`, liste non vide) : une valeur
 //!   brute invalide survit tant que l'appelant ne pose pas de valeur pour ce champ. Seules les
 //!   entrées invalides **à l'intérieur** de `ordre` et `titres` sont abandonnées (avertissement).
-//! - **Format** : un fichier au `format` plus récent que [`FORMAT`] est lu au mieux
-//!   (avertissement `settings_newer_format`) mais **jamais réécrit** ([`write_folder`] et
-//!   [`write_story`] refusent).
+//! - **Format** : un fichier au `format` plus récent que [`FORMAT`], ou au `format` invalide
+//!   (`"2"`, `0`…), est lu au mieux (avertissement) mais **jamais réécrit** ([`write_folder`]
+//!   et [`write_story`] refusent avec `settings_newer_format`).
+//! - **Titres** ([`TitleTable`]) : la clé exacte prime, puis la première clé de même
+//!   [`name_key`] dans l'ordre stable de `titres`.
 //! - **Écriture atomique** (`storage::write_atomic` : temporaire voisin, `sync_all`,
 //!   renommage), taille bornée **avant** toute écriture (JSON indenté, sinon compact s'il
 //!   tient seul dans la borne). Un fichier abîmé ([`Loaded::damaged`]) n'est jamais sauvegardé
@@ -134,9 +138,14 @@ pub struct Loaded<T> {
     pub settings: T,
     /// Le fichier existe (même abîmé).
     pub exists: bool,
-    /// Le fichier existe mais n'a pas pu être lu comme un objet JSON (ou pas lu du tout) : il ne
-    /// doit pas être réécrit sans sauvegarde.
+    /// Le fichier a été lu mais n'est pas un objet JSON exploitable (trop gros, illisible, JSON
+    /// invalide, lien refusé) : il est **abîmé**, il ne doit pas être réécrit sans sauvegarde
+    /// (corbeille `.flam/`, lot 6).
     pub damaged: bool,
+    /// Le fichier n'a **pas été lu** : budget cumulé du parcours épuisé (`authoring::tree`). Il
+    /// n'est pas abîmé et ne doit ni être mis à la corbeille ni être réécrit d'après ce
+    /// résultat : le relire seul ([`load_folder`], [`load_story`]) avant toute opération.
+    pub skipped: bool,
     pub warnings: Vec<SettingsWarning>,
 }
 
@@ -216,18 +225,42 @@ pub fn name_key(name: &str) -> String {
     name.nfc().collect::<String>().to_lowercase()
 }
 
+/// Titres d'un dossier prêts à la recherche ([`FolderSettings::title_table`]) : la clé exacte
+/// prime ; sinon, parmi les clés de même [`name_key`], la première dans l'ordre stable de
+/// `titres` (ordre des chaînes).
+#[derive(Debug, Clone, Default)]
+pub struct TitleTable<'a> {
+    exact: HashMap<&'a str, &'a str>,
+    folded: HashMap<String, &'a str>,
+}
+
+impl<'a> TitleTable<'a> {
+    /// Titre de l'entrée `name`.
+    pub fn get(&self, name: &str) -> Option<&'a str> {
+        self.exact
+            .get(name)
+            .or_else(|| self.folded.get(&name_key(name)))
+            .copied()
+    }
+}
+
 impl FolderSettings {
-    /// Table [`name_key`] → titre, à construire une fois par dossier.
-    pub fn title_table(&self) -> HashMap<String, &str> {
-        self.titres
-            .iter()
-            .map(|(name, title)| (name_key(name), title.as_str()))
-            .collect()
+    /// Table de recherche des titres, à construire une fois par dossier.
+    pub fn title_table(&self) -> TitleTable<'_> {
+        let mut table = TitleTable::default();
+        for (name, title) in &self.titres {
+            table.exact.insert(name, title);
+            table.folded.entry(name_key(name)).or_insert(title);
+        }
+        table
     }
 
-    /// Titre choisi pour l'entrée `name` (comparaison par [`name_key`]). Pour plusieurs
-    /// recherches, préférer [`FolderSettings::title_table`].
+    /// Titre choisi pour l'entrée `name` (voir [`TitleTable`]). Pour plusieurs recherches,
+    /// préférer [`FolderSettings::title_table`].
     pub fn title_of(&self, name: &str) -> Option<&str> {
+        if let Some(title) = self.titres.get(name) {
+            return Some(title);
+        }
         let key = name_key(name);
         self.titres
             .iter()
@@ -285,6 +318,7 @@ pub fn load_folder_file(path: &Path, budget: &mut u64) -> Loaded<FolderSettings>
         settings,
         exists: loaded.exists,
         damaged: loaded.damaged,
+        skipped: loaded.skipped,
         warnings: loaded.warnings,
     }
 }
@@ -314,6 +348,7 @@ pub fn load_story_file(path: &Path, budget: &mut u64) -> Loaded<StorySettings> {
         settings,
         exists: loaded.exists,
         damaged: loaded.damaged,
+        skipped: loaded.skipped,
         warnings: loaded.warnings,
     }
 }
@@ -340,16 +375,18 @@ fn read_object(path: &Path, budget: &mut u64) -> (Option<Map<String, Value>>, Lo
         Ok(meta) => meta.len(),
     };
     loaded.exists = true;
+    // Trop gros pour un réglage : abîmé (plus bas). Simplement plus de budget : non lu.
+    if size <= MAX_SETTINGS_BYTES && size > *budget {
+        loaded.skipped = true;
+        loaded.warnings.push(unreadable(format!(
+            "{name} non lu : trop de réglages à lire dans ce dossier, réglages par défaut"
+        )));
+        return (None, loaded);
+    }
     let mut damaged = |message: String| {
         loaded.damaged = true;
         loaded.warnings.push(unreadable(message));
     };
-    if size > *budget {
-        damaged(format!(
-            "{name} non lu : trop de réglages à lire dans ce dossier, réglages par défaut"
-        ));
-        return (None, loaded);
-    }
     let file = match open_no_follow(path) {
         Ok(file) => file,
         Err(e) => {
@@ -368,7 +405,7 @@ fn read_object(path: &Path, budget: &mut u64) -> (Option<Map<String, Value>>, Lo
     if bytes.len() as u64 > limit {
         damaged(format!(
             "{name} trop volumineux (plus de {} Kio), réglages par défaut",
-            limit / 1024
+            MAX_SETTINGS_BYTES / 1024
         ));
         return (None, loaded);
     }
@@ -456,7 +493,12 @@ impl<'a> Fields<'a> {
                     n
                 }
                 _ => {
-                    self.keep("format", value, "« format » invalide, ignoré".into());
+                    // Gardé brut : l'écriture sera refusée, jamais écrasée.
+                    self.keep(
+                        "format",
+                        value,
+                        "« format » invalide : lu au mieux, jamais réécrit".into(),
+                    );
                     FORMAT
                 }
             },
@@ -648,11 +690,15 @@ fn put<T: Serialize>(map: &mut Map<String, Value>, key: &str, value: Option<T>) 
 
 /// Objet JSON des champs de dossier (clés inconnues et valeurs brutes comprises).
 fn folder_object(settings: &FolderSettings) -> AppResult<Map<String, Value>> {
-    if settings.format > FORMAT {
+    // `format` invalide (gardé brut dans `extra`) : traité comme un format plus récent.
+    if settings.format > FORMAT || settings.extra.contains_key("format") {
+        let found = settings
+            .extra
+            .get("format")
+            .map_or_else(|| settings.format.to_string(), Value::to_string);
         return Err(AppError::Validation(format!(
-            "réglages au format {}, plus récent que celui pris en charge ({FORMAT}) : non \
-             modifiés ({CODE_NEWER_FORMAT})",
-            settings.format
+            "réglages au format {found}, inconnu de cette version ({FORMAT}) : non modifiés \
+             ({CODE_NEWER_FORMAT})"
         )));
     }
     let mut map = settings.extra.clone();

@@ -77,7 +77,11 @@ fn formes_refusees_sans_acces_au_disque() {
             r"\\serveur\partage",
             r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users",
             r"\\.\C:\Users",
-            r"\\?\UNC\serveur\partage\x",
+            r"\\?\UNC\serveur\partage",
+            r"\\?\UNC\serveur\partage\NUL\x",
+            r"C:\Histoires\CON",
+            r"C:\Histoires\com1.txt",
+            r"C:\Histoires\LPT9 ",
             r"C:\Users\moi.",
             r"C:\Users\moi ",
             r"C:\Users\moi.\Documents",
@@ -88,6 +92,26 @@ fn formes_refusees_sans_acces_au_disque() {
         assert!(is_forbidden(check_root(Path::new("/"), &none)));
         assert!(is_forbidden(check_root(Path::new("/home/moi."), &none)));
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn simplification_verbatim_seulement_si_sure() {
+    let same = |s: &str| simplify(PathBuf::from(s)) == Path::new(s);
+    assert_eq!(simplify(PathBuf::from(r"\\?\C:\a\b")), Path::new(r"C:\a\b"));
+    assert_eq!(
+        simplify(PathBuf::from(r"\\?\UNC\srv\partage\x")),
+        Path::new(r"\\srv\partage\x")
+    );
+    assert!(same(r"\\?\C:\a\CON\b"));
+    assert!(same(r"\\?\C:\a\nul.txt"));
+    assert!(same(r"\\?\C:\a\b."));
+    assert!(same(r"\\?\C:\a\b "));
+    assert!(same(r"\\?\UNC\srv\partage\AUX"));
+    assert!(same(r"\\?\GLOBALROOT\Device\X"));
+    let long = format!(r"\\?\C:\{}", "a".repeat(300));
+    assert!(same(&long));
+    assert!(!win32_alters("console") && !win32_alters("COM10") && !win32_alters("LPT"));
 }
 
 #[test]

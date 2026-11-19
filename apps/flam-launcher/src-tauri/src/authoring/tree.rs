@@ -36,8 +36,8 @@
 //!   ouverts sans suivre de lien et refusent tout point de réanalyse (`authoring::settings`).
 //! - **Parcours borné** ([`Limits`]) : au plus `max_entries` entrées lues en tout (au-delà le
 //!   parcours s'arrête, [`Scan::truncated`]) et jamais plus de `max_menu_depth` niveaux ; un
-//!   dossier trop profond n'est pas lu, seulement regardé (au plus [`PEEK_ENTRIES`] entrées)
-//!   pour savoir s'il contient de l'audio. Réglages lus dans un budget cumulé de
+//!   dossier trop profond n'est pas lu, seulement regardé pour savoir s'il contient de l'audio
+//!   (budget global `max_peek_entries` ; épuisé → bloquant). Réglages lus dans un budget cumulé de
 //!   [`SETTINGS_BUDGET`] octets. Les limites métier (profondeur avec audio, histoires, options
 //!   par menu, taille de l'audio) dépassées sont des problèmes **bloquants** du rapport, pas des
 //!   erreurs.
@@ -96,8 +96,6 @@ use crate::story::MAX_TITLE_CHARS;
 
 /// Budget cumulé de lecture des fichiers de réglages pendant un parcours (octets).
 pub const SETTINGS_BUDGET: u64 = 16 * 1024 * 1024;
-/// Entrées regardées au plus dans un dossier trop profond pour y chercher de l'audio.
-pub const PEEK_ENTRIES: usize = 1_000;
 
 /// Extensions audio acceptées (§ 3.3).
 pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "m4a", "aac", "ogg", "opus", "wav", "flac"];
@@ -120,6 +118,9 @@ pub struct Limits {
     pub max_entries: usize,
     /// Taille cumulée des fichiers audio (octets).
     pub max_audio_bytes: u64,
+    /// Entrées regardées au plus, en tout, dans les dossiers trop profonds pour y chercher de
+    /// l'audio ; budget épuisé → dossier supposé contenir de l'audio (bloquant).
+    pub max_peek_entries: usize,
 }
 
 impl Default for Limits {
@@ -130,6 +131,7 @@ impl Default for Limits {
             max_options_per_menu: 50,
             max_entries: 10_000,
             max_audio_bytes: 4 * 1024 * 1024 * 1024,
+            max_peek_entries: 10_000,
         }
     }
 }
@@ -229,6 +231,9 @@ impl Node {
 /// Résultat de [`scan`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scan {
+    /// Dossier lu : forme résolue et vérifiée de la racine ([`check_root`]). Base des ids pour
+    /// les opérations (lot 6), qui la revérifient au moment d'agir.
+    pub base: PathBuf,
     /// Racine : `Node::Menu` d'id `""`.
     pub root: Node,
     /// `_histoire.json` lu.
@@ -452,6 +457,8 @@ struct Walker<'a> {
     truncated: bool,
     /// Octets de réglages encore lisibles.
     settings_budget: u64,
+    /// Entrées encore regardables dans les dossiers trop profonds.
+    peek_left: usize,
     /// `_histoire.json` (lu pendant la lecture de la racine).
     story: Loaded<StorySettings>,
 }
@@ -732,8 +739,8 @@ impl Walker<'_> {
                 self.pick(id, names, first_use)
             });
             let title = titles
-                .get(&key)
-                .map(|title| (*title).to_owned())
+                .get(&file)
+                .map(str::to_owned)
                 .unwrap_or_else(|| title_from_name(&file, true));
             self.stories += 1;
             self.audio_bytes = self.audio_bytes.saturating_add(bytes);
@@ -771,7 +778,7 @@ impl Walker<'_> {
             }
             if depth + 1 > self.limits.max_menu_depth {
                 let max = self.limits.max_menu_depth;
-                if may_contain_audio(&path.join(&dir)) {
+                if may_contain_audio(&path.join(&dir), &mut self.peek_left) {
                     self.problem(
                         "too_deep",
                         Severity::Blocking,
@@ -788,8 +795,8 @@ impl Walker<'_> {
                 continue;
             }
             let mut sub = self.read_dir(&path.join(&dir), &dir_id, &dir, depth + 1);
-            if let Some(title) = titles.get(&name_key(&dir)) {
-                sub.title = (*title).to_owned();
+            if let Some(title) = titles.get(&dir) {
+                sub.title = title.to_owned();
             }
             items.push(RawItem::Dir(sub));
         }
@@ -853,21 +860,23 @@ fn is_hidden(meta: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Coup d'œil borné ([`PEEK_ENTRIES`]) sur un dossier non lu : vrai s'il contient, à toute
-/// profondeur et sans suivre de lien, un fichier audio — ou si la borne est atteinte avant
-/// d'avoir tout vu (prudence).
-fn may_contain_audio(dir: &Path) -> bool {
+/// Coup d'œil sur un dossier non lu, dans le budget global `budget` (entrées,
+/// [`Limits::max_peek_entries`]) : vrai s'il contient, à toute profondeur et sans suivre de
+/// lien, un fichier audio — ou si le budget est épuisé avant d'avoir tout vu (prudence).
+fn may_contain_audio(dir: &Path, budget: &mut usize) -> bool {
     let mut stack = vec![dir.to_path_buf()];
-    let mut seen = 0usize;
     while let Some(current) = stack.pop() {
+        if *budget == 0 {
+            return true;
+        }
         let Ok(read) = std::fs::read_dir(&current) else {
             continue;
         };
         for entry in read.flatten() {
-            seen += 1;
-            if seen > PEEK_ENTRIES {
+            if *budget == 0 {
                 return true;
             }
+            *budget -= 1;
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
@@ -1017,10 +1026,12 @@ impl Walker<'_> {
 /// Lit le dossier d'histoire `root` (voir la doc du module). Refuse les racines interdites
 /// ([`check_root`] avec [`ForbiddenRoots::system`] et `extra_forbidden`, refusés avec leurs
 /// parents et sous-dossiers : dossier du launcher, lecteur de la Flam), un lien et ce qui n'est
-/// pas un dossier.
+/// pas un dossier. Le parcours lit la forme **résolue** rendue par [`check_root`]
+/// ([`Scan::base`]).
 pub fn scan(root: &Path, limits: &Limits, extra_forbidden: &[PathBuf]) -> Result<Scan, ScanError> {
-    check_root(root, &ForbiddenRoots::system().with_trees(extra_forbidden))?;
+    let base = check_root(root, &ForbiddenRoots::system().with_trees(extra_forbidden))?;
     let shown = || root.to_string_lossy().into_owned();
+    // Le dossier choisi lui-même ne doit pas être un lien (sa forme résolue n'en est plus un).
     let meta = match std::fs::symlink_metadata(root) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1031,11 +1042,11 @@ pub fn scan(root: &Path, limits: &Limits, extra_forbidden: &[PathBuf]) -> Result
     if meta.file_type().is_symlink() {
         return Err(ScanError::Link(shown()));
     }
-    if !meta.is_dir() {
+    if !std::fs::symlink_metadata(&base)?.is_dir() {
         return Err(ScanError::NotADirectory(shown()));
     }
     // Racine illisible : une erreur, pas un problème du rapport.
-    drop(std::fs::read_dir(root)?);
+    drop(std::fs::read_dir(&base)?);
 
     let mut walker = Walker {
         limits,
@@ -1045,6 +1056,7 @@ pub fn scan(root: &Path, limits: &Limits, extra_forbidden: &[PathBuf]) -> Result
         audio_bytes: 0,
         truncated: false,
         settings_budget: SETTINGS_BUDGET,
+        peek_left: limits.max_peek_entries,
         story: Loaded {
             settings: StorySettings {
                 folder: FolderSettings::default_new(),
@@ -1057,7 +1069,7 @@ pub fn scan(root: &Path, limits: &Limits, extra_forbidden: &[PathBuf]) -> Result
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut raw = walker.read_dir(root, "", &name, 1);
+    let mut raw = walker.read_dir(&base, "", &name, 1);
     let mut story = std::mem::take(&mut walker.story);
     if let Some(titre) = &story.settings.titre {
         raw.title = titre.clone();
@@ -1110,6 +1122,7 @@ pub fn scan(root: &Path, limits: &Limits, extra_forbidden: &[PathBuf]) -> Result
     // Les opérations relisent le fichier : ni clés inconnues ni valeurs brutes dans le résultat.
     story.settings.folder.extra.clear();
     Ok(Scan {
+        base,
         root: root_node,
         story,
         suggested_mode,
