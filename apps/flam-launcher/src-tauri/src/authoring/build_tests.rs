@@ -357,6 +357,8 @@ struct Fake {
     no_voice: bool,
     /// Textes envoyés à la voix.
     spoken: Mutex<Vec<String>>,
+    /// Fichiers source convertis (nom), dans l'ordre.
+    converted: Mutex<Vec<String>>,
 }
 
 impl BuildBackend for Fake {
@@ -370,6 +372,7 @@ impl BuildBackend for Fake {
                 .iter()
                 .map(|(from, to)| {
                     let name = from.file_name().unwrap().to_string_lossy().into_owned();
+                    self.converted.lock().unwrap().push(name.clone());
                     if self.failing.contains(&name) {
                         return Err(AppError::Conversion {
                             code: "ffmpeg_failed".into(),
@@ -384,6 +387,21 @@ impl BuildBackend for Fake {
 
     fn convert_artwork(&self, bytes: &[u8], kind: ArtworkKind) -> Result<Artwork, ArtworkError> {
         Artwork::convert(bytes, kind)
+    }
+
+    fn image_decoder(&self) -> crate::authoring::images::Convert {
+        |bytes, kind| Artwork::convert(bytes, kind)
+    }
+
+    fn cover_extractor<'a>(
+        &'a self,
+        _cancel: &'a watch::Receiver<bool>,
+    ) -> BoxFuture<'a, AppResult<Verified>> {
+        Box::pin(async {
+            Err(AppError::ConverterUnavailable(
+                "ffmpeg absent (test)".into(),
+            ))
+        })
     }
 
     fn speech(&self) -> Arc<dyn Synthesizer> {
@@ -456,6 +474,15 @@ async fn fabricate(
     root: &Path,
     backend: Arc<Fake>,
 ) -> AppResult<(BTreeMap<String, Vec<u8>>, PathBuf)> {
+    fabricate_with(root, backend, None).await
+}
+
+/// [`fabricate`] avec le cache des MP3 `cache`.
+async fn fabricate_with(
+    root: &Path,
+    backend: Arc<Fake>,
+    cache: Option<&CacheAccess>,
+) -> AppResult<(BTreeMap<String, Vec<u8>>, PathBuf)> {
     let work = tempfile::tempdir().unwrap();
     let service = service(work.path());
     let workdir = work.path().join("travail");
@@ -471,7 +498,15 @@ async fn fabricate(
         cancel: &cancel,
         source: BuildSource::Folder,
     };
-    let archive = prepare(&stage, plan, None).await?;
+    let archive = prepare(&stage, plan, None, cache).await?;
+    // Rien de ffmpeg ni du cache ne reste à côté de l'archive, hors fichiers produits.
+    for entry in fs::read_dir(&workdir).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.starts_with("cover-"),
+            "sortie de ffmpeg restée : {name}"
+        );
+    }
     let files = read_zip(&archive);
     // Le dossier de travail temporaire disparaît avec `work` : on garde son chemin pour info.
     Ok((files, archive))
@@ -606,4 +641,179 @@ async fn toutes_les_conversions_en_echec_donnent_un_message_d_histoire() {
         err.to_string().contains("aucune histoire utilisable"),
         "{err}"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// Compléments d'image (§ 7) et cache des MP3 (§ 8)
+// ---------------------------------------------------------------------------------------
+
+fn solid(kind: ArtworkKind) -> Vec<u8> {
+    Artwork::fallback(kind, crate::podcast::artwork::FALLBACK_COLOR)
+        .unwrap()
+        .png
+}
+
+#[tokio::test]
+async fn sans_image_les_histoires_et_la_couverture_recoivent_leur_titre() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Sans images");
+    audio(&root, "01 Le loup.mp3");
+    audio(&root, "02 Le chat.mp3");
+    // Image fournie illisible : complément aussi, pas l'image unie.
+    put(&root, "02 Le chat.png", b"pas une image");
+    audio(&root, "03 Animaux/01 Ours.mp3");
+    let before = snapshot(&root);
+    let (files, _) = fabricate(&root, Arc::new(Fake::default())).await.unwrap();
+    assert_eq!(snapshot(&root), before, "dossier source modifié");
+    let unie = solid(ArtworkKind::Episode);
+    let episodes: Vec<&Vec<u8>> = ["images/e001.png", "images/e002.png", "images/e003.png"]
+        .iter()
+        .map(|name| {
+            files
+                .get(*name)
+                .unwrap_or_else(|| panic!("{name} : {:?}", files.keys()))
+        })
+        .collect();
+    for png in &episodes {
+        assert_ne!(**png, unie, "image unie au lieu de l'image du titre");
+    }
+    // Une image par titre : toutes différentes.
+    assert_ne!(episodes[0], episodes[1]);
+    assert_ne!(episodes[1], episodes[2]);
+    // Couverture : image générée avec le titre de l'histoire.
+    assert_ne!(files["cover.png"], solid(ArtworkKind::Cover));
+}
+
+#[tokio::test]
+async fn une_image_fournie_reste_prioritaire_et_sert_de_couverture() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Recueil");
+    audio(&root, "a.mp3");
+    audio(&root, "b.mp3");
+    put(&root, "b.png", &png());
+    let (files, _) = fabricate(&root, Arc::new(Fake::default())).await.unwrap();
+    let fournie = Artwork::convert(&png(), ArtworkKind::Episode).unwrap().png;
+    assert_eq!(files["images/e002.png"], fournie);
+    assert_ne!(files["images/e001.png"], fournie);
+    assert_ne!(files["images/e001.png"], solid(ArtworkKind::Episode));
+    let couverture = Artwork::convert(&png(), ArtworkKind::Cover).unwrap().png;
+    assert_eq!(files["cover.png"], couverture);
+}
+
+#[tokio::test]
+async fn annulation_pendant_les_complements() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Annule");
+    audio(&root, "a.mp3");
+    let work = tempfile::tempdir().unwrap();
+    let service = service(work.path());
+    let workdir = work.path().join("travail");
+    fs::create_dir_all(&workdir).unwrap();
+    let backend = Arc::new(Fake::default());
+    let (tx, cancel) = watch::channel(false);
+    let stage = PackBuild {
+        service: &service,
+        id: "c0a80101-0000-4000-8000-000000000001",
+        workdir: &workdir,
+        backend: &backend,
+        cancel: &cancel,
+        source: BuildSource::Folder,
+    };
+    let converted = Converted {
+        kept: vec![crate::install::pack_build::Kept {
+            rank: 0,
+            mp3: workdir.join("ep-0000.mp3"),
+            image: None,
+        }],
+        dropped_titles: Vec::new(),
+    };
+    let scan = scanned(&root);
+    let plan = plan(&scan, "5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+    tx.send(true).unwrap();
+    let mut images = Images::default();
+    let err = complete_images(
+        &stage,
+        &plan.spec.items,
+        &[Some(root.join("a.mp3"))],
+        "Annule",
+        &converted,
+        &mut images,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Cancelled), "{err:?}");
+    assert!(images.items.is_empty() && images.cover.is_none());
+}
+
+#[test]
+fn cle_du_cache_suit_chemin_taille_et_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.mp3");
+    fs::write(&a, b"ID3 un").unwrap();
+    let source = cache_source_id("5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+    assert_eq!(source, "authoring-5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+    let k1 = cache_key(&source, &a).unwrap();
+    assert_eq!(cache_key(&source, &a).unwrap(), k1, "clé stable");
+    assert_eq!(k1.image_fingerprint, None);
+    // Taille changée : autre empreinte, même entrée.
+    fs::write(&a, b"ID3 deux !").unwrap();
+    let k2 = cache_key(&source, &a).unwrap();
+    assert_eq!(k2.episode_id, k1.episode_id);
+    assert_ne!(k2.fingerprint, k1.fingerprint);
+    // Même taille, date changée : autre empreinte.
+    let file = fs::File::options().write(true).open(&a).unwrap();
+    file.set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
+        .unwrap();
+    drop(file);
+    let k3 = cache_key(&source, &a).unwrap();
+    assert_ne!(k3.fingerprint, k2.fingerprint);
+    // Autre chemin : autre entrée ; dossier : aucune clé.
+    let b = dir.path().join("b.mp3");
+    fs::copy(&a, &b).unwrap();
+    assert_ne!(cache_key(&source, &b).unwrap().episode_id, k3.episode_id);
+    assert_eq!(cache_key(&source, dir.path()), None);
+}
+
+#[tokio::test]
+async fn actualiser_ne_reconvertit_que_les_fichiers_modifies() {
+    use crate::podcast::mp3cache::tests::TestLocks;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Histoire");
+    audio(&root, "a.mp3");
+    audio(&root, "b.ogg");
+    let cache_root = dir.path().join("cache-du-launcher");
+    crate::cache::ensure_subdir(&cache_root, crate::podcast::source::CACHE_SUBDIR).unwrap();
+    let locks = Arc::new(TestLocks::default());
+    let access = || {
+        CacheAccess::new(
+            locks.clone(),
+            cache_root.clone(),
+            [cache_source_id("5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d")],
+        )
+    };
+
+    let first = Arc::new(Fake::default());
+    fabricate_with(&root, first.clone(), Some(&access()))
+        .await
+        .unwrap();
+    assert_eq!(*first.converted.lock().unwrap(), ["a.mp3", "b.ogg"]);
+
+    // Rien n'a changé : aucune conversion, archive identique pour l'audio.
+    let second = Arc::new(Fake::default());
+    let (files, _) = fabricate_with(&root, second.clone(), Some(&access()))
+        .await
+        .unwrap();
+    assert!(second.converted.lock().unwrap().is_empty());
+    assert_eq!(files["audios/e001.mp3"], b"ID3 a.mp3");
+    assert_eq!(files["audios/e002.mp3"], b"ID3 b.ogg");
+
+    // Un fichier modifié : lui seul est reconverti, le nouveau contenu est dans l'archive.
+    put(&root, "b.ogg", b"ID3 b modifie");
+    let third = Arc::new(Fake::default());
+    let (files, _) = fabricate_with(&root, third.clone(), Some(&access()))
+        .await
+        .unwrap();
+    assert_eq!(*third.converted.lock().unwrap(), ["b.ogg"]);
+    assert_eq!(files["audios/e001.mp3"], b"ID3 a.mp3");
+    assert_eq!(files["audios/e002.mp3"], b"ID3 b modifie");
 }

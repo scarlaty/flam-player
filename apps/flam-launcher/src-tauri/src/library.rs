@@ -1141,6 +1141,36 @@ impl Library {
         }
     }
 
+    /// Retient `location` comme lien de la source de l'histoire installée `uuid`
+    /// (`source.download_url`) : « Choisir le dossier » d'une histoire faite d'un dossier
+    /// déplacé (`docs/creation-dossier.md` § 8). Seule cette valeur change, sous le verrou ;
+    /// refus sans rien écrire si l'histoire n'est pas installée (`not_found`), si elle vient
+    /// d'une autre source que `source_id` ou si l'index ne fait pas foi (corrompu, mis de côté).
+    pub fn relocate_source(&self, uuid: &str, source_id: &str, location: &str) -> AppResult<()> {
+        let _lock = self.lock_within(self.lock_timeout)?;
+        let (mut stories, untrusted) = self.reconcile_state()?;
+        if untrusted {
+            return Err(AppError::Validation(
+                "index de la bibliothèque à vérifier : dossier de l'histoire non modifié".into(),
+            ));
+        }
+        let Some(entry) = stories.iter_mut().find(|e| e.uuid == uuid) else {
+            return Err(AppError::NotFound(format!(
+                "histoire non installée : {uuid}"
+            )));
+        };
+        if entry.source.source_id != source_id {
+            return Err(AppError::Validation(
+                "cette histoire ne vient pas de cette source".into(),
+            ));
+        }
+        if entry.source.download_url == location {
+            return Ok(());
+        }
+        entry.source.download_url = location.to_string();
+        self.save(stories)
+    }
+
     /// Désinstalle l'histoire `uuid` (fichier et entrée d'index). Inconnue : `not_found`.
     pub fn remove(&self, uuid: &str) -> AppResult<()> {
         self.remove_with(uuid, self.lock_timeout, || Ok(()))
@@ -1389,6 +1419,38 @@ pub(crate) mod tests {
         assert!(lib.list().unwrap().is_empty());
         assert!(!dir.path().join("library/abc-3.plain.pk").exists());
         assert_eq!(lib.remove("abc").unwrap_err().kind(), "not_found");
+    }
+
+    #[test]
+    fn le_dossier_retenu_d_une_histoire_change_seul() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::new(dir.path());
+        let mut source = story("abc", Some(2));
+        source.source_id = "authoring-folder".into();
+        source.download_url = r"C:\Ancien".into();
+        let s = staged(&lib, "t.plain.pk", b"PK1234");
+        let before = lib.install(&s, &source, None, 7).unwrap();
+        let s = staged(&lib, "u.plain.pk", b"PK1234");
+        let other = lib.install(&s, &story("def", Some(1)), None, 8).unwrap();
+
+        // Autre source, histoire absente : refus, rien ne change.
+        let err = lib
+            .relocate_source("def", "authoring-folder", r"C:\Nouveau")
+            .unwrap_err();
+        assert_eq!(err.kind(), "validation");
+        let err = lib
+            .relocate_source("zzz", "authoring-folder", r"C:\Nouveau")
+            .unwrap_err();
+        assert_eq!(err.kind(), "not_found");
+
+        lib.relocate_source("abc", "authoring-folder", r"C:\Nouveau")
+            .unwrap();
+        let list = lib.list().unwrap();
+        let moved = list.iter().find(|e| e.uuid == "abc").unwrap();
+        let mut expected = before.clone();
+        expected.source.download_url = r"C:\Nouveau".into();
+        assert_eq!(moved, &expected);
+        assert_eq!(list.iter().find(|e| e.uuid == "def").unwrap(), &other);
     }
 
     #[test]

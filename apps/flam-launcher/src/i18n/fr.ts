@@ -1328,6 +1328,40 @@ export const fr = {
     contradictionHint:
       "Simple avertissement : l'envoi, le retrait et l'ordre restent possibles. Ce contrôle peut se tromper (histoire d'un autre outil dont le titre est en Latin-1 ou très court). Si une histoire envoyée ne se lit pas sur la Flam, notez la version et l'état affichés ici dans votre retour de test.",
   },
+  /**
+   * Histoire faite d'un dossier, suites du lot 5 (docs/creation-dossier.md § 8) : erreurs par
+   * code, « Choisir le dossier », textes dédiés du rapport.
+   */
+  authoringFolder: {
+    errors: {
+      blocked:
+        "Le dossier a changé : un point est maintenant à corriger. Rouvrez-le pour le voir.",
+      conflictCopied:
+        "Ce dossier semble maintenant copié d'un autre dossier d'histoire : rouvrez-le pour choisir « Remplacer » ou « Nouvelle histoire ».",
+      conflictForeign:
+        "L'identifiant de ce dossier est maintenant celui d'une histoire d'une autre source : rouvrez-le pour créer une nouvelle histoire.",
+      versionOverflow:
+        "Cette histoire a atteint sa dernière version possible : créez une nouvelle histoire.",
+      retryUnavailable:
+        "Cette création ne peut plus être relancée : utilisez « Actualiser » sur l'histoire.",
+      folderChanged:
+        "Le dossier a changé depuis l'échec : utilisez « Actualiser » sur l'histoire.",
+      uuidMismatch:
+        "Ce dossier n'est pas celui de cette histoire : choisissez le dossier qui contient son fichier _histoire.json.",
+      notFromFolder: "Cette histoire n'a pas été créée depuis un dossier.",
+    },
+    missingTitle: "Dossier introuvable",
+    missing:
+      "Le dossier de cette histoire est introuvable : il a peut-être été déplacé, renommé, ou se trouve sur une clé retirée.",
+    choose: "Choisir le dossier",
+    chooseTitle: "Nouvel emplacement du dossier de l'histoire",
+    relocated: "Dossier de l'histoire retrouvé.",
+    problem: {
+      duplicate_story_name: (name: string) =>
+        `« ${name} » : un autre fichier audio porte le même nom, image et titre lu partagés.`,
+      fin_ignored: "Réglage « fin » sans effet dans ce mode : retour au menu.",
+    },
+  },
   /** Créer une histoire à partir d'un dossier (lot 5, docs/creation-dossier.md). */
   authoring: {
     open: "Créer une histoire depuis un dossier",

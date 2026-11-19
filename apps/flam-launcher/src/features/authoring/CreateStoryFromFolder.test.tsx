@@ -124,8 +124,9 @@ it("dossier copié : nouvelle histoire par défaut, ou remplacer l'autre", async
     if (cmd === "authoring_create") {
       created = args;
       throw {
-        kind: "validation",
-        message: "cette histoire est déjà en cours de création",
+        kind: "authoring",
+        code: "busy",
+        message: "détail technique",
       };
     }
     return null;
@@ -140,4 +141,97 @@ it("dossier copié : nouvelle histoire par défaut, ou remplacer l'autre", async
     ),
   ).toBeInTheDocument();
   expect(created).toMatchObject({ choice: "replace_other" });
+});
+
+it("erreurs reconnues par leur code, jamais par leur message", () => {
+  const authoring = (code: string, message = "ne peut pas être le dossier, lien") => ({
+    kind: "authoring",
+    code,
+    message,
+  });
+  expect(errorText(authoring("folder_missing"))).toBe(
+    "Dossier introuvable : il a peut-être été déplacé ou renommé.",
+  );
+  expect(errorText(authoring("busy"))).toContain("déjà en cours de création");
+  expect(errorText(authoring("conflict_copied"))).toContain("copié d'un autre dossier");
+  expect(errorText(authoring("uuid_mismatch"))).toContain(
+    "n'est pas celui de cette histoire",
+  );
+  expect(errorText(authoring("folder_changed"))).toContain("Actualiser");
+  // Un message qui ressemble à un refus, sans code : texte générique.
+  expect(errorText({ kind: "validation", message: "en cours de création, lien" })).toBe(
+    "La création n'a pas pu être lancée. Vérifiez le dossier, puis réessayez.",
+  );
+});
+
+it("textes dédiés : même nom et réglage « fin » sans effet", () => {
+  expect(
+    problemText(problem("duplicate_story_name", "Animaux/Le loup.mp3", "warning")),
+  ).toBe(
+    "« Le loup.mp3 » : un autre fichier audio porte le même nom, image et titre lu partagés.",
+  );
+  expect(problemText(problem("fin_ignored", "_histoire.json", "warning"))).toBe(
+    "Réglage « fin » sans effet dans ce mode : retour au menu.",
+  );
+});
+
+it("dossier introuvable : Choisir le dossier, puis le relire", async () => {
+  const calls: { cmd: string; args: unknown }[] = [];
+  let moved = false;
+  let relocateFailure: unknown = {
+    kind: "authoring",
+    code: "uuid_mismatch",
+    message: "détail technique",
+  };
+  mockIPC((cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "plugin:dialog|open") return "C:\\Rangé\\Loup";
+    if (cmd === "authoring_read") {
+      if (!moved)
+        throw { kind: "authoring", code: "folder_missing", message: "détail technique" };
+      return report({ folder: "C:\\Rangé\\Loup", uuid: "u", installed_version: 1 });
+    }
+    if (cmd === "authoring_relocate") {
+      if (relocateFailure) throw relocateFailure;
+      moved = true;
+      return "C:\\Rangé\\Loup";
+    }
+    return null;
+  });
+  render(<CreateStoryFromFolder folder="C:\\Histoires\\Loup" uuid="u" />);
+  fireEvent.click(screen.getByRole("button", { name: "Actualiser" }));
+  const dialog = await screen.findByRole("dialog", { name: "Dossier introuvable" });
+  // Mauvais dossier : message clair, le dialogue reste ouvert.
+  fireEvent.click(screen.getByRole("button", { name: "Choisir le dossier" }));
+  expect(
+    await screen.findByText(/n'est pas celui de cette histoire/),
+  ).toBeInTheDocument();
+  expect(dialog).toBeInTheDocument();
+  relocateFailure = null;
+  fireEvent.click(screen.getByRole("button", { name: "Choisir le dossier" }));
+  expect(await screen.findByText("3 histoires")).toBeInTheDocument();
+  expect(calls.filter((c) => c.cmd === "authoring_relocate").at(-1)?.args).toMatchObject({
+    uuid: "u",
+    path: "C:\\Rangé\\Loup",
+  });
+  expect(calls.filter((c) => c.cmd === "authoring_read").at(-1)?.args).toMatchObject({
+    path: "C:\\Rangé\\Loup",
+  });
+  expect(screen.queryByRole("dialog", { name: "Dossier introuvable" })).toBeNull();
+});
+
+it("sans identifiant, un dossier introuvable est seulement signalé", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "authoring_read")
+      throw { kind: "authoring", code: "folder_missing", message: "détail technique" };
+    return null;
+  });
+  render(<CreateStoryFromFolder folder="C:\\Histoires\\Loup" />);
+  fireEvent.click(screen.getByRole("button", { name: "Actualiser" }));
+  expect(
+    await screen.findByText(
+      "Dossier introuvable : il a peut-être été déplacé ou renommé.",
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Choisir le dossier" })).toBeNull();
 });

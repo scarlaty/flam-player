@@ -30,6 +30,7 @@ use serde::{Serialize, Serializer};
 /// | `LuniiNeedsV2`  | `lunii_needs_v2` | Histoire STUdio (format Lunii) refusée : Flam pas en firmware 2.x |
 /// | `NotRemovable`  | `not_removable` | « Retirer du PC » refusé pour de bon : autre Flam, histoire plus sur la Flam ou changée (#609) |
 /// | `DeviceChanged` | `device_changed` | Envoi refusé : la Flam a été débranchée ou remplacée pendant l'envoi (#577) |
+/// | `Authoring`     | `authoring`     | Histoire faite d'un dossier : refus reconnu par son `code` (champ en plus) |
 ///
 /// Un fichier de configuration corrompu n'est pas une erreur : il est sauvegardé en
 /// `*.bak` et remplacé par les valeurs par défaut (avertissement tracé).
@@ -153,6 +154,13 @@ pub enum AppError {
     /// lecteur. Le message dit ce qui a été écrit ; la file d'envoi s'arrête.
     #[error("{0}")]
     DeviceChanged(String),
+
+    /// Création d'une histoire à partir d'un dossier (`authoring`) : refus ou échec reconnu par
+    /// un **code stable** (`folder_missing`, `busy`, `conflict_copied`…), sérialisé en plus de
+    /// `kind` et `message` (champ `code`) : le front choisit son texte d'après lui, jamais
+    /// d'après le message.
+    #[error("{message}")]
+    Authoring { code: &'static str, message: String },
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -186,6 +194,7 @@ impl AppError {
             AppError::CacheDirInUse(_) => "cache_dir_in_use",
             AppError::NotRemovable(_) => "not_removable",
             AppError::DeviceChanged(_) => "device_changed",
+            AppError::Authoring { .. } => "authoring",
         }
     }
 
@@ -206,9 +215,16 @@ impl AppError {
 
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("AppError", 2)?;
+        let code = match self {
+            AppError::Authoring { code, .. } => Some(*code),
+            _ => None,
+        };
+        let mut state = serializer.serialize_struct("AppError", 2 + usize::from(code.is_some()))?;
         state.serialize_field("kind", self.kind())?;
         state.serialize_field("message", &self.to_string())?;
+        if let Some(code) = code {
+            state.serialize_field("code", code)?;
+        }
         state.end()
     }
 }
@@ -226,6 +242,23 @@ mod tests {
             serde_json::json!({
                 "kind": "io",
                 "message": "erreur d'entrée/sortie : boum"
+            })
+        );
+    }
+
+    #[test]
+    fn une_erreur_de_creation_porte_son_code() {
+        let err = AppError::Authoring {
+            code: "folder_missing",
+            message: "dossier introuvable".into(),
+        };
+        assert_eq!(err.kind(), "authoring");
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            serde_json::json!({
+                "kind": "authoring",
+                "message": "dossier introuvable",
+                "code": "folder_missing"
             })
         );
     }

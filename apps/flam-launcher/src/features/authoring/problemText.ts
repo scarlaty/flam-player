@@ -1,5 +1,5 @@
 import type { AppError } from "../../api/error";
-import type { FolderProblem } from "../../api/authoring";
+import { authoringCode, type FolderProblem } from "../../api/authoring";
 import { t } from "../../i18n";
 
 /** Dernier composant d'un chemin relatif en `/`. */
@@ -44,6 +44,10 @@ export function problemText(problem: FolderProblem): string {
       return text.empty_menu(name);
     case "title_too_long":
       return text.title_too_long(name);
+    case "duplicate_story_name":
+      return t.authoringFolder.problem.duplicate_story_name(fileName(problem.path));
+    case "fin_ignored":
+      return t.authoringFolder.problem.fin_ignored;
     case "unsupported_file":
     case "misplaced_special_file":
     case "duplicate_special_file":
@@ -59,14 +63,33 @@ export function problemText(problem: FolderProblem): string {
   }
 }
 
-/** Erreur d'une commande : ce qui s'est passé et quoi faire. */
+/** Erreur d'une commande : ce qui s'est passé et quoi faire, d'après son code. */
 export function errorText(error: AppError): string {
-  const message = error.message;
-  if (error.kind === "not_found") return t.authoring.folderMissing;
-  if (error.kind === "validation") {
-    if (message.includes("en cours de création")) return t.authoring.busy;
-    if (message.includes("ne peut pas être le dossier") || message.includes("lien"))
+  const errors = t.authoringFolder.errors;
+  switch (authoringCode(error)) {
+    case "folder_missing":
+      return t.authoring.folderMissing;
+    case "folder_refused":
       return t.authoring.folderRefused;
+    case "busy":
+      return t.authoring.busy;
+    case "blocked":
+      return errors.blocked;
+    case "conflict_copied":
+      return errors.conflictCopied;
+    case "conflict_foreign":
+      return errors.conflictForeign;
+    case "version_overflow":
+      return errors.versionOverflow;
+    case "retry_unavailable":
+      return errors.retryUnavailable;
+    case "folder_changed":
+      return errors.folderChanged;
+    case "uuid_mismatch":
+      return errors.uuidMismatch;
+    case "not_from_folder":
+      return errors.notFromFolder;
+    default:
+      return t.authoring.failed;
   }
-  return t.authoring.failed;
 }

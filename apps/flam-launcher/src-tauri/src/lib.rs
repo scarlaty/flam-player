@@ -221,6 +221,8 @@ pub fn run() {
             app::app_info,
             authoring::commands::authoring_create,
             authoring::commands::authoring_read,
+            authoring::commands::authoring_relocate,
+            authoring::commands::authoring_retry,
             catalog::catalog_refresh,
             catalog::catalog_entries,
             catalog::catalog_thumbnail,

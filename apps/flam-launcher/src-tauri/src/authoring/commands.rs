@@ -1,10 +1,16 @@
 //! Commandes Tauri de la création d'une histoire à partir d'un dossier (lot 5,
-//! `docs/creation-dossier.md` § 8) : [`authoring_read`] (arbre et rapport, rien n'est écrit) et
-//! [`authoring_create`] (uuid et version enregistrés, tâche ajoutée à la file d'installation).
+//! `docs/creation-dossier.md` § 8) : [`authoring_read`] (arbre et rapport, rien n'est écrit),
+//! [`authoring_create`] (uuid et version enregistrés, tâche ajoutée à la file d'installation),
+//! [`authoring_retry`] (« Réessayer » une tâche « dossier » en échec : même dossier, même uuid,
+//! même réponse au conflit) et [`authoring_relocate`] (« Choisir le dossier » d'une histoire
+//! dont le dossier a été déplacé : même uuid exigé).
 //!
 //! Le chemin vient du sélecteur de dossier natif (ou de la source d'une histoire de « Mes
 //! histoires ») : il est revérifié ici ([`tree::scan`] : racines interdites, liens), comme celui
 //! d'une source dossier.
+//!
+//! Les refus propres à la création sont des `AppError::Authoring` qui portent un code stable
+//! ([`code`]) : le front choisit son texte d'après lui, jamais d'après le message.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +26,41 @@ use crate::install::folder::FolderJob;
 use crate::install::{InstallService, InstallTask};
 use crate::storage::ConfigState;
 use crate::{AppError, AppResult};
+
+/// Codes stables des erreurs `authoring` (`AppError::Authoring`, miroir de
+/// `AuthoringErrorCode` dans `src/api/authoring.ts`).
+pub mod code {
+    /// Dossier introuvable (déplacé, renommé, clé retirée) : `tree::ScanError::code`.
+    pub const FOLDER_MISSING: &str = "folder_missing";
+    /// Dossier refusé (racine interdite, lien, chemin non absolu) : `tree::ScanError::code`.
+    pub const FOLDER_REFUSED: &str = "folder_refused";
+    /// Un problème bloquant est apparu depuis la lecture du dossier.
+    pub const BLOCKED: &str = "blocked";
+    /// Une création est déjà en cours pour cette histoire ou ce dossier.
+    pub const BUSY: &str = "busy";
+    /// Dossier copié (conflit apparu depuis la lecture, ou réponse manquante).
+    pub const CONFLICT_COPIED: &str = "conflict_copied";
+    /// Identifiant d'une histoire d'une autre source : seulement « Nouvelle histoire ».
+    pub const CONFLICT_FOREIGN: &str = "conflict_foreign";
+    /// Version de l'histoire au maximum.
+    pub const VERSION_OVERFLOW: &str = "version_overflow";
+    /// Tâche à relancer introuvable, encore active ou qui n'est pas une création.
+    pub const RETRY_UNAVAILABLE: &str = "retry_unavailable";
+    /// Relance : le dossier ne porte plus l'identifiant de la tâche.
+    pub const FOLDER_CHANGED: &str = "folder_changed";
+    /// « Choisir le dossier » : le dossier choisi porte un autre identifiant, ou aucun.
+    pub const UUID_MISMATCH: &str = "uuid_mismatch";
+    /// « Choisir le dossier » : histoire non installée, ou pas faite d'un dossier.
+    pub const NOT_FROM_FOLDER: &str = "not_from_folder";
+}
+
+/// Refus `authoring` de code `code`.
+fn refused(code: &'static str, message: impl Into<String>) -> AppError {
+    AppError::Authoring {
+        code,
+        message: message.into(),
+    }
+}
 
 /// Rapport de lecture d'un dossier (miroir de `FolderReport` dans `src/api/authoring.ts`).
 #[derive(Debug, Clone, Serialize)]
@@ -157,18 +198,16 @@ pub async fn authoring_read(
     Ok(report(&read))
 }
 
-/// Crée (ou actualise) l'histoire du dossier `path` : dossier relu, refus s'il a un problème
-/// bloquant, uuid et version décidés (`choice` : réponse à un conflit signalé par
-/// [`authoring_read`]) et enregistrés (`_histoire.json`, sinon configuration du launcher), puis
-/// tâche ajoutée à la file d'installation.
-#[tauri::command]
-pub async fn authoring_create(
-    config: State<'_, ConfigState>,
-    install: State<'_, InstallService>,
-    path: String,
+/// Crée (ou actualise) l'histoire du dossier `path` ; `retry` : tâche en échec relancée (son
+/// uuid est exigé, sa réponse au conflit reprise, voir [`retry_choice`]).
+async fn create(
+    config: &ConfigState,
+    install: &InstallService,
+    path: &str,
     choice: Option<ConflictChoice>,
+    retry: Option<&FolderJob>,
 ) -> AppResult<FolderCreated> {
-    let read = read(&config, &install, &path).await?;
+    let read = read(config, install, path).await?;
     let report = report(&read);
     if report.blocked {
         let first: Vec<&str> = report
@@ -178,21 +217,28 @@ pub async fn authoring_create(
             .take(3)
             .map(|p| p.message.as_str())
             .collect();
-        return Err(AppError::Validation(format!(
-            "ce dossier ne peut pas devenir une histoire : {}",
-            first.join(" ; ")
-        )));
+        return Err(refused(
+            code::BLOCKED,
+            format!(
+                "ce dossier ne peut pas devenir une histoire : {}",
+                first.join(" ; ")
+            ),
+        ));
     }
+    let choice = match retry {
+        Some(job) => retry_choice(&read.identity, job)?,
+        None => choice,
+    };
     let decision = identity::decide(&read.identity, choice)?;
     let base = read.scan.base.clone();
     // Contrôle, enregistrement et mise en file sous le verrou de la configuration : deux
     // créations simultanées du même dossier (uuid neuf chacune) ne passent jamais toutes deux.
     let _guard = config.guard();
     if install.has_active(&decision.uuid, &base) {
-        return Err(AppError::Validation(
+        return Err(refused(
+            code::BUSY,
             "cette histoire est déjà en cours de création : attendez la fin ou annulez-la, puis \
-             réessayez"
-                .into(),
+             réessayez",
         ));
     }
     let saved_in = identity::commit(&base, &decision, &Registry::new(&config.dir))?;
@@ -208,6 +254,7 @@ pub async fn authoring_create(
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect(),
+        choice,
     };
     let task = install.start_folder(job, entry)?;
     Ok(FolderCreated {
@@ -217,4 +264,197 @@ pub async fn authoring_create(
         created: decision.created,
         saved_in,
     })
+}
+
+/// Réponse au conflit d'une relance de la tâche `job`. Le dossier doit porter **le même uuid**
+/// que la tâche (sinon `folder_changed` : il a changé depuis, « Actualiser » le relit) ;
+/// « Remplacer l'autre » n'est repris que si la tâche l'avait choisi ; « Nouvelle histoire »
+/// ne l'est jamais (l'uuid neuf est déjà enregistré : le redemander en créerait un troisième).
+/// Un conflit apparu depuis est laissé à `identity::decide` (`conflict_copied`,
+/// `conflict_foreign`).
+pub fn retry_choice(identity: &Identity, job: &FolderJob) -> AppResult<Option<ConflictChoice>> {
+    if identity.uuid.as_deref() != Some(job.uuid.as_str()) {
+        return Err(refused(
+            code::FOLDER_CHANGED,
+            "le dossier ne porte plus l'identifiant de cette histoire : utilisez « Actualiser »",
+        ));
+    }
+    Ok(match (&identity.conflict, job.choice) {
+        (Some(Conflict::Copied { .. }), Some(ConflictChoice::ReplaceOther)) => {
+            Some(ConflictChoice::ReplaceOther)
+        }
+        _ => None,
+    })
+}
+
+/// Crée (ou actualise) l'histoire du dossier `path` : dossier relu, refus s'il a un problème
+/// bloquant, uuid et version décidés (`choice` : réponse à un conflit signalé par
+/// [`authoring_read`]) et enregistrés (`_histoire.json`, sinon configuration du launcher), puis
+/// tâche ajoutée à la file d'installation.
+#[tauri::command]
+pub async fn authoring_create(
+    config: State<'_, ConfigState>,
+    install: State<'_, InstallService>,
+    path: String,
+    choice: Option<ConflictChoice>,
+) -> AppResult<FolderCreated> {
+    create(&config, &install, &path, choice, None).await
+}
+
+/// « Réessayer » la tâche « dossier » `task_id` en échec ou annulée : nouvelle création depuis
+/// le même dossier, sous le même uuid et avec la même réponse au conflit ([`retry_choice`]),
+/// à la version suivante. La tâche relancée n'est pas retirée ici (le front la remplace).
+#[tauri::command]
+pub async fn authoring_retry(
+    config: State<'_, ConfigState>,
+    install: State<'_, InstallService>,
+    task_id: String,
+) -> AppResult<FolderCreated> {
+    let job = install.retryable_folder(&task_id).ok_or_else(|| {
+        refused(
+            code::RETRY_UNAVAILABLE,
+            "cette création ne peut pas être relancée",
+        )
+    })?;
+    create(&config, &install, &job.folder, None, Some(&job)).await
+}
+
+/// « Choisir le dossier » de l'histoire installée `uuid` dont le dossier est introuvable
+/// (§ 8). Le dossier `path` est lu comme pour une création (racines interdites, liens) et doit
+/// porter le même uuid (`_histoire.json`, ou configuration du launcher pour ce chemin), sinon
+/// `uuid_mismatch` ; le chemin retenu par « Mes histoires » devient alors sa forme résolue,
+/// rendue. Rien n'est écrit dans le dossier.
+#[tauri::command]
+pub async fn authoring_relocate(
+    config: State<'_, ConfigState>,
+    install: State<'_, InstallService>,
+    uuid: String,
+    path: String,
+) -> AppResult<String> {
+    let read = read(&config, &install, &path).await?;
+    check_relocation(&read.identity, &uuid)?;
+    let base = read.scan.base.clone();
+    // Une création en cours publierait l'ancien chemin en se terminant.
+    if install.has_active(&uuid, &base) {
+        return Err(refused(
+            code::BUSY,
+            "cette histoire est en cours de création : attendez la fin ou annulez-la",
+        ));
+    }
+    let location = base.to_string_lossy().into_owned();
+    install
+        .relocate_folder_story(&uuid, &location)
+        .await
+        .map_err(|err| match err {
+            AppError::NotFound(_) | AppError::Validation(_) => refused(
+                code::NOT_FROM_FOLDER,
+                "cette histoire n'est pas installée depuis un dossier",
+            ),
+            other => other,
+        })?;
+    Ok(location)
+}
+
+/// Le dossier lu (identité `identity`) est celui de l'histoire `uuid` : sinon `uuid_mismatch`.
+pub fn check_relocation(identity: &Identity, uuid: &str) -> AppResult<()> {
+    if identity.uuid.as_deref() == Some(uuid) {
+        Ok(())
+    } else {
+        Err(refused(
+            code::UUID_MISMATCH,
+            "ce dossier n'est pas celui de cette histoire (identifiant différent ou absent)",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UUID: &str = "5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+
+    fn job(choice: Option<ConflictChoice>) -> FolderJob {
+        FolderJob {
+            uuid: UUID.into(),
+            version: 2,
+            folder: r"C:\Histoires\Loup".into(),
+            voice: None,
+            forbidden: Vec::new(),
+            choice,
+        }
+    }
+
+    fn identity(uuid: Option<&str>, conflict: Option<Conflict>) -> Identity {
+        Identity {
+            uuid: uuid.map(str::to_string),
+            version: Some(2),
+            conflict,
+            ..Identity::default()
+        }
+    }
+
+    fn copied() -> Option<Conflict> {
+        Some(Conflict::Copied {
+            other_folder: r"C:\Autre".into(),
+            title: "Autre".into(),
+        })
+    }
+
+    fn code_of(err: AppError) -> &'static str {
+        match err {
+            AppError::Authoring { code, .. } => code,
+            other => panic!("erreur authoring attendue : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn une_relance_exige_le_meme_uuid() {
+        for uuid in [None, Some("6d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d")] {
+            let err = retry_choice(&identity(uuid, None), &job(None)).unwrap_err();
+            assert_eq!(code_of(err), code::FOLDER_CHANGED);
+        }
+        assert_eq!(
+            retry_choice(&identity(Some(UUID), None), &job(None)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn une_relance_reprend_remplacer_mais_jamais_nouvelle_histoire() {
+        let replace = Some(ConflictChoice::ReplaceOther);
+        let fresh = Some(ConflictChoice::NewStory);
+        assert_eq!(
+            retry_choice(&identity(Some(UUID), copied()), &job(replace)).unwrap(),
+            replace
+        );
+        // « Nouvelle histoire » : l'uuid neuf est déjà celui du dossier, aucun conflit attendu.
+        assert_eq!(
+            retry_choice(&identity(Some(UUID), None), &job(fresh)).unwrap(),
+            None
+        );
+        // Conflit apparu depuis, sans « Remplacer » choisi : laissé à `decide`, qui refuse.
+        for choice in [None, fresh] {
+            let answer = retry_choice(&identity(Some(UUID), copied()), &job(choice)).unwrap();
+            assert_eq!(answer, None);
+            let err = identity::decide(&identity(Some(UUID), copied()), answer).unwrap_err();
+            assert_eq!(code_of(err), code::CONFLICT_COPIED);
+        }
+    }
+
+    #[test]
+    fn choisir_le_dossier_exige_le_meme_uuid() {
+        check_relocation(&identity(Some(UUID), None), UUID).unwrap();
+        for uuid in [None, Some("6d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d")] {
+            let err = check_relocation(&identity(uuid, None), UUID).unwrap_err();
+            assert_eq!(code_of(err), code::UUID_MISMATCH);
+        }
+    }
+
+    #[test]
+    fn un_dossier_introuvable_ou_refuse_a_son_code() {
+        let missing = AppError::from(tree::ScanError::NotFound("x".into()));
+        assert_eq!(code_of(missing), code::FOLDER_MISSING);
+        let link = AppError::from(tree::ScanError::Link("x".into()));
+        assert_eq!(code_of(link), code::FOLDER_REFUSED);
+    }
 }

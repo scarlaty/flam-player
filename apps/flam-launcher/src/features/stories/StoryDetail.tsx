@@ -163,7 +163,11 @@ export function StoryDetail({ source, entry, onClose }: StoryDetailProps) {
                 {source.type === "library" &&
                   entry.source_id === AUTHORING_SOURCE_ID &&
                   entry.download_url !== "" && (
-                    <CreateStoryFromFolder folder={entry.download_url} size="sm" />
+                    <CreateStoryFromFolder
+                      folder={entry.download_url}
+                      uuid={installed.uuid}
+                      size="sm"
+                    />
                   )}
                 {stories.updateAvailable(entry) && (
                   <>

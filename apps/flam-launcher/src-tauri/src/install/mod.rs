@@ -118,7 +118,8 @@ impl TaskState {
 }
 
 /// Erreur d'une tâche : `{ kind, message }` comme `AppError`, plus le code du convertisseur
-/// (`missing_asset`…) pour `kind = "conversion"`.
+/// (`missing_asset`…) pour `kind = "conversion"`, ou celui d'une création depuis un dossier
+/// pour `kind = "authoring"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TaskError {
     pub kind: String,
@@ -133,6 +134,7 @@ impl From<&AppError> for TaskError {
             message: err.to_string(),
             code: match err {
                 AppError::Conversion { code, .. } => Some(code.clone()),
+                AppError::Authoring { code, .. } => Some((*code).to_string()),
                 _ => None,
             },
         }
@@ -790,11 +792,13 @@ impl InstallService {
                     return Err(AppError::Validation("uuid de pack déjà utilisé".into()));
                 }
                 if folder.is_some() {
-                    return Err(AppError::Validation(
-                        "cette histoire est déjà en cours de création : attendez la fin ou \
-                         annulez-la, puis réessayez"
-                            .into(),
-                    ));
+                    return Err(AppError::Authoring {
+                        code: crate::authoring::commands::code::BUSY,
+                        message:
+                            "cette histoire est déjà en cours de création : attendez la fin ou \
+                                  annulez-la, puis réessayez"
+                                .into(),
+                    });
                 }
                 // Installation de la même histoire dans l'autre format en cours (Q10) : la
                 // renvoyer ferait croire que celle demandée est lancée.
