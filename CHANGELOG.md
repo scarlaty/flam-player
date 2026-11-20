@@ -7,6 +7,10 @@ publiées sous des étiquettes `launcher-v…` (voir les
 
 ## [Non publié]
 
+## [0.2.0] - 2026-11-20
+
+Changements depuis `launcher-v0.1.1`.
+
 ### Ajouté
 
 - Éditeur d'histoires sur dossier : à partir d'un dossier de fichiers audio (et d'images) de
@@ -18,13 +22,21 @@ publiées sous des étiquettes `launcher-v…` (voir les
   à chapitres qui s'enchaînent, avec un menu des chapitres, et le chapitre quitté qui reprend à
   sa position. Le dossier est surveillé pendant l'édition, et « Modifier » et « Actualiser » le
   retrouvent depuis Mes histoires (« Choisir le dossier » s'il a été déplacé). Voir
-  [le guide](apps/flam-launcher/docs/guide-editeur.md). Non essayé sur une Flam à ce jour.
+  [le guide](apps/flam-launcher/docs/guide-editeur.md). Sur la Flam, l'écran reste noir pendant
+  l'écoute d'un chapitre, après l'annonce de son titre sur son image.
+
+### Modifié
+
+- Le lecteur sur le PC n'agrandit plus l'écran de la Flam que deux fois au plus (640×480) : la
+  fenêtre séparée s'ouvre en 640×480, et l'écran intégré au launcher est centré sans dépasser
+  cette taille, avec des pixels nets quand c'est possible.
+- Après « Créer l'histoire », l'éditeur propose « Fermer l'éditeur » ou « Continuer à modifier ».
 
 ### Corrigé
 
 - Retirer de la Flam une grosse histoire (par exemple une histoire Telmi convertie) n'échoue plus
   quand un autre programme, comme l'antivirus ou l'Explorateur, garde un instant l'un de ses
-  fichiers ouvert : le launcher patiente une dizaine de secondes au lieu d'une. Si le dossier
+  fichiers ouvert : le launcher patiente une dizaine de secondes au lieu d'une seconde. Si le dossier
   reste occupé, le message indique que rien n'a été effacé et qu'il suffit de retirer de nouveau
   l'histoire, affichée « Non listée ».
 
@@ -267,7 +279,8 @@ Changements depuis `launcher-v0.1.0-beta.1`.
   programme intégré. Python 3 reste utile uniquement aux outils de campagne et de parité du
   dépôt (`tools/telmi2flam/`, sans Pillow), pas aux utilisateurs.
 
-[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.1...HEAD
+[Non publié]: https://github.com/scarlaty/flam-player/compare/launcher-v0.2.0...HEAD
+[0.2.0]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.1...launcher-v0.2.0
 [0.1.1]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0...launcher-v0.1.1
 [0.1.0]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.6...launcher-v0.1.0
 [0.1.0-beta.6]: https://github.com/scarlaty/flam-player/compare/launcher-v0.1.0-beta.5...launcher-v0.1.0-beta.6
