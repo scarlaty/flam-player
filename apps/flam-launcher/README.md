@@ -1053,8 +1053,10 @@ seul argument** (dernier), dossier courant = dossier du player.
   player remplit sa zone cliente et suit sa taille. Toutes les opérations Win32 ont lieu sur le
   thread principal (`run_on_main_thread`) ; la fenêtre d'accueil est détruite à la fin du player.
   `PlayerSession.embedded` dit si le lancement est incrusté.
-- **Placement** : l'écran Lecture (`src/features/player/PlayerScreen.tsx`) mesure sa zone
-  (`getBoundingClientRect`, `ResizeObserver`, redimensionnement de la fenêtre) et appelle
+- **Placement** : l'écran Lecture (`src/features/player/PlayerScreen.tsx`) dimensionne sa zone
+  (écran Flam centré, 4:3, 640×480 px CSS au plus, facteur entier en px physiques si la place le
+  permet : `screenFit.ts`), la mesure (`getBoundingClientRect` ; `ResizeObserver` sur l'espace
+  libre, redimensionnement de la fenêtre) et appelle
   `player_embed_layout(rect)` (px CSS) ; le backend convertit en px physiques avec le DPI de la
   fenêtre (`GetDpiForWindow`, `embed::to_physical`) puis `SetWindowPos`. `null` cache la fenêtre
   d'accueil (démontage de l'écran). Sans effet si aucun player incrusté ne tourne.

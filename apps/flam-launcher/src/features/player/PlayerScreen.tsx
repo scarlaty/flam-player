@@ -11,6 +11,7 @@ import {
 import { Button } from "../../components";
 import { t } from "../../i18n";
 import "./PlayerScreen.css";
+import { fitScreen } from "./screenFit";
 
 /**
  * Délai au-delà duquel « Arrêter » est rendu de nouveau disponible si la fin du player n'est
@@ -35,18 +36,29 @@ function sameRect(a: EmbedRect | null, b: EmbedRect): boolean {
 }
 
 /**
- * Suit la position et la taille de `zone` et les transmet au backend, qui y place la fenêtre
- * du player incrusté (fenêtre native posée au-dessus de la page). Au démontage, la fenêtre est
- * cachée.
+ * Dimensionne `zone` (l'écran Flam) dans `stage` avec [`fitScreen`], puis transmet sa position
+ * et sa taille au backend, qui y place la fenêtre du player incrusté (fenêtre native posée
+ * au-dessus de la page). Au démontage, la fenêtre est cachée.
+ *
+ * La taille est écrite directement sur l'élément, juste avant la mesure : la position envoyée
+ * correspond toujours à la taille calculée (pas d'attente d'un rendu React).
  */
-function useEmbedZone(zone: RefObject<HTMLDivElement | null>) {
+function useEmbedZone(
+  stage: RefObject<HTMLDivElement | null>,
+  zone: RefObject<HTMLDivElement | null>,
+) {
   useEffect(() => {
+    const area = stage.current;
     const element = zone.current;
-    if (!element) return;
+    if (!area || !element) return;
     let sent: EmbedRect | null = null;
     let frame = 0;
     const send = () => {
       frame = 0;
+      const room = area.getBoundingClientRect();
+      const size = fitScreen(room.width, room.height, window.devicePixelRatio);
+      element.style.setProperty("width", `${size.width}px`);
+      element.style.setProperty("height", `${size.height}px`);
       const box = element.getBoundingClientRect();
       const rect = { x: box.left, y: box.top, width: box.width, height: box.height };
       if (sameRect(sent, rect)) return;
@@ -58,16 +70,32 @@ function useEmbedZone(zone: RefObject<HTMLDivElement | null>) {
       if (frame === 0) frame = requestAnimationFrame(send);
     };
     send();
+    // L'espace (et non l'écran, de taille plafonnée) : un écran de même taille peut s'être
+    // déplacé (alerte affichée au-dessus, fenêtre agrandie).
     const observer = new ResizeObserver(schedule);
-    observer.observe(element);
+    observer.observe(area);
     window.addEventListener("resize", schedule);
+    // Changement de DPI (fenêtre passée sur un autre écran) sans changement de taille CSS : ni
+    // `resize` ni l'observateur ne sont garantis. La requête suit le rapport courant.
+    let dpi: MediaQueryList | null = null;
+    const onDpi = () => {
+      watchDpi();
+      schedule();
+    };
+    const watchDpi = () => {
+      dpi?.removeEventListener("change", onDpi);
+      dpi = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`) ?? null;
+      dpi?.addEventListener("change", onDpi);
+    };
+    watchDpi();
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", schedule);
+      dpi?.removeEventListener("change", onDpi);
       if (frame !== 0) cancelAnimationFrame(frame);
       setPlayerEmbedLayout(null).catch(() => undefined);
     };
-  }, [zone]);
+  }, [stage, zone]);
 }
 
 /**
@@ -85,13 +113,14 @@ export function PlayerScreen({
   session: PlayerSession;
   onGone: () => void;
 }) {
+  const stage = useRef<HTMLDivElement>(null);
   const zone = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusButton = useRef<HTMLButtonElement>(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
-  useEmbedZone(zone);
+  useEmbedZone(stage, zone);
 
   // Aucun player côté backend : sans fin de partie dans le délai, l'écran se ferme.
   useEffect(() => {
@@ -179,12 +208,14 @@ export function PlayerScreen({
         </p>
       )}
       <main className="fl-player-screen__main" aria-label={t.playerScreen.label}>
-        <div
-          ref={zone}
-          className="fl-player-screen__zone"
-          role="region"
-          aria-label={t.playerScreen.zone(session.title)}
-        />
+        <div ref={stage} className="fl-player-screen__stage">
+          <div
+            ref={zone}
+            className="fl-player-screen__zone"
+            role="region"
+            aria-label={t.playerScreen.zone(session.title)}
+          />
+        </div>
         <p className="fl-player-screen__hint">{t.playerScreen.hint}</p>
       </main>
     </div>

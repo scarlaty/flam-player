@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD 11)
 # --- Résolution écran Flam ---
 set(FLAM_SCREEN_W 320)
 set(FLAM_SCREEN_H 240)
-set(FLAM_SCALE 3)  # Facteur d'upscale pour la fenêtre desktop
+set(FLAM_SCALE 2)  # Facteur d'upscale pour la fenêtre desktop
 
 # --- SDL2 (compilé depuis les sources via submodule libs/SDL2) ---
 set(SDL2_DIR "${CMAKE_SOURCE_DIR}/libs/SDL2")

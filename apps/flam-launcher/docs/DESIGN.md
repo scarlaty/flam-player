@@ -53,10 +53,12 @@ incrustée ») :
 │ Titre de l'histoire (h1)      [Clavier au lecteur] [Arrêter]   │
 │ (alerte d'erreur éventuelle, role="alert")                     │
 ├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│   Zone d'accueil (fond --brand-screen, région « Lecteur : … ») │
-│   la fenêtre native du player s'y superpose, image 4:3         │
-│                                                                │
+│              ┌──────────────────────────────────┐              │
+│              │ Zone d'accueil (--brand-screen,  │              │
+│              │ région « Lecteur : … »), 4:3,    │              │
+│              │ ×2 au plus, centrée ; la fenêtre │              │
+│              │ native du player s'y superpose   │              │
+│              └──────────────────────────────────┘              │
 │        Aide : clic ou « Clavier au lecteur », F6 pour revenir  │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -67,8 +69,15 @@ incrustée ») :
 - **Clavier** : au montage le focus est sur le titre (`tabIndex={-1}`, anneau
   `--color-focus`). « Clavier au lecteur » donne le clavier à la fenêtre native ; **F6** dans
   le player le rend au launcher, sur ce même bouton. Dans la fenêtre native, Tab ne sort pas.
-- **Zone** : `flex: 1`, bordure `CanvasText` en contraste élevé ; sa position et sa taille
-  sont transmises au backend (`player_embed_layout`, un appel à la fois, dans l'ordre).
+- **Zone** : l'écran Flam, centré dans l'espace libre (`__stage`, `flex: 1`), bordure
+  `CanvasText` en contraste élevé. Taille calculée par `screenFit.ts` (`fitScreen`) : 4:3,
+  640×480 px CSS au plus (×2 : les images de la Flam sont en basse résolution, un fort
+  agrandissement est laid), et un nombre entier de px physiques par pixel de la Flam
+  (`devicePixelRatio`) pour des pixels nets ; plus petite si la place manque, facteur non entier
+  seulement si même ×1 ne tient pas. Ainsi, à 125 % l'écran fait 512×384 px CSS (×2 physique)
+  et à 175 % environ 549×411 (×3 physique). Recalculée au redimensionnement et au changement de
+  DPI (`matchMedia` sur `resolution`). Sa position et sa taille sont transmises au backend
+  (`player_embed_layout`, un appel à la fois, dans l'ordre).
 - Les boutons sont ceux de `Button` (`secondary` / `danger`) ; l'écran n'a pas de composant
   propre.
 

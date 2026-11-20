@@ -51,10 +51,21 @@
   padding: var(--space-4) var(--space-5);
 }
 
-/* Zone d'accueil : la fenêtre native du player s'y superpose (image 4:3, bandes noires). */
-.fl-player-screen__zone {
+/* Espace de l'écran Flam : l'écran y est centré, à sa taille calculée (screenFit.ts). */
+.fl-player-screen__stage {
+  display: flex;
   flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+/* Zone d'accueil (écran Flam, 4:3, ×2 au plus) : la fenêtre native du player s'y superpose.
+   Largeur et hauteur posées par PlayerScreen.tsx. */
+.fl-player-screen__zone {
+  flex: none;
   background: var(--brand-screen);
 }
 

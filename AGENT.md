@@ -346,7 +346,9 @@ Le script Lua a acces a :
 ## Ecran FLAM
 
 - Resolution : 320x240 pixels
-- Facteur d'upscale desktop : x3 (fenetre 960x720 au demarrage, redimensionnable, ratio 4:3)
+- Facteur d'upscale desktop : x2 (fenetre 640x480 au demarrage, redimensionnable, ratio 4:3) ;
+  incruste dans le launcher, l'ecran fait au plus 640x480 px CSS, centre, avec un facteur entier
+  en px physiques quand la place le permet
 - Header bar : 28px en haut (titre de l'histoire)
 - Zone de contenu (`window`) : 320x212 pixels
 - Couleur : 32-bit ARGB

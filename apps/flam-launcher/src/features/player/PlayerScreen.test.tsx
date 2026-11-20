@@ -137,6 +137,36 @@ it("envoie la zone au montage, à chaque changement, et la cache au démontage",
   await waitFor(() => expect(layouts().at(-1)?.args).toEqual({ rect: null }));
 });
 
+it("l'écran incrusté est plafonné à 640×480 (×2), plus petit si la place manque", async () => {
+  renderScreen();
+  const zone = screen.getByRole("region", { name: "Lecteur : Les trois ours" });
+  const stage = zone.parentElement as HTMLElement;
+  let room = { width: 1800, height: 900 };
+  stage.getBoundingClientRect = () =>
+    ({ ...room, left: 0, top: 0, right: 0, bottom: 0, x: 0, y: 0 }) as DOMRect;
+  // jsdom ne met rien en page : la zone mesure ce que le style lui donne, centrée.
+  zone.getBoundingClientRect = () => {
+    const width = parseFloat(zone.style.width);
+    const height = parseFloat(zone.style.height);
+    const left = (room.width - width) / 2;
+    const top = (room.height - height) / 2;
+    return { left, top, width, height, right: 0, bottom: 0, x: 0, y: 0 } as DOMRect;
+  };
+  resize?.();
+  await waitFor(() =>
+    expect(layouts().at(-1)?.args).toEqual({
+      rect: { x: 580, y: 210, width: 640, height: 480 },
+    }),
+  );
+  expect(zone.style.width).toBe("640px");
+  expect(zone.style.height).toBe("480px");
+  // Moins de place que ×2 : ×1 net (100 %).
+  room = { width: 600, height: 900 };
+  window.dispatchEvent(new Event("resize"));
+  await waitFor(() => expect(zone.style.width).toBe("320px"));
+  expect(zone.style.height).toBe("240px");
+});
+
 it("player://focus-host (F6 dans le player) replace le focus sur « Clavier au lecteur »", async () => {
   renderScreen();
   const button = screen.getByRole("button", { name: "Clavier au lecteur" });
