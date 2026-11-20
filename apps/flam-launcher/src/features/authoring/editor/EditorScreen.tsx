@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { ConflictChoice } from "../../../api/authoring";
 import {
   AUDIO_EXTENSIONS,
   IMAGE_EXTENSIONS,
+  closeEditorWindow,
   createFromEditor,
   deleteItem,
   editorView,
@@ -87,6 +88,23 @@ export function EditorScreen() {
   const [choice, setChoice] = useState<ConflictChoice>("new_story");
   const titleRef = useRef<HTMLInputElement>(null);
   const busyRef = useRef(false);
+  // Création lancée : proposition de fermer la fenêtre (jamais de fermeture automatique).
+  const [offerClose, setOfferClose] = useState(false);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const closeOfferId = useId();
+  const offerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (offerClose) closeRef.current?.focus();
+  }, [offerClose]);
+  /**
+   * Retire la proposition (« Continuer à modifier » ou nouvelle opération) : si l'un de ses
+   * boutons avait le focus, il revient à la ligne choisie de l'arbre plutôt qu'au corps de page.
+   */
+  const withdrawOffer = useCallback(() => {
+    const active = document.activeElement;
+    if (active !== null && offerRef.current?.contains(active)) setRefocus((n) => n + 1);
+    setOfferClose(false);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -139,6 +157,8 @@ export function EditorScreen() {
       busyRef.current = true;
       setBusy(true);
       setError(null);
+      // Toute nouvelle opération retire la proposition de fermer (elle ne vaut plus).
+      withdrawOffer();
       try {
         const update = await action();
         setView(update.view);
@@ -171,7 +191,7 @@ export function EditorScreen() {
         setBusy(false);
       }
     },
-    [load, text, announce],
+    [load, text, announce, withdrawOffer],
   );
 
   const doUndo = useCallback(() => void run(undo, text.undone), [run, text]);
@@ -307,7 +327,21 @@ export function EditorScreen() {
       () => text.header.started,
     );
     setCreating(false);
+    if (ok) setOfferClose(true);
     return ok;
+  }
+
+  /**
+   * Ferme la fenêtre : chaque opération écrit le dossier avant de rendre sa vue, rien n'attend
+   * donc d'être écrit hors d'une opération en cours, et on n'en coupe aucune (bouton désactivé,
+   * garde ici). Le backend oublie l'éditeur à la destruction de la fenêtre ; la création lancée
+   * vit dans la file d'installation de la fenêtre principale.
+   */
+  function closeEditor() {
+    if (busyRef.current) return;
+    closeEditorWindow().catch((caught: unknown) =>
+      setError(editorErrorText(toAppError(caught))),
+    );
   }
 
   function startCreate() {
@@ -358,6 +392,32 @@ export function EditorScreen() {
           uuid={view.report.installed_version !== null ? view.report.uuid : null}
           onError={setError}
         />
+      )}
+      {offerClose && (
+        <Banner
+          tone="success"
+          // La création lancée est déjà annoncée par la région d'état.
+          role="none"
+          className="fl-editor__error"
+          action={
+            <div ref={offerRef} className="fl-editor__close-actions">
+              <Button
+                ref={closeRef}
+                aria-describedby={closeOfferId}
+                variant="primary"
+                disabled={busy}
+                onClick={closeEditor}
+              >
+                {text.header.closeEditor}
+              </Button>
+              <Button variant="ghost" onClick={withdrawOffer}>
+                {text.header.keepEditing}
+              </Button>
+            </div>
+          }
+        >
+          <p id={closeOfferId}>{text.header.closeOffer}</p>
+        </Banner>
       )}
       {error && (
         <Banner tone="danger" role="alert" className="fl-editor__error">

@@ -1,5 +1,13 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect } from "vitest";
 import type { EditorNode, EditorUpdate, EditorView, Stamp } from "../../../api/editor";
 import { expectNoAxeViolations } from "../../../test/axe";
@@ -129,7 +137,10 @@ function backend(
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd);
 
 beforeEach(() => clearThumbnailCache());
-afterEach(() => clearMocks());
+afterEach(() => {
+  cleanup();
+  clearMocks();
+});
 
 async function open(view = makeView()) {
   backend(view);
@@ -316,6 +327,78 @@ slowIt("mettre à jour une histoire déjà créée", async () => {
   await waitFor(() => expect(called("authoring_editor_create")).toHaveLength(1));
   expect(called("authoring_editor_create")[0]?.args).toEqual({ choice: null });
   expect(await screen.findByText(/Création lancée/)).toBeInTheDocument();
+});
+
+/** Lance la mise à jour d'une histoire déjà créée ; rend le bouton « Fermer l'éditeur ». */
+async function launchCreate() {
+  const view = makeView({
+    report: { ...makeView().report, uuid: "u", installed_version: 2 },
+  });
+  calls = [];
+  mockWindows("editor-1");
+  mockIPC(
+    (cmd, args) => {
+      calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> });
+      if (cmd === "authoring_editor_view") return view;
+      if (cmd === "authoring_editor_create") return { created: {}, view };
+      return null;
+    },
+    { shouldMockEvents: true },
+  );
+  const result = render(<EditorScreen />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Mettre à jour l'histoire" }),
+  );
+  const close = await screen.findByRole("button", { name: "Fermer l'éditeur" });
+  return { close, container: result.container };
+}
+
+slowIt(
+  "création lancée : proposition de fermer l'éditeur, focus sur « Fermer »",
+  async () => {
+    const { close, container } = await launchCreate();
+    await waitFor(() => expect(close).toHaveFocus());
+    expect(screen.getByText(/Vous pouvez fermer l'éditeur/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continuer à modifier" })).toBeEnabled();
+    // Pas de fermeture automatique.
+    expect(called("plugin:window|close")).toHaveLength(0);
+    await expectNoAxeViolations(container);
+    fireEvent.click(close);
+    await waitFor(() => expect(called("plugin:window|close")).toHaveLength(1));
+  },
+);
+
+slowIt("création lancée : « Continuer à modifier » retire la proposition", async () => {
+  await launchCreate();
+  const keep = screen.getByRole("button", { name: "Continuer à modifier" });
+  keep.focus();
+  fireEvent.click(keep);
+  expect(screen.queryByRole("button", { name: "Fermer l'éditeur" })).toBeNull();
+  // Le bouton focalisé a disparu : le focus revient à l'arbre, pas au corps de la page.
+  await waitFor(() =>
+    expect(
+      screen
+        .getByRole("tree", { name: "Contenu de l'histoire" })
+        .contains(document.activeElement),
+    ).toBe(true),
+  );
+  expect(called("plugin:window|close")).toHaveLength(0);
+  // Le message de création reste dans la région d'état.
+  expect(screen.getByText(/Création lancée/)).toBeInTheDocument();
+});
+
+slowIt("pas de proposition de fermer si la création échoue", async () => {
+  backend(
+    makeView({ report: { ...makeView().report, uuid: "u", installed_version: 2 } }),
+    { authoring_editor_create: { kind: "io", message: "disque plein" } },
+  );
+  render(<EditorScreen />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Mettre à jour l'histoire" }),
+  );
+  await waitFor(() => expect(called("authoring_editor_create")).toHaveLength(1));
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "Fermer l'éditeur" })).toBeNull();
 });
 
 slowIt(

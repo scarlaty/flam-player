@@ -1492,6 +1492,10 @@ export const fr = {
       blockedHelp: "Corrigez d'abord les points signalés en bas de la fenêtre.",
       started:
         "Création lancée : l'histoire arrivera dans Mes histoires (fenêtre principale du launcher).",
+      closeOffer:
+        "Vous pouvez fermer l'éditeur : la création se poursuit dans la fenêtre principale, et la fermeture ne modifie pas les fichiers du dossier.",
+      closeEditor: "Fermer l'éditeur",
+      keepEditing: "Continuer à modifier",
       copiedTitle: "Dossier copié",
       copiedLegend:
         "Ce dossier semble copié d'un autre dossier d'histoire déjà installé.",
