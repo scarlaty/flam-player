@@ -202,6 +202,14 @@ fermeture de stdin). Environ 1,5 Mo sur disque.
    argument le script le construit avec **Docker** ; sinon `-ArtifactDir <dossier>` reprend la
    sortie de `tools/ffmpeg/build.sh` (la CI la produit dans le job `ffmpeg`).
 
+   **En développement** (build de débogage seulement, jamais en release), le launcher cherche
+   ffmpeg, `flam-player.exe` et `telmi2flam.exe` d'abord à côté de son exe, puis dans les
+   dossiers parents de l'exe, puis dans ceux de `src-tauri/` connu à la compilation
+   (`CARGO_MANIFEST_DIR`, jusqu'à la racine du dépôt ou du worktree) : sorties des scripts
+   `apps/flam-launcher/build/{ffmpeg,player,telmi2flam}/`, ou `build/…` à la racine. À un même
+   niveau, le player Release (`build/player/`) passe avant le Debug `<dépôt>/build/flam-player.exe`.
+   Une cible Cargo hors du dépôt (`CARGO_TARGET_DIR`) les trouve donc aussi.
+
    Même avec `--no-bundle`, Tauri copie `telmi2flam/` à côté de l'exe dans
    `target/release/` à la racine du dépôt (workspace Cargo ; vérifié : copie identique à l'artefact). Sans
    `--config`, le build reste valable mais sans convertisseur : une conversion donne alors

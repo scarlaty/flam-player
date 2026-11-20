@@ -234,18 +234,29 @@ pub const RUST_CONVERTER_EXE: &str = "telmi2flam.exe";
 
 /// `telmi2flam.exe` : `<exe>/telmi2flam/telmi2flam.exe` (application installée, déposé par
 /// `build-converter.ps1`), sinon en développement `<exe>/telmi2flam.exe` : le launcher et le
-/// convertisseur partagent le `target/` du workspace Cargo (`cargo build -p telmi2flam`).
+/// convertisseur partagent le `target/` du workspace Cargo (`cargo build -p telmi2flam`), puis
+/// `apps/flam-launcher/build/telmi2flam/` ou `build/telmi2flam/` (sortie de
+/// `build-converter.ps1`) d'un dossier ancêtre de l'exe ou du dépôt
+/// ([`settings::repo_search_dirs`]).
 pub fn detect_rust_converter(env: &Environment) -> Option<PathBuf> {
     let exe_dir = env.exe_dir.as_deref()?;
     let bundled = exe_dir.join("telmi2flam").join(RUST_CONVERTER_EXE);
     if bundled.is_file() {
         return Some(bundled);
     }
-    if env.search_repo_build {
-        let built = exe_dir.join(RUST_CONVERTER_EXE);
-        return built.is_file().then_some(built);
+    if !env.search_repo_build {
+        return None;
     }
-    None
+    let built = exe_dir.join(RUST_CONVERTER_EXE);
+    if built.is_file() {
+        return Some(built);
+    }
+    settings::repo_search_dirs(env).find_map(|dir| {
+        settings::build_dirs(dir)
+            .into_iter()
+            .map(|base| base.join("telmi2flam").join(RUST_CONVERTER_EXE))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// Résolution réelle : `settings.json` (cache, téléchargements simultanés, vignettes) et

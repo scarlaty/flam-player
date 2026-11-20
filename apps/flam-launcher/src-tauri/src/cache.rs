@@ -2034,6 +2034,7 @@ mod tests {
             exe_dir: None,
             default_cache_dir: default.clone(),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: vec![configured.clone()],
         };
         fs::write(
@@ -3237,6 +3238,7 @@ mod tests {
             exe_dir: None,
             default_cache_dir: default.clone(),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: vec![config.path().join("protege")],
         };
         // Dossier configuré refusé à la relecture (dossier protégé) : repli sur le défaut.
@@ -3282,6 +3284,7 @@ mod tests {
             exe_dir: None,
             default_cache_dir: default.to_path_buf(),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: protected,
         }
     }

@@ -236,8 +236,14 @@ pub struct Environment {
     pub exe_dir: Option<PathBuf>,
     /// Dossier de cache utilisé quand aucun n'est configuré.
     pub default_cache_dir: PathBuf,
-    /// Cherche aussi `<racine du dépôt>/build/flam-player.exe` (développement).
+    /// Développement : cherche aussi les sorties de build du dépôt (player, ffmpeg,
+    /// convertisseur, statut de compatibilité) dans les ancêtres de [`Self::exe_dir`] puis de
+    /// [`Self::source_dir`] ([`repo_search_dirs`]). Jamais vrai dans un build de release.
     pub search_repo_build: bool,
+    /// Dossier `src-tauri` du dépôt connu à la compilation (`CARGO_MANIFEST_DIR`, builds de
+    /// débogage seulement) : la cible Cargo peut être hors du dépôt (`CARGO_TARGET_DIR`), où
+    /// aucun ancêtre de l'exe n'est le dépôt. Lu seulement avec [`Self::search_repo_build`].
+    pub source_dir: Option<PathBuf>,
     /// Dossiers refusés comme dossier de cache (dossier utilisateur, dossier Windows…).
     pub protected_dirs: Vec<PathBuf>,
 }
@@ -251,9 +257,50 @@ impl Environment {
                 .and_then(|exe| exe.parent().map(Path::to_path_buf)),
             default_cache_dir: storage::default_cache_dir(),
             search_repo_build: cfg!(debug_assertions),
+            source_dir: compile_time_source_dir(),
             protected_dirs: protected_dirs(),
         }
     }
+}
+
+/// `CARGO_MANIFEST_DIR` en débogage ; `None` en release, où le chemin de compilation n'est même
+/// pas inscrit dans le binaire (`#[cfg]` et non `cfg!`).
+fn compile_time_source_dir() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    return Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    #[cfg(not(debug_assertions))]
+    None
+}
+
+/// Dossiers où chercher les sorties de build du dépôt (développement) : ancêtres du dossier de
+/// l'exe, puis ancêtres de [`Environment::source_dir`] jusqu'à la racine de son dépôt (premier
+/// dossier qui contient `.git`, dossier ou fichier d'un worktree, inclus) : un worktree logé
+/// dans un autre checkout ne prend pas les binaires de celui-ci. Vide si
+/// [`Environment::search_repo_build`] est faux. Un même dossier peut revenir deux fois (exe
+/// sous le dépôt) : sans effet sur le résultat, le premier trouvé l'emporte.
+pub fn repo_search_dirs(env: &Environment) -> impl Iterator<Item = &Path> {
+    let enabled = env.search_repo_build;
+    let exe = env.exe_dir.as_deref().filter(|_| enabled);
+    let source = env.source_dir.as_deref().filter(|_| enabled);
+    let mut past_root = false;
+    let source_dirs = source
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .take_while(move |dir| {
+            let keep = !past_root;
+            past_root |= dir.join(".git").exists();
+            keep
+        });
+    exe.into_iter().flat_map(Path::ancestors).chain(source_dirs)
+}
+
+/// Dossiers `build/` candidats sous un dossier ancêtre : celui du launcher
+/// (`apps/flam-launcher/build`, sortie des scripts `build-*.ps1`) puis `build/`.
+pub(crate) fn build_dirs(dir: &Path) -> [PathBuf; 2] {
+    [
+        dir.join("apps").join("flam-launcher").join("build"),
+        dir.join("build"),
+    ]
 }
 
 /// Dossiers qui ne peuvent pas servir de cache : l'application y créerait des sous-dossiers
@@ -433,21 +480,23 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     parts(a) == parts(b)
 }
 
-/// Cherche `flam-player.exe` à côté de l'exécutable de l'application, sinon (développement)
-/// dans `build/` d'un dossier ancêtre (racine du dépôt).
+/// Cherche `flam-player.exe` à côté de l'exécutable de l'application, sinon (développement,
+/// [`repo_search_dirs`]) dans chaque dossier ancêtre : `apps/flam-launcher/build/player/` ou
+/// `build/player/` (build Release de `build-player.ps1`, avec `SDL2.dll`), puis
+/// `build/flam-player.exe` (build Debug de `do_build.bat` à la racine du dépôt).
 pub fn detect_player(env: &Environment) -> Option<PathBuf> {
     let exe_dir = env.exe_dir.as_deref()?;
     let beside = exe_dir.join(PLAYER_EXE);
     if beside.is_file() {
         return Some(beside);
     }
-    if env.search_repo_build {
-        return exe_dir
-            .ancestors()
-            .map(|dir| dir.join("build").join(PLAYER_EXE))
-            .find(|candidate| candidate.is_file());
-    }
-    None
+    repo_search_dirs(env).find_map(|dir| {
+        build_dirs(dir)
+            .into_iter()
+            .map(|base| base.join("player").join(PLAYER_EXE))
+            .chain([dir.join("build").join(PLAYER_EXE)])
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// Dossier de ffmpeg embarqué, à côté de l'exécutable (ressource Tauri `ffmpeg/` produite par
@@ -462,29 +511,23 @@ pub const FFMPEG_EXE: &str = if cfg!(windows) {
 };
 
 /// Cherche le ffmpeg LGPL embarqué : `<exe>/ffmpeg/ffmpeg.exe` sinon (développement)
-/// `build/ffmpeg/ffmpeg.exe` d'un dossier ancêtre. Aucun ffmpeg du `PATH` n'est jamais retenu
-/// (build GPL possible) et aucun processus n'est lancé. Le convertisseur la reçoit par
-/// `FLAM_FFMPEG` (rééchantillonnage audio, #46).
+/// `build/ffmpeg/ffmpeg.exe` d'un dossier ancêtre ([`repo_search_dirs`]). Aucun ffmpeg du
+/// `PATH` n'est jamais retenu (build GPL possible) et aucun processus n'est lancé. Le
+/// convertisseur la reçoit par `FLAM_FFMPEG` (rééchantillonnage audio, #46).
 pub fn ffmpeg_path(env: &Environment) -> Option<PathBuf> {
     let exe_dir = env.exe_dir.as_deref()?;
     let beside = exe_dir.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE);
     if is_nonempty_file(&beside) {
         return Some(beside);
     }
-    if env.search_repo_build {
-        // `build-ffmpeg.ps1` écrit dans `apps/flam-launcher/build/ffmpeg` ; `build/ffmpeg` à la
-        // racine d'un ancêtre est aussi accepté.
-        return exe_dir.ancestors().find_map(|dir| {
-            [
-                dir.join("apps").join("flam-launcher").join("build"),
-                dir.join("build"),
-            ]
+    // `build-ffmpeg.ps1` écrit dans `apps/flam-launcher/build/ffmpeg` ; `build/ffmpeg` d'un
+    // ancêtre est aussi accepté.
+    repo_search_dirs(env).find_map(|dir| {
+        build_dirs(dir)
             .into_iter()
             .map(|base| base.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE))
             .find(|candidate| is_nonempty_file(candidate))
-        });
-    }
-    None
+    })
 }
 
 /// Calcule les valeurs effectives et les problèmes rencontrés. Une valeur configurée qui ne
@@ -748,6 +791,7 @@ mod tests {
             exe_dir: Some(dir.join("app")),
             default_cache_dir: dir.join("cache-defaut"),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: vec![],
         }
     }
@@ -1639,6 +1683,120 @@ mod tests {
             .join(FFMPEG_EXE);
         touch(&dev);
         assert_eq!(ffmpeg_path(&env), Some(dev));
+    }
+
+    /// Dépôt simulé hors de la cible Cargo (`CARGO_TARGET_DIR`) : `<dir>/depot`, exe dans
+    /// `<dir>/cible/debug`, `source_dir` = `<depot>/apps/flam-launcher/src-tauri`.
+    fn env_cible_hors_depot(dir: &Path) -> (Environment, PathBuf) {
+        let repo = dir.join("depot");
+        let env = Environment {
+            exe_dir: Some(dir.join("cible").join("debug")),
+            default_cache_dir: dir.join("cache-defaut"),
+            search_repo_build: true,
+            source_dir: Some(repo.join("apps").join("flam-launcher").join("src-tauri")),
+            protected_dirs: vec![],
+        };
+        (env, repo)
+    }
+
+    #[test]
+    fn cible_hors_depot_player_et_ffmpeg_trouves_par_le_dossier_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut env, repo) = env_cible_hors_depot(dir.path());
+        let launcher_build = repo.join("apps").join("flam-launcher").join("build");
+        assert_eq!(detect_player(&env), None);
+        assert_eq!(ffmpeg_path(&env), None);
+
+        // Build Debug à la racine du dépôt.
+        let debug = repo.join("build").join(PLAYER_EXE);
+        touch(&debug);
+        assert_eq!(detect_player(&env), Some(debug));
+        // Build Release de `build-player.ps1` : prioritaire.
+        let release = launcher_build.join("player").join(PLAYER_EXE);
+        touch(&release);
+        assert_eq!(detect_player(&env), Some(release.clone()));
+
+        let ffmpeg = launcher_build.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE);
+        touch(&ffmpeg);
+        assert_eq!(ffmpeg_path(&env), Some(ffmpeg.clone()));
+
+        // À côté de l'exe d'abord.
+        let app = env.exe_dir.clone().unwrap();
+        let beside_player = app.join(PLAYER_EXE);
+        let beside_ffmpeg = app.join(BUNDLED_FFMPEG_DIR).join(FFMPEG_EXE);
+        touch(&beside_player);
+        touch(&beside_ffmpeg);
+        assert_eq!(detect_player(&env), Some(beside_player.clone()));
+        assert_eq!(ffmpeg_path(&env), Some(beside_ffmpeg.clone()));
+        fs::remove_file(&beside_player).unwrap();
+        fs::remove_file(&beside_ffmpeg).unwrap();
+
+        // Release : ni le dépôt ni les ancêtres de l'exe.
+        env.search_repo_build = false;
+        assert_eq!(detect_player(&env), None);
+        assert_eq!(ffmpeg_path(&env), None);
+        assert_eq!(repo_search_dirs(&env).count(), 0);
+    }
+
+    /// Worktree logé dans un autre checkout (`.claude/worktrees/…`) : la recherche s'arrête à la
+    /// racine du worktree (fichier `.git`), sans prendre les binaires du checkout englobant.
+    #[test]
+    fn dossier_source_arrete_a_la_racine_du_depot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (env, repo) = env_cible_hors_depot(dir.path());
+        touch(&repo.join(".git"));
+        let outer = dir.path();
+        fs::create_dir_all(outer.join(".git")).unwrap();
+        touch(&outer.join("build").join("player").join(PLAYER_EXE));
+        let source_dirs: Vec<&Path> = repo_search_dirs(&env)
+            .skip_while(|d| env.exe_dir.as_deref().unwrap().starts_with(d))
+            .collect();
+        assert_eq!(source_dirs.last(), Some(&repo.as_path()));
+        assert!(!source_dirs.contains(&outer));
+    }
+
+    #[test]
+    fn player_release_du_depot_prefere_au_debug() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        env.exe_dir = Some(dir.path().join("target").join("debug"));
+        env.search_repo_build = true;
+        touch(&dir.path().join("build").join(PLAYER_EXE));
+        let release = dir
+            .path()
+            .join("apps")
+            .join("flam-launcher")
+            .join("build")
+            .join("player")
+            .join(PLAYER_EXE);
+        touch(&release);
+        assert_eq!(detect_player(&env), Some(release));
+    }
+
+    #[test]
+    fn dossier_source_ignore_hors_developpement_et_ancetres_de_l_exe_d_abord() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut env, repo) = env_cible_hors_depot(dir.path());
+        let dirs: Vec<PathBuf> = repo_search_dirs(&env).map(Path::to_path_buf).collect();
+        let exe = env.exe_dir.clone().unwrap();
+        let source = env.source_dir.clone().unwrap();
+        assert_eq!(dirs.first(), Some(&exe));
+        let exe_pos = dirs.iter().position(|d| *d == exe).unwrap();
+        let source_pos = dirs.iter().position(|d| *d == source).unwrap();
+        assert!(exe_pos < source_pos);
+        assert!(dirs.contains(&repo));
+        env.search_repo_build = false;
+        assert_eq!(repo_search_dirs(&env).count(), 0);
+    }
+
+    #[test]
+    fn dossier_source_de_compilation_seulement_en_debogage() {
+        let source = compile_time_source_dir();
+        assert_eq!(source.is_some(), cfg!(debug_assertions));
+        assert_eq!(
+            Environment::current().search_repo_build,
+            cfg!(debug_assertions)
+        );
     }
 
     #[test]
