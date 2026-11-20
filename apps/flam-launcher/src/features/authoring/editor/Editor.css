@@ -90,6 +90,12 @@
   margin: var(--space-2) var(--space-5) 0;
 }
 
+.fl-editor__close-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .fl-editor__body {
   display: grid;
   grid-template-columns: minmax(18rem, 2fr) minmax(20rem, 3fr);
