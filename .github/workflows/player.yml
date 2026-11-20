@@ -163,7 +163,7 @@ jobs:
           do
             echo "::group::$f"
             gcc -std=gnu11 -O1 -Wall -c \
-              -DLV_CONF_INCLUDE_SIMPLE -DFLAM_SCREEN_W=320 -DFLAM_SCREEN_H=240 -DFLAM_SCALE=3 \
+              -DLV_CONF_INCLUDE_SIMPLE -DFLAM_SCREEN_W=320 -DFLAM_SCREEN_H=240 -DFLAM_SCALE=2 \
               -Isrc -Ilibs -Ilibs/lvgl -Ilibs/lua -Ilibs/minimp3 -Ilibs/SDL2/include \
               "$f" -o "$RUNNER_TEMP/obj/$(basename "$f" .c).o"
             echo "::endgroup::"

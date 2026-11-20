@@ -697,6 +697,16 @@ int sdl_driver_poll(void)
         float scale_x = (float)win_w / FLAM_SCREEN_W;
         float scale_y = (float)win_h / FLAM_SCREEN_H;
         float scale = scale_x < scale_y ? scale_x : scale_y;
+        /* Facteur presque entier (zone du launcher a un pixel pres apres
+           arrondi des px CSS) : facteur entier, pixels nets. Au plus un
+           pixel de debord, rogne. */
+        if (scale >= 1.0f) {
+            int whole = (int)(scale + 0.5f);
+            if (scale - (float)whole < 0.01f &&
+                whole * FLAM_SCREEN_W - win_w <= 1 &&
+                whole * FLAM_SCREEN_H - win_h <= 1)
+                scale = (float)whole;
+        }
         int dst_w = (int)(FLAM_SCREEN_W * scale);
         int dst_h = (int)(FLAM_SCREEN_H * scale);
         SDL_Rect dst = { (win_w - dst_w) / 2, (win_h - dst_h) / 2, dst_w, dst_h };
