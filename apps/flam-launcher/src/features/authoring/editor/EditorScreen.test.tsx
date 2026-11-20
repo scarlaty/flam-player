@@ -383,8 +383,9 @@ slowIt("création lancée : « Continuer à modifier » retire la proposition", 
     ).toBe(true),
   );
   expect(called("plugin:window|close")).toHaveLength(0);
-  // Le message de création reste dans la région d'état.
-  expect(screen.getByText(/Création lancée/)).toBeInTheDocument();
+  // Le message de création reste dans la région d'état (écrit 60 ms après la création :
+  // `announce` vide la région puis la réécrit).
+  expect(await screen.findByText(/Création lancée/)).toBeInTheDocument();
 });
 
 slowIt("pas de proposition de fermer si la création échoue", async () => {
