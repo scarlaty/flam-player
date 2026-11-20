@@ -1939,6 +1939,7 @@ mod tests {
             exe_dir: None,
             default_cache_dir: dir.path().join("cache"),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: vec![],
         };
         let (url, cache) = resolve_catalog(dir.path(), &env, "telmi-store").unwrap();

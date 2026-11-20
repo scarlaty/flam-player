@@ -74,6 +74,7 @@ fn find_tools() -> Option<Tools> {
             exe_dir: Some(dir.clone()),
             default_cache_dir: dir.join("cache-inutilise"),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: Vec::new(),
         };
         let Some(player) = settings::detect_player(&env) else {

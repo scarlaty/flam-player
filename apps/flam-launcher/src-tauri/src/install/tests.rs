@@ -1200,6 +1200,7 @@ fn detection_du_binaire_rust() {
         exe_dir: Some(exe_dir.clone()),
         default_cache_dir: dir.path().join("c"),
         search_repo_build: search,
+        source_dir: None,
         protected_dirs: Vec::new(),
     };
     assert_eq!(detect_rust_converter(&env(true)), None);
@@ -1223,6 +1224,37 @@ fn detection_du_binaire_rust() {
         ..env(true)
     };
     assert_eq!(detect_rust_converter(&none), None);
+}
+
+/// Cible Cargo hors du dépôt (`CARGO_TARGET_DIR`) : le binaire de `build-converter.ps1` est
+/// trouvé depuis le dossier source connu à la compilation, après celui de la cible ; jamais hors
+/// développement.
+#[test]
+fn detection_du_binaire_rust_cible_hors_depot() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe_dir = dir.path().join("cible").join("debug");
+    std::fs::create_dir_all(&exe_dir).unwrap();
+    let launcher = dir.path().join("depot").join("apps").join("flam-launcher");
+    let env = |search| Environment {
+        exe_dir: Some(exe_dir.clone()),
+        default_cache_dir: dir.path().join("c"),
+        search_repo_build: search,
+        source_dir: Some(launcher.join("src-tauri")),
+        protected_dirs: Vec::new(),
+    };
+    assert_eq!(detect_rust_converter(&env(true)), None);
+    let packaged = launcher
+        .join("build")
+        .join("telmi2flam")
+        .join(RUST_CONVERTER_EXE);
+    std::fs::create_dir_all(packaged.parent().unwrap()).unwrap();
+    std::fs::write(&packaged, b"MZ").unwrap();
+    assert_eq!(detect_rust_converter(&env(true)), Some(packaged.clone()));
+    assert_eq!(detect_rust_converter(&env(false)), None);
+    // Binaire de la cible (`cargo build -p telmi2flam`) : prioritaire.
+    let built = exe_dir.join(RUST_CONVERTER_EXE);
+    std::fs::write(&built, b"MZ").unwrap();
+    assert_eq!(detect_rust_converter(&env(true)), Some(built));
 }
 
 #[test]

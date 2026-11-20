@@ -518,22 +518,16 @@ pub fn status_path(
     if let Some(path) = override_path.filter(|p| p.is_absolute()) {
         return path;
     }
-    if env.search_repo_build {
-        let dev = env.exe_dir.as_deref().and_then(|exe| {
-            exe.ancestors()
-                .map(|dir| {
-                    dir.join(".cache")
-                        .join("telmi")
-                        .join(COMPAT_DIR)
-                        .join(STATUS_FILE)
-                })
-                .find(|candidate| candidate.is_file())
-        });
-        if let Some(path) = dev {
-            return path;
-        }
-    }
-    cache_root.join(COMPAT_DIR).join(STATUS_FILE)
+    // Développement : ancêtres de l'exe puis du dépôt (`settings::repo_search_dirs`).
+    let dev = crate::settings::repo_search_dirs(env)
+        .map(|dir| {
+            dir.join(".cache")
+                .join("telmi")
+                .join(COMPAT_DIR)
+                .join(STATUS_FILE)
+        })
+        .find(|candidate| candidate.is_file());
+    dev.unwrap_or_else(|| cache_root.join(COMPAT_DIR).join(STATUS_FILE))
 }
 
 /// Rapport complet pour un dossier de cache et un chemin de statut donnés.
@@ -950,6 +944,7 @@ mod tests {
             exe_dir: Some(exe),
             default_cache_dir: dir.path().join("c"),
             search_repo_build: true,
+            source_dir: None,
             protected_dirs: vec![],
         };
         let cache = dir.path().join("cache");
@@ -968,6 +963,33 @@ mod tests {
         assert_eq!(
             status_path(&env, &cache, Some(PathBuf::from("relatif.json"))),
             dev
+        );
+    }
+
+    /// Cible Cargo hors du dépôt (`CARGO_TARGET_DIR`) : trouvé depuis le dossier source connu à
+    /// la compilation, jamais hors développement.
+    #[test]
+    fn chemin_du_statut_cible_hors_depot() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let mut env = Environment {
+            exe_dir: Some(dir.path().join("cible").join("debug")),
+            default_cache_dir: dir.path().join("c"),
+            search_repo_build: true,
+            source_dir: Some(repo.join("apps").join("flam-launcher").join("src-tauri")),
+            protected_dirs: vec![],
+        };
+        let dev = write(
+            &repo.join(".cache").join("telmi").join(COMPAT_DIR),
+            STATUS_FILE,
+            b"{}",
+        );
+        let cache = dir.path().join("cache");
+        assert_eq!(status_path(&env, &cache, None), dev);
+        env.search_repo_build = false;
+        assert_eq!(
+            status_path(&env, &cache, None),
+            cache.join(COMPAT_DIR).join(STATUS_FILE)
         );
     }
 }

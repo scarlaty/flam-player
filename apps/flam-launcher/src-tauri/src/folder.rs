@@ -1907,6 +1907,7 @@ mod tests {
             exe_dir: None,
             default_cache_dir: config.path().join("cache"),
             search_repo_build: false,
+            source_dir: None,
             protected_dirs: vec![],
         };
         let store = SourcesStore::new(config.path());
