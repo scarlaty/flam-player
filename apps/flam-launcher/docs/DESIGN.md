@@ -70,12 +70,15 @@ incrustée ») :
   `--color-focus`). « Clavier au lecteur » donne le clavier à la fenêtre native ; **F6** dans
   le player le rend au launcher, sur ce même bouton. Dans la fenêtre native, Tab ne sort pas.
 - **Zone** : l'écran Flam, centré dans l'espace libre (`__stage`, `flex: 1`), bordure
-  `CanvasText` en contraste élevé. Taille calculée par `screenFit.ts` (`fitScreen`) : 4:3,
-  640×480 px CSS au plus (×2 : les images de la Flam sont en basse résolution, un fort
-  agrandissement est laid), et un nombre entier de px physiques par pixel de la Flam
-  (`devicePixelRatio`) pour des pixels nets ; plus petite si la place manque, facteur non entier
-  seulement si même ×1 ne tient pas. Ainsi, à 125 % l'écran fait 512×384 px CSS (×2 physique)
-  et à 175 % environ 549×411 (×3 physique). Recalculée au redimensionnement et au changement de
+  `CanvasText` en contraste élevé. Taille calculée par `screenFit.ts` (`fitScreen`) : la cible
+  est la plus grande taille 4:3 qui tient dans l'espace, plafonnée à 640×480 px CSS (×2 : les
+  images de la Flam sont en basse résolution, un fort agrandissement est laid). Si un nombre
+  entier de px physiques par pixel de la Flam (`devicePixelRatio`) donne au moins 80 % de la
+  cible, il est retenu (pixels nets) ; sinon la cible est gardée (facteur non entier), pour
+  qu'une fenêtre à peine trop courte ne fasse pas retomber l'écran à 320×240. Exemples : à
+  100 %, 640×480 avec de la place, ≈ 627×470 pour une place de 630×470 ; à 125 %, 512×384
+  (×2 physique, 80 % de la cible) ; à 150 %, 640×480 (×3 physique) ; à 175 %, ≈ 549×411
+  (×3 physique). Recalculée au redimensionnement et au changement de
   DPI (`matchMedia` sur `resolution`). Sa position et sa taille sont transmises au backend
   (`player_embed_layout`, un appel à la fois, dans l'ordre).
 - Les boutons sont ceux de `Button` (`secondary` / `danger`) ; l'écran n'a pas de composant

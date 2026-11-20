@@ -160,11 +160,11 @@ it("l'écran incrusté est plafonné à 640×480 (×2), plus petit si la place m
   );
   expect(zone.style.width).toBe("640px");
   expect(zone.style.height).toBe("480px");
-  // Moins de place que ×2 : ×1 net (100 %).
+  // Un peu moins de place que ×2 (100 %) : la plus grande taille 4:3, pas de chute à ×1.
   room = { width: 600, height: 900 };
   window.dispatchEvent(new Event("resize"));
-  await waitFor(() => expect(zone.style.width).toBe("320px"));
-  expect(zone.style.height).toBe("240px");
+  await waitFor(() => expect(zone.style.width).toBe("600px"));
+  expect(zone.style.height).toBe("450px");
 });
 
 it("player://focus-host (F6 dans le player) replace le focus sur « Clavier au lecteur »", async () => {
